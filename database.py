@@ -72,7 +72,68 @@ def init_db():
             added_at TEXT DEFAULT (datetime('now','localtime')),
             FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL
         );
+
+        -- سجل كل مستند CD (Change Devise) يُنشأ فعلياً — يسمح بالبحث لاحقاً
+        -- (زي: هل أعطيت فلان مستند الأسبوع اللي فات؟) بدون أي ربط بجدول
+        -- clients (بعكس Dossier، هون كل مرة موظف/راكب جديد عادةً).
+        CREATE TABLE IF NOT EXISTS cd_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dossier_no TEXT,
+            passager TEXT,
+            passport_no TEXT,
+            doc_date TEXT,
+            agence TEXT,
+            guichet TEXT,
+            eur_amount REAL,
+            dzd_amount REAL,
+            file_path TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        );
         """
     )
     conn.commit()
     conn.close()
+
+
+def log_cd_document(record):
+    """يسجّل مستند CD مولَّد فعلياً بجدول cd_documents، للبحث/الأرشفة لاحقاً.
+
+    record: dict فيه dossier_no, passager, passport_no, doc_date, agence,
+    guichet, eur_amount, dzd_amount, file_path (كلها اختيارية إلا
+    file_path)."""
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO cd_documents
+            (dossier_no, passager, passport_no, doc_date, agence, guichet,
+             eur_amount, dzd_amount, file_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            record.get("dossier_no"), record.get("passager"), record.get("passport_no"),
+            record.get("doc_date"), record.get("agence"), record.get("guichet"),
+            record.get("eur_amount"), record.get("dzd_amount"), record["file_path"],
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def search_cd_documents(query="", limit=200):
+    """يرجّع مستندات CD السابقة (الأحدث أولاً)، مع فلترة نصية اختيارية
+    على اسم الراكب أو رقم البوردرو أو رقم الجواز."""
+    conn = get_connection()
+    if query:
+        like = f"%{query}%"
+        rows = conn.execute(
+            """
+            SELECT * FROM cd_documents
+            WHERE passager LIKE ? OR dossier_no LIKE ? OR passport_no LIKE ?
+            ORDER BY id DESC LIMIT ?
+            """,
+            (like, like, like, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM cd_documents ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]

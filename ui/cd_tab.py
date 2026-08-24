@@ -6,11 +6,14 @@
 الورقة تتوسّط دائماً بمنطقة العرض (أي حجم نافذة)، ومزوّدة بتكبير/تصغير
 (زوم) وسكرول عمودي/أفقي.
 """
+import json
+import os
 import tkinter as tk
 import tkinter.font as tkfont
 
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 
+from database import log_cd_document, search_cd_documents
 from ui.cd_document import (
     generate_cd_document,
     get_blank_background,
@@ -21,6 +24,49 @@ from ui.cd_document import (
 )
 from ui.widgets import MaskedDateEntry, MaskedTimeEntry, SplitDateEntry, select_all_on_real_focus
 from utils import open_path
+
+# ملفات حالة محلية (مو مرتبطة بمشروع Git — راجع .gitignore): إعدادات
+# المكتب الثابتة (تُتذكَّر بين الجلسات) ومسودة العمل الجاري (استرجاع
+# بعد إغلاق غير متوقع). بجذر المشروع، جنب قاعدة البيانات.
+_APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CD_SETTINGS_PATH = os.path.join(_APP_ROOT, "cd_settings.json")
+CD_DRAFT_PATH = os.path.join(_APP_ROOT, "cd_draft.json")
+
+# حقول "المكتب" الثابتة — نفس الموظف/الشباك عادةً كل يوم، تُتذكَّر
+# تلقائياً بين الجلسات (بعكس بيانات الراكب الشخصية، تتغيّر كل مرة).
+OFFICE_FIELD_KEYS = ["agence", "guichet", "caisse", "guichetier"]
+
+# حقول المسودة القابلة للاسترجاع أوتوماتيكياً لو البرنامج انقفل بالغلط
+# وسط التعبئة — التاريخ والوقت مستثنيان عمداً (تفضّل تكتبهما يدوياً
+# دائماً)، وكذا لأن استرجاع حالتهما الداخلية (مو بس النص المعروض) أعقد
+# وأخطر لو انحرف. الحقول الفاضية بالأصل ما تُحفظ ولا تُستعاد بمشكلة.
+DRAFT_FIELD_KEYS = [
+    "no", "agence", "devise", "guichet", "caisse", "guichetier",
+    "passager", "passport_no", "date_delivrance", "taux", "eur", "dzd",
+]
+
+# الحقول اللي فعلاً تدل على "معاملة جارية تستاهل حفظ مسودة" — بدون
+# حقول المكتب (Agence/Guichet/Caisse/Guichetier): هذي محفوظة أصلاً
+# بإعدادات المكتب وتُتذكَّر لحالها، فتعبئتها وحدها (بدون أي بيانات
+# شخصية) ما تعتبر "عمل جاري" يستاهل مسودة أو تنبيه قبل المغادرة.
+_TRANSACTIONAL_DRAFT_KEYS = [k for k in DRAFT_FIELD_KEYS if k not in OFFICE_FIELD_KEYS]
+
+
+def _load_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_json(path, data):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except OSError:
+        pass  # حفظ ثانوي (إعدادات/مسودة) — فشل الكتابة ما يوقف الشاشة
+
 
 TARGET_W = 750  # عرض الصورة الأساسي (زوم 100%)
 CANVAS_MARGIN = 20  # أقل مسافة بين الورقة وحواف منطقة العرض
@@ -66,9 +112,19 @@ class CDTab(ttk.Frame):
         self.field_natural_size = {}
         self.bg_item_id = None
 
+        self._draft_save_after_id = None
+
         self._build_top_bar()
         self._build_canvas_area()
         self.after(50, self._load_background)
+
+        # اختصارات لوحة مفاتيح: Ctrl+P توليد+طباعة، Ctrl+N مستند جديد
+        # (نفس الحقول المشتركة)، Esc رجوع (بنفس حماية البيانات الجارية).
+        self.bind_all("<Control-p>", lambda _e: self._print_flow())
+        self.bind_all("<Control-P>", lambda _e: self._print_flow())
+        self.bind_all("<Control-n>", lambda _e: self.new_document())
+        self.bind_all("<Control-N>", lambda _e: self.new_document())
+        self.bind_all("<Escape>", lambda _e: self._on_back())
 
     # ---------- الشريط العلوي ----------
     def _build_top_bar(self):
@@ -84,7 +140,10 @@ class CDTab(ttk.Frame):
         ttk.Button(zoom_bar, text="＋", width=3, command=self.zoom_in).pack(side="left")
 
         ttk.Button(top_bar, text="📄 إنشاء المستند (Word)", command=self.generate_document).pack(side="right")
-        ttk.Button(top_bar, text="← رجوع", command=self.app.show_home).pack(side="right", padx=(0, 8))
+        ttk.Button(top_bar, text="🖨️ طباعة", command=self._print_flow).pack(side="right", padx=(0, 8))
+        ttk.Button(top_bar, text="🕘 السجل", command=self.open_history).pack(side="right", padx=(0, 8))
+        ttk.Button(top_bar, text="🆕 مستند جديد", command=self.new_document).pack(side="right", padx=(0, 8))
+        ttk.Button(top_bar, text="← رجوع", command=self._on_back).pack(side="right", padx=(0, 8))
 
     # ---------- منطقة الصورة القابلة للتمرير ----------
     def _build_canvas_area(self):
@@ -442,6 +501,7 @@ class CDTab(ttk.Frame):
     def _build_fields(self):
         self.no_var = tk.StringVar()
         self.agence_var = tk.StringVar()
+        self.devise_var = tk.StringVar()
         self.guichet_var = tk.StringVar()
         self.caisse_var = tk.StringVar()
         self.guichetier_var = tk.StringVar()
@@ -482,6 +542,7 @@ class CDTab(ttk.Frame):
         # كانت متبوعة بكتابة أخرى بنفس السطر (يمنع الكتابة تفيض عن حدود
         # المساحة الحقيقية المتاحة لها بالمستند المطبوع).
         self._place("agence", self._entry(self.agence_var, maxlen=FIELD_LAYOUT["agence"][2]))
+        self._place("devise", self._entry(self.devise_var, maxlen=FIELD_LAYOUT["devise"][2]))
         self._place("guichet", self._entry(self.guichet_var, maxlen=FIELD_LAYOUT["guichet"][2]))
         self._place("caisse", self._entry(self.caisse_var, maxlen=FIELD_LAYOUT["caisse"][2]))
         self._place("guichetier", self._entry(self.guichetier_var, maxlen=FIELD_LAYOUT["guichetier"][2]))
@@ -526,6 +587,107 @@ class CDTab(ttk.Frame):
             var.trace_add("write", lambda *a, n=name: self._on_triangle_change(n))
 
         self.dzd_var.trace_add("write", lambda *a: self._update_net_crediter())
+
+        # حقول المكتب الثابتة (Agence/Guichet/Caisse/Guichetier) تُتذكَّر
+        # بين الجلسات — نفس الموظف/الشباك عادةً كل يوم، ما فيه داعي
+        # تُكتب من الصفر كل مرة. تُحمَّل هنا، وتُحفظ تلقائياً كل تغيير.
+        self._load_office_settings()
+        for key in OFFICE_FIELD_KEYS:
+            self._field_var(key).trace_add("write", lambda *a: self._save_office_settings())
+
+        # مسودة العمل الجاري: استرجاع تلقائي لو البرنامج انقفل بالغلط
+        # وسط التعبئة (بعد ما يسأل تأكيد)، وحفظ تلقائي بعدها لأي تعديل
+        # على حقول المسودة (راجع DRAFT_FIELD_KEYS — التاريخ/الوقت مستثنيان).
+        self._maybe_restore_draft()
+        for key in DRAFT_FIELD_KEYS:
+            self._field_var(key).trace_add("write", lambda *a: self._schedule_draft_save())
+
+    def _field_var(self, key):
+        """يرجّع StringVar الحقل المطابق لاسمه — التفاف موحّد حتى الأماكن
+        اللي تتعامل مع أسماء الحقول كنصوص (إعدادات المكتب، المسودة) ما
+        تحتاج تعرف التفاصيل الداخلية (زي date_delivrance اللي متغيّره
+        الحقيقي جوه delivrance_entry، أو passport_no اللي اسم متغيّره
+        الفعلي passport_var مو passport_no_var)."""
+        if key == "date_delivrance":
+            return self.delivrance_entry.var
+        if key == "passport_no":
+            return self.passport_var
+        return getattr(self, f"{key}_var")
+
+    # ---------- إعدادات المكتب الثابتة (تُتذكَّر بين الجلسات) ----------
+    def _load_office_settings(self):
+        settings = _load_json(CD_SETTINGS_PATH)
+        for key in OFFICE_FIELD_KEYS:
+            value = settings.get(key)
+            if value:
+                self._field_var(key).set(value)
+
+    def _save_office_settings(self):
+        _save_json(CD_SETTINGS_PATH, {key: self._field_var(key).get() for key in OFFICE_FIELD_KEYS})
+
+    # ---------- مسودة العمل الجاري (استرجاع بعد إغلاق غير متوقع) ----------
+    def _maybe_restore_draft(self):
+        draft = _load_json(CD_DRAFT_PATH)
+        if not draft:
+            return
+        restore = messagebox.askyesno(
+            "مسودة محفوظة",
+            "فيه عمل غير محفوظ من آخر مرة (يبدو إنو البرنامج انقفل قبل ما تكمل).\n"
+            "تريد نسترجعه؟",
+        )
+        if restore:
+            for key in DRAFT_FIELD_KEYS:
+                value = draft.get(key)
+                if value:
+                    self._field_var(key).set(value)
+        else:
+            self._clear_draft()
+
+    def _schedule_draft_save(self):
+        # تأجيل بسيط (بدل حفظ فوري بكل ضغطة حرف) — يجمع عدة تعديلات
+        # متتالية بحفظة وحدة، أخف على القرص بلا أي فرق ملموس للمستخدم.
+        if self._draft_save_after_id is not None:
+            self.after_cancel(self._draft_save_after_id)
+        self._draft_save_after_id = self.after(800, self._save_draft_now)
+
+    def _save_draft_now(self):
+        self._draft_save_after_id = None
+        if self.has_unsaved_data():
+            _save_json(CD_DRAFT_PATH, {key: self._field_var(key).get() for key in DRAFT_FIELD_KEYS})
+        else:
+            self._clear_draft()
+
+    def _clear_draft(self):
+        try:
+            os.remove(CD_DRAFT_PATH)
+        except OSError:
+            pass
+
+    def has_unsaved_data(self):
+        """True لو فيه أي بيانات مكتوبة (شخصية أو تاريخ/وقت) ما اتحفظت
+        بمستند بعد — تُستخدم قبل أي مغادرة (رجوع، إغلاق البرنامج) حتى
+        نأكد قبل ما نضيّعها. حقول المكتب الثابتة (Agence/Guichet/...)
+        مستثناة عمداً — محفوظة أصلاً بإعداداتها الخاصة، تعبئتها وحدها
+        مو "عمل جاري" يستاهل تنبيه."""
+        for key in _TRANSACTIONAL_DRAFT_KEYS:
+            if (self._field_var(key).get() or "").strip():
+                return True
+        d = self.date_entry
+        if d.day_var.get() or d.month_var.get() or d.year_var.get():
+            return True
+        if self.time_entry.var.get():
+            return True
+        return False
+
+    def _on_back(self):
+        if self.has_unsaved_data():
+            leave = messagebox.askyesno(
+                "تنبيه",
+                "فيه بيانات مكتوبة ما اتحفظت بمستند بعد.\nتريد تخرج بدون إنشاء المستند؟",
+            )
+            if not leave:
+                return
+        self.app.show_home()
 
     def _update_net_crediter(self):
         val = _safe_float_or_none(self.dzd_var.get())
@@ -601,6 +763,7 @@ class CDTab(ttk.Frame):
             "date": entry_date,
             "time": time_str,
             "agence": self.agence_var.get().strip(),
+            "devise": self.devise_var.get().strip(),
             "guichet": self.guichet_var.get().strip(),
             "caisse": self.caisse_var.get().strip(),
             "guichetier": self.guichetier_var.get().strip(),
@@ -621,10 +784,14 @@ class CDTab(ttk.Frame):
         ("passager", "اسم الراكب"),
     ]
 
-    def generate_document(self):
+    def _do_generate(self):
+        """يتحقق من الحقول الأساسية، يبني المستند، يسجّله بسجل CD
+        (قابل للبحث لاحقاً من "🕘 السجل")، وينظّف مسودة العمل الجاري —
+        نقطة مشتركة بين زر التوليد وزر الطباعة، حتى ما يتكرر نفس المنطق.
+        يرجّع مسار الملف، أو None لو انلغى أو صار خطأ."""
         if not hasattr(self, "layout"):
             messagebox.showwarning("تنبيه", "الورقة لسا ما جهزت، انتظر لحظة وحاول مرة ثانية")
-            return
+            return None
         data = self.collect_data()
 
         missing = [label for key, label in self._REQUIRED_FIELDS if not data.get(key)]
@@ -636,14 +803,145 @@ class CDTab(ttk.Frame):
                 + "\n\nتريد تكمل وتنشئ المستند مع هذا؟",
             )
             if not proceed:
-                return
+                return None
 
         try:
             path = generate_cd_document(data)
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("خطأ", f"تعذر إنشاء المستند:\n{exc}")
+            return None
+
+        try:
+            log_cd_document({
+                "dossier_no": data["no"],
+                "passager": data["passager"],
+                "passport_no": data["passport_no"],
+                "doc_date": data["date"].isoformat() if data["date"] else None,
+                "agence": data["agence"],
+                "guichet": data["guichet"],
+                "eur_amount": data["eur"],
+                "dzd_amount": data["dzd"],
+                "file_path": path,
+            })
+        except Exception:  # noqa: BLE001
+            pass  # فشل تسجيل السجل ثانوي — ما يوقف تسليم المستند الفعلي
+
+        self._clear_draft()  # المعاملة كملت واتحفظت كمستند حقيقي، ما تحتاج مسودة بعدها
+        return path
+
+    def generate_document(self):
+        path = self._do_generate()
+        if path:
+            open_path(path)
+
+    def _print_flow(self):
+        """يولّد المستند (نفس مسار زر التوليد)، ويسأل عدد النسخ، ويرسلها
+        مباشرة للطابعة الافتراضية بدون فتح Word يدوياً — مفيد لما تحتاج
+        نسخة للزبون ونسخة للأرشيف بضغطة وحدة."""
+        path = self._do_generate()
+        if not path:
             return
-        open_path(path)
+        copies = simpledialog.askinteger(
+            "طباعة", "عدد النسخ؟ (زي نسخة للزبون ونسخة للأرشيف)",
+            initialvalue=1, minvalue=1, maxvalue=10, parent=self,
+        )
+        if not copies:
+            return
+        try:
+            for _ in range(copies):
+                os.startfile(path, "print")
+        except OSError as exc:
+            messagebox.showerror("خطأ", f"تعذر إرسال الملف للطابعة:\n{exc}")
+
+    def new_document(self):
+        """يفضّي حقول المعاملة الحالية (رقم/تاريخ/راكب/جواز/مبالغ) لبدء
+        مستند جديد، ويُبقي حقول المكتب الثابتة (Agence/Guichet/Caisse/
+        Guichetier) كما هي — مفيد لما تحتاج عدة مستندات لعدة أشخاص بنفس
+        اليوم/الشباك بدون إعادة كتابتها في كل مرة."""
+        if self.has_unsaved_data():
+            proceed = messagebox.askyesno(
+                "تنبيه",
+                "فيه بيانات مكتوبة ما اتحفظت بمستند بعد.\nتريد تفضّي الحقول وتبدأ مستند جديد؟",
+            )
+            if not proceed:
+                return
+        for key in _TRANSACTIONAL_DRAFT_KEYS:
+            self._field_var(key).set("")
+        self.date_entry.clear()
+        self.time_entry.clear()
+        self._clear_draft()
+
+    # ---------- سجل المستندات السابقة ----------
+    def open_history(self):
+        CDHistoryWindow(self)
 
     def refresh(self):
         pass
+
+
+class CDHistoryWindow(tk.Toplevel):
+    """نافذة سجل مستندات CD السابقة — بحث سريع (اسم الراكب/رقم البوردرو/
+    رقم الجواز) وإعادة فتح مستند قديم بضغطتين، بدل إعادة تعبئة من الصفر
+    أو البحث يدوياً بمجلدات الأقراص."""
+
+    def __init__(self, cd_tab):
+        super().__init__(cd_tab)
+        self.title("سجل مستندات CD")
+        self.geometry("760x420")
+        self.transient(cd_tab.winfo_toplevel())
+
+        top = ttk.Frame(self, padding=10)
+        top.pack(fill="x")
+        ttk.Label(top, text="بحث (اسم الراكب / رقم البوردرو / رقم الجواز):").pack(side="left")
+        self.query_var = tk.StringVar()
+        entry = ttk.Entry(top, textvariable=self.query_var)
+        entry.pack(side="left", fill="x", expand=True, padx=(8, 0))
+        entry.bind("<KeyRelease>", lambda _e: self._refresh())
+        entry.focus_set()
+
+        columns = ("dossier_no", "passager", "passport_no", "doc_date", "agence", "created_at")
+        headers = {
+            "dossier_no": "رقم البوردرو", "passager": "الراكب", "passport_no": "رقم الجواز",
+            "doc_date": "تاريخ المعاملة", "agence": "Agence", "created_at": "وقت الإنشاء",
+        }
+        self.tree = ttk.Treeview(self, columns=columns, show="headings", selectmode="browse")
+        for col in columns:
+            self.tree.heading(col, text=headers[col])
+            self.tree.column(col, width=110, anchor="center")
+        self.tree.pack(fill="both", expand=True, padx=10, pady=10)
+        self.tree.bind("<Double-1>", lambda _e: self._open_selected())
+
+        btns = ttk.Frame(self, padding=(10, 0, 10, 10))
+        btns.pack(fill="x")
+        ttk.Button(btns, text="📂 فتح الملف المحدَّد", command=self._open_selected).pack(side="left")
+        ttk.Button(btns, text="إغلاق", command=self.destroy).pack(side="right")
+
+        self._rows = []
+        self._refresh()
+
+    def _refresh(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self._rows = search_cd_documents(self.query_var.get().strip())
+        for row in self._rows:
+            self.tree.insert(
+                "", "end", iid=str(row["id"]),
+                values=(
+                    row.get("dossier_no") or "",
+                    row.get("passager") or "",
+                    row.get("passport_no") or "",
+                    row.get("doc_date") or "",
+                    row.get("agence") or "",
+                    (row.get("created_at") or "")[:16],
+                ),
+            )
+
+    def _open_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        row = next((r for r in self._rows if str(r["id"]) == sel[0]), None)
+        if row is None:
+            return
+        if not open_path(row["file_path"]):
+            messagebox.showerror("خطأ", "الملف غير موجود (ربما نُقل أو حُذف).")

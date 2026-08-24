@@ -179,6 +179,11 @@ class MaskedDateEntry(tk.Frame):
         """يرجّع كائن date، أو يرمي ValueError لو التاريخ ناقص/غلط."""
         return datetime.strptime(self.var.get(), "%d/%m/%Y").date()
 
+    def clear(self):
+        """يفضّي الحقل بالكامل — مفيد لبدء معاملة/مستند جديد."""
+        self.var.set("")
+        self._validate()
+
 
 # فترات دوام العمل المسموحة (بالدقيقة من بداية اليوم): 09:00–11:59
 # و13:15–15:47 — أي وقت خارج هالفترتين مرفوض بالكامل (يمنع أي وقت قبل
@@ -297,6 +302,13 @@ class MaskedTimeEntry(tk.Frame):
         if not _time_allowed(hour, minute):
             raise ValueError("الوقت خارج فترات الدوام المسموحة")
         return val
+
+    def clear(self):
+        """يفضّي الحقل بالكامل — مفيد لبدء معاملة/مستند جديد."""
+        self._hour_digits = ""
+        self._minute_digits = ""
+        self._fresh = False
+        self._refresh()
 
 
 class SplitDateEntry(tk.Frame):
@@ -696,3 +708,16 @@ class SplitDateEntry(tk.Frame):
         if not self._day_digits or not self._month_digits or len(year_s) != 4:
             raise ValueError("تاريخ غير صحيح")
         return date(int(year_s), int(self._month_digits), int(self._day_digits))
+
+    def clear(self):
+        """يفضّي اليوم/الشهر/السنة الثلاثة — مفيد لبدء معاملة/مستند جديد."""
+        self._day_digits = ""
+        self._day_fresh = False
+        self.day_var.set("")
+        self._month_digits = ""
+        self._month_letters = ""
+        self._month_fresh = False
+        self._set_month_display("")
+        self.year_var.set("")
+        self.reposition_year()
+        self._validate()

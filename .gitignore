@@ -6,3 +6,8 @@ office_system.db
 
 # مستندات مولّدة + صور خلفية مخزّنة مؤقتاً (cache) — تُنشأ من جديد تلقائياً عند الحاجة
 output/
+
+# إعدادات المكتب المحلية (آخر Agence/Guichet/Caisse/Guichetier) ومسودة
+# العمل الجاري بشاشة CD — حالة خاصة بجهاز/جلسة المستخدم، مو جزء من الكود
+cd_settings.json
+cd_draft.json

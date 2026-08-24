@@ -39,6 +39,13 @@ LINE_HEIGHT_MIDDLE_PT = 12.45  # تباعد أسطر خط 11 (من Model Vierge)
 TITLE_COL = 25   # عدد المسافات قبل العنوان (محسوبة من: 182.8-30.5 / 6.0)
 DATE_COL = 54    # عدد المسافات قبل التاريخ (محسوبة من: 354.5-30.5 / 6.0)
 
+# سطر Devise: نفس طول تسمية Agence بالضبط ("Devise ......: ")، فبداية
+# الحقل بنفس العمود (15). كود عملة/اسمها (زي EUR أو Euro)، ما فيه شي
+# بعده بنفس السطر فما يحتاج حد أقصى مشدد — نفس عرض Agence/Caisse (32).
+DEVISE_LABEL = "Devise ......: "
+DEVISE_COL = len(DEVISE_LABEL)
+DEVISE_FIELD_WIDTH = 32
+
 # سطر Guichet: فراغ واحد بعد النقطتين، ثم حقل الكتابة (30 حرف بالضبط —
 # هذا حده الأقصى)، ثم فراغين، ثم يبدأ اسم الراكب المكرر — يعني 33 فراغ
 # بالضبط من النقطتين لبداية التكرار (1 فاصل + 30 حقل + 2 فراغ).
@@ -202,7 +209,7 @@ def _build_document_entries(data):
         ("", S),
         ("", S),
         (f"Agence ......: {data['agence']}", M),
-        (f"Devise ......: {data.get('devise', '')}", M),
+        (f"{DEVISE_LABEL}{data.get('devise', '')}", M),
         (f"{GUICHET_LABEL}{data['guichet']}".ljust(GUICHET_NAME_COL) + data['passager'], M),
         (f"Caisse ......: {data['caisse']}", M),
         (f"Guichetier ..: {data['guichetier']}", M),
@@ -266,14 +273,19 @@ def _build_docx(data):
 
 
 def generate_cd_document(data):
-    """يبني المستند ويحفظه كملف Word نهائي، ويرجّع مساره."""
+    """يبني المستند ويحفظه كملف Word نهائي، ويرجّع مساره.
+
+    المستندات الحقيقية (بعكس ملفات المعاينة/الخلفية المخزّنة مؤقتاً) تُحفظ
+    بمجلد فرعي حسب الشهر/السنة (output/CD/2026-08/...) تلقائياً — أسهل
+    للأرشفة اليدوية لاحقاً بدل تراكم كل الملفات بمجلد واحد مسطّح."""
     doc = _build_docx(data)
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    safe_passager = "".join(c for c in data["passager"] if c.isalnum() or c in " _-").strip() or "sans_nom"
     now = datetime.now()
+    month_dir = os.path.join(OUTPUT_DIR, now.strftime("%Y-%m"))
+    os.makedirs(month_dir, exist_ok=True)
+    safe_passager = "".join(c for c in data["passager"] if c.isalnum() or c in " _-").strip() or "sans_nom"
     filename = f"CD_{safe_passager}_{now.strftime('%Y%m%d_%H%M%S')}.docx"
-    out_path = os.path.join(OUTPUT_DIR, filename)
+    out_path = os.path.join(month_dir, filename)
     doc.save(out_path)
     return out_path
 
@@ -290,6 +302,7 @@ FIELD_LAYOUT = {
     # .a_right_edge_px)، مُستخدم منها بس رقم السطر (3) لحساب الارتفاع y.
     "time": (3, 70, 6),
     "agence": (8, 15, 32),
+    "devise": (9, DEVISE_COL, DEVISE_FIELD_WIDTH),
     "guichet": (10, GUICHET_VALUE_COL, GUICHET_FIELD_WIDTH),
     "caisse": (11, 15, 32),
     "guichetier": (12, 15, 15),

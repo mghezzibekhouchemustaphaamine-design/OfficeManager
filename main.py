@@ -5,7 +5,7 @@
     python main.py
 """
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 
 from database import init_db
 from ui.dossier_tab import DossierTab
@@ -45,6 +45,11 @@ class OfficeApp(tk.Tk):
         self.bind_all("<FocusIn>", self._on_any_focus_in, add="+")
         self.bind("<Deactivate>", self._on_window_deactivate)
 
+        # إغلاق النافذة (زر X) وفيه بيانات CD مكتوبة ما اتحفظت بمستند —
+        # نأكد قبل ما نضيّعها، بدل إغلاق صامت (المسودة المحفوظة تلقائياً
+        # تحمي من هذا أصلاً، بس التأكيد الصريح خط دفاع إضافي مباشر).
+        self.protocol("WM_DELETE_WINDOW", self._on_close_request)
+
         self.show_home()
 
     def _on_any_focus_in(self, event):
@@ -56,6 +61,23 @@ class OfficeApp(tk.Tk):
     def clear_body(self):
         for widget in self.body.winfo_children():
             widget.destroy()
+
+    def _current_cd_tab(self):
+        for widget in self.body.winfo_children():
+            if isinstance(widget, CDTab):
+                return widget
+        return None
+
+    def _on_close_request(self):
+        cd = self._current_cd_tab()
+        if cd is not None and cd.has_unsaved_data():
+            leave = messagebox.askyesno(
+                "تنبيه",
+                "فيه بيانات مكتوبة بشاشة CD ما اتحفظت بمستند بعد.\nتريد تغلق البرنامج بدون إنشاء المستند؟",
+            )
+            if not leave:
+                return
+        self.destroy()
 
     # ---------- الشاشة الرئيسية: قائمة الخدمات ----------
     def show_home(self):

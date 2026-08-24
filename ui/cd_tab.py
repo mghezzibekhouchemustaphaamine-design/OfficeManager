@@ -22,7 +22,10 @@ from ui.cd_document import (
     TAUX_MAX_VALUE,
     TAUX_DEC_DIGITS,
 )
-from ui.widgets import MaskedDateEntry, MaskedTimeEntry, SplitDateEntry, select_all_on_real_focus
+from ui.widgets import (
+    MaskedDateEntry, MaskedTimeEntry, SplitDateEntry,
+    select_all_on_real_focus, bind_triple_click_select_all, bind_enter_advances_focus,
+)
 from utils import open_path
 
 # ملفات حالة محلية (مو مرتبطة بمشروع Git — راجع .gitignore): إعدادات
@@ -114,17 +117,31 @@ class CDTab(ttk.Frame):
 
         self._draft_save_after_id = None
 
+        # تراجع/إعادة (Ctrl+Z / Ctrl+Y) — راجع الشرح الكامل عند _undo بالأسفل.
+        self._undo_stack = []
+        self._redo_stack = []
+        self._last_committed_snapshot = None
+        self._undo_checkpoint_after_id = None
+
         self._build_top_bar()
         self._build_canvas_area()
         self.after(50, self._load_background)
 
         # اختصارات لوحة مفاتيح: Ctrl+P توليد+طباعة، Ctrl+N مستند جديد
-        # (نفس الحقول المشتركة)، Esc رجوع (بنفس حماية البيانات الجارية).
+        # (نفس الحقول المشتركة)، Esc رجوع (بنفس حماية البيانات الجارية)،
+        # Ctrl+Z تراجع، Ctrl+Y أو Ctrl+Shift+Z إعادة (نفس عادة برامج
+        # الكتابة المعروفة — Ctrl+Y الأشيع بويندوز، Ctrl+Shift+Z بديل
+        # شائع بمحررات ثانية).
         self.bind_all("<Control-p>", lambda _e: self._print_flow())
         self.bind_all("<Control-P>", lambda _e: self._print_flow())
         self.bind_all("<Control-n>", lambda _e: self.new_document())
         self.bind_all("<Control-N>", lambda _e: self.new_document())
         self.bind_all("<Escape>", lambda _e: self._on_back())
+        self.bind_all("<Control-z>", lambda _e: self._undo())
+        self.bind_all("<Control-Z>", lambda _e: self._undo())
+        self.bind_all("<Control-y>", lambda _e: self._redo())
+        self.bind_all("<Control-Y>", lambda _e: self._redo())
+        self.bind_all("<Control-Shift-Z>", lambda _e: self._redo())
 
     # ---------- الشريط العلوي ----------
     def _build_top_bar(self):
@@ -332,6 +349,8 @@ class CDTab(ttk.Frame):
         # الخانة (راجع select_all_on_real_focus بـui.widgets) — عندها
         # المؤشر والكتابة الجزئية تبقى كما هي بالضبط، نكمّل من نفس المكان.
         e.bind("<FocusIn>", lambda _ev: select_all_on_real_focus(e))
+        bind_triple_click_select_all(e)
+        bind_enter_advances_focus(e)
         return e
 
     def _numeric_entry(self, var, maxlen):
@@ -347,6 +366,8 @@ class CDTab(ttk.Frame):
         # أوتوماتيكياً بأول رقم يُكتب. ما ينطبق لمجرد Alt+Tab من برنامج
         # آخر (راجع الملاحظة بـ_entry أعلاه).
         e.bind("<FocusIn>", lambda _ev: select_all_on_real_focus(e))
+        bind_triple_click_select_all(e)
+        bind_enter_advances_focus(e)
         return e
 
     def _alnum_entry(self, var, allow_space=False, maxlen=None):
@@ -370,6 +391,8 @@ class CDTab(ttk.Frame):
         self._add_hover(e, var)
         # ما ينطبق لمجرد Alt+Tab من برنامج آخر (راجع الملاحظة بـ_entry).
         e.bind("<FocusIn>", lambda _ev: select_all_on_real_focus(e))
+        bind_triple_click_select_all(e)
+        bind_enter_advances_focus(e)
 
         def force_upper(*_a):
             cur = var.get()
@@ -430,18 +453,31 @@ class CDTab(ttk.Frame):
         # بكل الحالات (حتى لو الخروج بسبب Alt+Tab)، بس التحديد الكامل
         # للنص هو اللي ما يصير إلا بتنقّل حقيقي.
         e.bind("<FocusIn>", lambda _ev: select_all_on_real_focus(e))
+        bind_triple_click_select_all(e)
+        bind_enter_advances_focus(e)
 
         def format_on_leave(_ev=None):
             raw = var.get().strip()
-            if not raw or ("." in raw and "," in raw):
-                return  # فاضي، أو فيه فاصل آلاف وفاصلة عشرية معاً -> منسَّق أصلاً
+            if not raw:
+                return
             sep = "," if "," in raw else ("." if "." in raw else None)
             int_part, dec_part = raw.split(sep, 1) if sep else (raw, "")
             if (int_part and not int_part.isdigit()) or (dec_part and not dec_part.isdigit()):
+                # فيه أكثر من فاصل (زي "1.234,56" منسَّق أصلاً بفاصل آلاف)
+                # أو محتوى غير متوقّع — نتجاهله، ما نلمسه.
                 return
             int_part = int_part or "0"
             dec_part = (dec_part + "0" * decimals)[:decimals]
-            var.set(f"{int(int_part):,}".replace(",", ".") + "," + dec_part)
+            formatted = f"{int(int_part):,}".replace(",", ".") + "," + dec_part
+            if formatted == raw:
+                # منسَّق أصلاً بالضبط (زي taux تحت الألف اللي ما يحتاج فاصل
+                # آلاف إطلاقاً، فيبقى فيه فاصلة عشرية بس بلا نقطة، والفحص
+                # القديم كان يفوته) — لازم نتجاهله صراحة، وإلا var.set()
+                # يعيد إطلاق trace الكتابة بلا داعي (خطر حقيقي الآن: يعيد
+                # حساب Soit/Montant en devise أوتوماتيكياً بمجرد ما تبعد
+                # عن حقل taux، حتى لو ما كتبت فيه شي جديد).
+                return
+            var.set(formatted)
             # Tk يعطّل "validate" أوتوماتيكياً (يرجعه "none") بمجرد ما
             # نغيّر النص برمجياً (var.set) بدل كتابة حقيقية — لازم
             # نرجّعه "key" يدوياً، وإلا القيود (الحد الأقصى...) تنعطّل
@@ -449,7 +485,41 @@ class CDTab(ttk.Frame):
             e.configure(validate="key")
 
         e.bind("<FocusOut>", format_on_leave, add="+")
+        # دبل-كليك يحدّد جزءاً وحيداً بس (الصحيح قبل الفاصلة، أو العشري
+        # بعدها) حسب مكان النقرة — نفس مبدأ حقل Obtent بالضبط (راجع
+        # MaskedDateEntry._select_segment_at بـui.widgets)، مُطبَّق هنا
+        # على كل حقول المبالغ (EUR/DZD/taux) لأنها الثلاثة تُبنى من نفس
+        # هالدالة. ملاحظة للمستقبل: نفس الفكرة (دبل-كليك = تحديد جزء
+        # واحد من عدة قابلة للتمييز، حسب مكان النقرة) ممكن تنطبق على أي
+        # حقل نص مركّب آخر لاحقاً — راجع _select_currency_segment/
+        # MaskedDateEntry._select_segment_at كمرجعين جاهزين لنفس النمط.
+        e.bind("<Double-Button-1>", lambda ev: self._select_currency_segment(e, e.index(f"@{ev.x}")))
         return e
+
+    def _select_currency_segment(self, entry, idx):
+        """دبل-كليك بحقل مبلغ: يحدّد الجزء الصحيح (قبل الفاصلة العشرية)
+        أو الجزء العشري (بعدها) بس — حسب مكان النقرة (idx: فهرس الحرف
+        الأقرب لمكان النقرة). لو ماكو فاصلة أصلاً بعد (لسا رقم صحيح بلا
+        كسور)، يحدد كل شي (ماكو قطعتين نفرّق بينهم أصلاً).
+
+        الفاصلة العشرية دائماً "," (لو موجودة "." كمان فهي فاصل آلاف —
+        نستخدم rindex حتى نلقط الفاصلة الأخيرة، الحقيقية، لا أي نقطة
+        آلاف قبلها). أثناء الكتابة الخام (قبل التنسيق النهائي) ممكن
+        الفاصل يكون "." بدل "," (المستخدم يقدر يكتب بالاثنين) — نتحقق
+        من "," أولاً، وإلا نجرّب "."."""
+        text = entry.get()
+        if "," in text:
+            sep = text.rindex(",")
+        elif "." in text:
+            sep = text.index(".")
+        else:
+            entry.select_range(0, tk.END)
+            entry.icursor(tk.END)
+            return "break"
+        start, end = (0, sep) if idx <= sep else (sep + 1, len(text))
+        entry.select_range(start, end)
+        entry.icursor(end)
+        return "break"
 
     def _add_hover(self, widget, var=None):
         """يظهر إطار ملوّن ثابت طول ما الفأرة فوق الخانة، ويختفي لما الفأرة
@@ -579,12 +649,17 @@ class CDTab(ttk.Frame):
         self.net_crediter_lbl = self._label_display(self.net_crediter_var, anchor="e")
         self._place("net_crediter", self.net_crediter_lbl)
 
-        # مثلث Taux/EUR/DZD: تكتب أي خانتين بأي ترتيب، والثالثة تتحسب لحالها
+        # علاقة Taux/EUR/DZD: taux (Tx de change) ثابت لا يتغيّر إلا
+        # بالكتابة اليدوية (راجع _recompute_dzd/_recompute_eur). تعديل
+        # Montant en devise (EUR) أو Tx de change نفسه يضرب أوتوماتيكياً
+        # في taux ويكتب النتيجة بـSoit (DZD). تعديل Soit يقسم أوتوماتيكياً
+        # على taux ويكتب النتيجة بـMontant en devise. كل اتجاه مستقل
+        # ومباشر (مو "آخر حقلين اتعدّلا") — بالضبط زي ما طلبت.
         self._triangle_vars = {"taux": self.taux_var, "eur": self.eur_var, "dzd": self.dzd_var}
-        self._triangle_edit_order = []
         self._triangle_updating = False
-        for name, var in self._triangle_vars.items():
-            var.trace_add("write", lambda *a, n=name: self._on_triangle_change(n))
+        self.eur_var.trace_add("write", lambda *a: self._recompute_dzd())
+        self.taux_var.trace_add("write", lambda *a: self._recompute_dzd())
+        self.dzd_var.trace_add("write", lambda *a: self._recompute_eur())
 
         self.dzd_var.trace_add("write", lambda *a: self._update_net_crediter())
 
@@ -601,6 +676,14 @@ class CDTab(ttk.Frame):
         self._maybe_restore_draft()
         for key in DRAFT_FIELD_KEYS:
             self._field_var(key).trace_add("write", lambda *a: self._schedule_draft_save())
+
+        # تراجع/إعادة: نفس نطاق حقول المسودة بالضبط (DRAFT_FIELD_KEYS —
+        # التاريخ/الوقت مستثنيان لنفس السبب: تفضّل تكتبهما يدوياً دائماً،
+        # واسترجاع حالتهما الداخلية أعقد وأخطر لو انحرف). الحالة البدائية
+        # (بعد استرجاع الإعدادات/المسودة لو وُجدت) هي أول نقطة تراجع.
+        self._last_committed_snapshot = self._snapshot()
+        for key in DRAFT_FIELD_KEYS:
+            self._field_var(key).trace_add("write", lambda *a: self._maybe_checkpoint_undo())
 
     def _field_var(self, key):
         """يرجّع StringVar الحقل المطابق لاسمه — التفاف موحّد حتى الأماكن
@@ -663,6 +746,67 @@ class CDTab(ttk.Frame):
         except OSError:
             pass
 
+    # ---------- تراجع/إعادة (Ctrl+Z / Ctrl+Y) ----------
+    def _snapshot(self):
+        """صورة كاملة لكل حقول المسودة الحالية (نفس نطاق DRAFT_FIELD_KEYS
+        بالضبط — التاريخ/الوقت مستثنيان، راجع الشرح بمكان تعريفها)."""
+        return {key: self._field_var(key).get() for key in DRAFT_FIELD_KEYS}
+
+    def _restore_snapshot(self, snapshot):
+        # نمنع إعادة حساب المثلث (taux/eur/dzd) وسط الاسترجاع — ترتيب
+        # استرجاع الحقول عشوائي (dict عادي)، فلو تُرك المثلث شغّال ممكن
+        # يحسب Soit من eur الجديد + taux القديم (لسا ما وصل دوره)، فيطلع
+        # رقم غلط قبل ما نوصل نضبط taux — نطبّق كل القيم أولاً كما هي
+        # بالضبط، بلا أي حساب وسيط.
+        self._triangle_updating = True
+        try:
+            for key, value in snapshot.items():
+                self._field_var(key).set(value)
+        finally:
+            self._triangle_updating = False
+        # نفس ملاحظة _currency_entry: var.set() يعطّل validate أوتوماتيكياً
+        # — نرجّعه يدوياً لحقول المبالغ الثلاثة.
+        for key in ("eur", "dzd", "taux"):
+            self.field_widgets[key].configure(validate="key")
+
+    def _undo(self):
+        if not self._undo_stack:
+            return
+        current = self._snapshot()
+        self._redo_stack.append(current)
+        previous = self._undo_stack.pop()
+        self._restore_snapshot(previous)
+        self._last_committed_snapshot = previous
+
+    def _redo(self):
+        if not self._redo_stack:
+            return
+        current = self._snapshot()
+        self._undo_stack.append(current)
+        nxt = self._redo_stack.pop()
+        self._restore_snapshot(nxt)
+        self._last_committed_snapshot = nxt
+
+    def _maybe_checkpoint_undo(self):
+        # نتجاهل الكتابة الناتجة عن استرجاع تراجع/إعادة أو حساب المثلث
+        # نفسه — بس التعديل الحقيقي (كتابة يدوية فعلية) يستاهل نقطة تراجع.
+        if self._triangle_updating:
+            return
+        if self._undo_checkpoint_after_id is not None:
+            self.after_cancel(self._undo_checkpoint_after_id)
+        # تأجيل بسيط (زي حفظ المسودة بالضبط) — يجمع دفعة كتابة متتالية
+        # بنقطة تراجع وحدة، بدل نقطة لكل حرف (مزعج وغير مفيد عملياً).
+        self._undo_checkpoint_after_id = self.after(800, self._commit_undo_checkpoint)
+
+    def _commit_undo_checkpoint(self):
+        self._undo_checkpoint_after_id = None
+        current = self._snapshot()
+        if current == self._last_committed_snapshot:
+            return
+        self._undo_stack.append(self._last_committed_snapshot)
+        self._redo_stack.clear()  # تعديل جديد بعد تراجع يُبطل تاريخ الإعادة (نفس عادة برامج الكتابة)
+        self._last_committed_snapshot = current
+
     def has_unsaved_data(self):
         """True لو فيه أي بيانات مكتوبة (شخصية أو تاريخ/وقت) ما اتحفظت
         بمستند بعد — تُستخدم قبل أي مغادرة (رجوع، إغلاق البرنامج) حتى
@@ -693,49 +837,38 @@ class CDTab(ttk.Frame):
         val = _safe_float_or_none(self.dzd_var.get())
         self.net_crediter_var.set(f"{val:,.2f}".translate(str.maketrans(",.", ".,")) if val is not None else "")
 
-    def _on_triangle_change(self, name):
+    def _recompute_dzd(self):
+        """Montant en devise (EUR) أو Tx de change اتغيّرا -> Soit (DZD)
+        = EUR × taux، أوتوماتيكياً. taux نفسه أبداً ما يتغيّر من هون."""
         if self._triangle_updating:
             return
-        if name in self._triangle_edit_order:
-            self._triangle_edit_order.remove(name)
-        self._triangle_edit_order.append(name)
-        self._triangle_edit_order = self._triangle_edit_order[-2:]
-
-        if len(self._triangle_edit_order) < 2:
+        taux = _safe_float_or_none(self.taux_var.get())
+        eur = _safe_float_or_none(self.eur_var.get())
+        if taux is None or eur is None:
             return
+        self._set_triangle_result("dzd", eur * taux)
 
-        target = (set(self._triangle_vars) - set(self._triangle_edit_order)).pop()
-        known = {}
-        for n in self._triangle_edit_order:
-            val = _safe_float_or_none(self._triangle_vars[n].get())
-            if val is None:
-                return
-            known[n] = val
-
-        try:
-            if target == "dzd":
-                result = known["taux"] * known["eur"]
-            elif target == "eur":
-                if known["taux"] == 0:
-                    return
-                result = known["dzd"] / known["taux"]
-            else:  # target == "taux"
-                if known["eur"] == 0:
-                    return
-                result = known["dzd"] / known["eur"]
-        except (KeyError, ZeroDivisionError):
+    def _recompute_eur(self):
+        """Soit (DZD) اتغيّر -> Montant en devise (EUR) = DZD ÷ taux،
+        أوتوماتيكياً. taux نفسه أبداً ما يتغيّر من هون."""
+        if self._triangle_updating:
             return
+        taux = _safe_float_or_none(self.taux_var.get())
+        dzd = _safe_float_or_none(self.dzd_var.get())
+        if taux is None or dzd is None or taux == 0:
+            return
+        self._set_triangle_result("eur", dzd / taux)
 
+    def _set_triangle_result(self, key, result):
         self._triangle_updating = True
         try:
-            # الثلاثة (taux/eur/dzd) الآن نفس نوع الحقل (_currency_entry)
-            # وناخذ نفس التنسيق الفرنسي لما تُحسب أوتوماتيكياً — فقط عدد
-            # الأرقام العشرية يختلف (7 لـtaux، 2 للباقي).
-            decimals = TAUX_DEC_DIGITS if target == "taux" else 2
-            self._triangle_vars[target].set(f"{result:,.{decimals}f}".translate(str.maketrans(",.", ".,")))
+            # eur/dzd المحسوبة أوتوماتيكياً تاخذ نفس التنسيق الفرنسي
+            # اللي ياخذوه لما تُكتبان يدوياً (فاصل آلاف "." + فاصلة
+            # عشرية "," برقمين عشريين).
+            self._triangle_vars[key].set(f"{result:,.2f}".translate(str.maketrans(",.", ".,")))
             # نفس ملاحظة _currency_entry: تعديل النص برمجياً (var.set)
             # يعطّل validate أوتوماتيكياً — نرجّعه يدوياً.
-            self.field_widgets[target].configure(validate="key")
+            self.field_widgets[key].configure(validate="key")
         finally:
             self._triangle_updating = False
 

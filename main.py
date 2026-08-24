@@ -30,7 +30,28 @@ class OfficeApp(tk.Tk):
         self.body = ttk.Frame(self, padding=20)
         self.body.pack(fill="both", expand=True)
 
+        # لما نافذة البرنامج تفقد التركيز على مستوى النظام (Alt+Tab
+        # لبرنامج آخر)، نلتقط الخانة اللي فيها التركيز فعلياً وقتها —
+        # تُستخدم بواجهات الحقول (ui/widgets.py: is_window_reactivation_focus)
+        # للتفريق بين رجوع النافذة نفسها للواجهة (ما نلمس فيه شي) وبين
+        # تنقّل حقيقي بين الخانات (يحدّد كل المكتوب زي المطلوب). بدون
+        # هالتفريق، أي رجوع من برنامج آخر كان يحدّد كل الكتابة الجارية
+        # ويجبر إعادتها من جديد بدل إكمالها من مكانها.
+        #
+        # نتتبّع "آخر خانة فيها تركيز" باستمرار عبر bind_all (يشتغل مع
+        # أي خانة بكل التطبيق، حتى لو ما عندها أي ربط خاص منا — أزرار،
+        # خانات بتبويب ثاني...) بدل الاعتماد على focus_get() لحظة حدث
+        # Deactivate نفسه (توقيته غير مضمون، ممكن يرجع فاضي وقتها).
+        self.bind_all("<FocusIn>", self._on_any_focus_in, add="+")
+        self.bind("<Deactivate>", self._on_window_deactivate)
+
         self.show_home()
+
+    def _on_any_focus_in(self, event):
+        self._current_focus_widget = event.widget
+
+    def _on_window_deactivate(self, _event):
+        self._deactivated_focus_widget = getattr(self, "_current_focus_widget", None)
 
     def clear_body(self):
         for widget in self.body.winfo_children():

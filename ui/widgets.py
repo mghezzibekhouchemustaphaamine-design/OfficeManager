@@ -20,8 +20,72 @@ _ENTRY_STYLE = dict(
 )
 
 
+# لما نافذة البرنامج تفقد التركيز على مستوى النظام (Alt+Tab لبرنامج
+# آخر)، Tk يرسل حدث <Deactivate> للنافذة الرئيسية (Toplevel) — بغض
+# النظر عن أي خانة بالضبط فيها التركيز وقتها، وحتى لو كانت خانة "عادية"
+# غير مجهّزة بأي ربط خاص منا (زر، خانة بتبويب ثاني...). main.py يربط
+# هالحدث ويلتقط فيه الخانة اللي فيها التركيز فعلياً (focus_get())
+# ويخزّنها بـ"_deactivated_focus_widget" على النافذة. لما تِرجع النافذة
+# للواجهة (Alt+Tab بالعكس)، Tk يرجّع التركيز لنفس تلك الخانة تلقائياً
+# (FocusIn عليها) — وهالدالتين تحت تفرّقان هالحالة عن تنقّل حقيقي بين
+# الخانات (Tab/نقرة)، بمقارنة الخانة الحالية بالخانة الملتقطة وقت فقدان
+# النافذة تركيزها. أمتن من تتبّع كل خانة لحالها (FocusOut/FocusIn) لأنها
+# ما تعتمد إطلاقاً على تعاون كل خانة أخرى بالتطبيق (أزرار، خانات بتبويب
+# ثاني...) — الالتقاط مركزي مرة وحدة على مستوى النافذة كلها.
+def is_window_reactivation_focus(widget):
+    """True لو هالFocusIn ناتج عن رجوع نافذة البرنامج نفسها للواجهة
+    (Alt+Tab من برنامج آخر ثم العودة) وهي كانت أصلاً آخر خانة فيها
+    التركيز وقت ما فقدت النافذة تركيزها — مو تنقّل حقيقي بين الخانات.
+    يستهلك (يصفّر) الالتقاط بمجرد ما يتأكد منه، حتى ما يبقى عالقاً
+    ويأثر غلط على تنقّل حقيقي لاحق لنفس الخانة."""
+    root = widget.winfo_toplevel()
+    captured = getattr(root, "_deactivated_focus_widget", None)
+    if captured is widget:
+        root._deactivated_focus_widget = None
+        return True
+    return False
+
+
+def select_all_on_real_focus(widget):
+    """يحدّد قيمة الخانة كاملة (المؤشر بالنهاية) — بس لو هالتركيز ناتج
+    عن تنقّل حقيقي بين الخانات، مو مجرد رجوع نافذة البرنامج نفسها
+    للواجهة (Alt+Tab من برنامج آخر) وهي كانت أصلاً آخر خانة فيها التركيز
+    قبل ما تِبعد. بدون هالتفريق، الرجوع من برنامج آخر كان يحدّد كل
+    المكتوب ويجبر إعادة الكتابة من جديد بدل إكمالها من مكانها — مزعج
+    وخطير (ممكن يمسح بيانات حقيقية بالغلط).
+
+    يرجّع True لو حدّد فعلاً (تنقّل حقيقي)، حتى الكود اللي يستدعيها
+    يقدر ياخذ قرارات إضافية مرتبطة (زي علم "_fresh" اللي يخلي أول رقم
+    يُكتب يبدأ قيمة جديدة بدل ما يكمّل القديمة — نفس المبدأ، ما ينطبق
+    إلا بتنقّل حقيقي). لخانات فيها مسار "تجاهل" مبكر (زي _consume_suppress
+    بـSplitDateEntry) استخدم is_window_reactivation_focus لحالها قبل
+    هالمسار، بدل هالدالة، حتى الالتقاط ينصفّر دائماً بغض النظر عن نتيجة
+    التجاهل."""
+    if is_window_reactivation_focus(widget):
+        return False  # رجوع نافذة البرنامج نفسها للواجهة -> ما نلمس شي
+    widget.select_range(0, tk.END)
+    widget.icursor(tk.END)
+    return True
+
+
 class MaskedDateEntry(tk.Frame):
-    """حقل تاريخ يُكتب فيه بالأرقام فقط (تنسيق تلقائي DD/MM/YYYY)."""
+    """حقل تاريخ يُكتب فيه بالأرقام فقط (تنسيق تلقائي DD/MM/YYYY).
+
+    - اليوم محدود 1-31، والشهر محدود 1-12 — أي رقم ثانٍ يخلي القيمة تخرج
+      عن المدى (زي "5" بعد "0" لليوم = "05" ok، لكن "0" بعد "5" لليوم
+      يعني "50" مرفوض) يُرفض حياً أثناء الكتابة، بدل ما يُقبل ويصير تاريخ
+      غير منطقي بالمستند النهائي.
+    - اختصار: كتابة رقم واحد لليوم أو الشهر (زي "9") ثم ضغط "." أو "/" أو
+      "-" يكمّله بصفر أول أوتوماتيكياً ("9" -> "09") وينتقل مباشرة للخانة
+      اللي بعدها — بدل ما تحتاج تكتب الرقمين يدوياً. أي حرف غير رقمي غير
+      هالثلاثة ما ينكتب أصلاً (يُفلتر تلقائياً).
+    - لو اليوم/الشهر/السنة الثلاثة معبّأة لكن تركيبتها مستحيلة تقويمياً
+      (زي 31 فبراير) — كل رقم لحاله بمداه الصحيح، بس التركيبة نفسها
+      مستحيلة — الخانة تتلوّن بخلفية حمراء خفيفة كتنبيه بصري فوري (نفس
+      مبدأ SplitDateEntry بالضبط)."""
+
+    _NORMAL_BG = "white"
+    _INVALID_BG = "#fbe3e3"
 
     def __init__(self, parent, default_today=True):
         # tk.Frame لا ttk.Frame: خلفية ttk.Frame الافتراضية رمادية (لون
@@ -32,24 +96,84 @@ class MaskedDateEntry(tk.Frame):
         self.entry = tk.Entry(self, textvariable=self.var, width=12, **_ENTRY_STYLE)
         self.entry.pack(side="left")
         self.entry.bind("<KeyRelease>", self._on_key)
-        # رجوع للخانة بعد ما كانت معبّأة: نُبرز القيمة كاملة بدل ما نمسحها،
-        # وأول رقم يُكتب يستبدلها أوتوماتيكياً (Entry عادية، Tk يتكفّل).
-        self.entry.bind("<FocusIn>", lambda _ev: (self.entry.select_range(0, tk.END), self.entry.icursor(tk.END)))
+        # الرفض حسب المدى (يوم 1-31، شهر 1-12) واختصار الفاصل لازم يتصرفا
+        # قبل ما يتفلتر الحرف عادي (KeyRelease)، عشان نمنع الإدراج أصلاً
+        # بدل ما نصلحه بعدين.
+        self.entry.bind("<Key>", self._on_key_press)
+        # رجوع للخانة بعد ما كانت معبّأة (تنقّل حقيقي بـTab/نقرة): نُبرز
+        # القيمة كاملة بدل ما نمسحها، وأول رقم يُكتب يستبدلها أوتوماتيكياً
+        # (Entry عادية، Tk يتكفّل). ما ينطبق لو الرجوع مجرد Alt+Tab من
+        # برنامج آخر ثم العودة لنفس الخانة — عندها المؤشر يبقى بمكانه
+        # بالضبط (راجع select_all_on_real_focus بالأعلى).
+        self.entry.bind("<FocusIn>", lambda _ev: select_all_on_real_focus(self.entry))
 
         if default_today:
             self.var.set(date.today().strftime("%d/%m/%Y"))
 
-    def _on_key(self, event):
-        raw = self.var.get()
-        digits = "".join(ch for ch in raw if ch.isdigit())[:8]
+    @staticmethod
+    def _format_digits(digits):
         formatted = digits[:2]
         if len(digits) > 2:
             formatted += "/" + digits[2:4]
         if len(digits) > 4:
             formatted += "/" + digits[4:8]
+        return formatted
+
+    def _set_digits(self, digits):
+        self.var.set(self._format_digits(digits))
+        self.entry.icursor(tk.END)
+        self._validate()
+
+    def _on_key_press(self, event):
+        if event.char in (".", "/", "-"):
+            digits = "".join(ch for ch in self.var.get() if ch.isdigit())
+            if len(digits) == 1:
+                digits = "0" + digits  # اليوم فيه رقم واحد بس -> يكتمل بصفر أول
+            elif len(digits) == 3:
+                digits = digits[:2] + "0" + digits[2]  # الشهر فيه رقم واحد بس -> نفس الشيء
+            else:
+                return "break"  # ماكو قطعة ناقصة رقم وحيد حالياً، نتجاهل الضغطة
+            self._set_digits(digits)
+            return "break"
+
+        if event.char and event.char.isdigit():
+            digits = "".join(ch for ch in self.var.get() if ch.isdigit())
+            if len(digits) >= 8:
+                return "break"  # التاريخ مكتمل أصلاً (8 أرقام)، رفض أي زيادة
+            pos = len(digits)
+            if pos < 2:
+                day_candidate = digits[:pos] + event.char
+                if len(day_candidate) == 2 and not (1 <= int(day_candidate) <= 31):
+                    return "break"
+            elif pos < 4:
+                month_candidate = digits[2:pos] + event.char
+                if len(month_candidate) == 2 and not (1 <= int(month_candidate) <= 12):
+                    return "break"
+            return None  # مقبول -> نسيب Tk يدرجه عادي، KeyRelease يعيد التنسيق
+
+        return None  # نسيب باقي المفاتيح (Backspace...) تمشي بمسارها العادي
+
+    def _on_key(self, event):
+        raw = self.var.get()
+        digits = "".join(ch for ch in raw if ch.isdigit())[:8]
+        formatted = self._format_digits(digits)
         if formatted != raw:
             self.var.set(formatted)
             self.entry.icursor(tk.END)
+        self._validate()
+
+    def _validate(self):
+        """يتحقق لو اليوم/الشهر/السنة الثلاثة معبّأة تشكّل تاريخاً ممكناً
+        فعلياً تقويمياً (زي 31 فبراير) — كل رقم لحاله صالح بمداه، بس
+        التركيبة نفسها مستحيلة."""
+        digits = "".join(ch for ch in self.var.get() if ch.isdigit())
+        invalid = False
+        if len(digits) == 8:
+            try:
+                date(int(digits[4:8]), int(digits[2:4]), int(digits[:2]))
+            except ValueError:
+                invalid = True
+        self.entry.configure(bg=self._INVALID_BG if invalid else self._NORMAL_BG)
 
     def get_date(self):
         """يرجّع كائن date، أو يرمي ValueError لو التاريخ ناقص/غلط."""
@@ -100,12 +224,13 @@ class MaskedTimeEntry(tk.Frame):
         self.var.set(text)
 
     def _on_focus_in(self, _event):
-        # رجوع للخانة بعد ما كانت معبّأة: نُبرز (نحدّد) القيمة الحالية
-        # بدل ما نمسحها — تبقى ظاهرة وما تنفقد لو نقرت بالغلط أو ضغطت
-        # Tab بدون كتابة. أول رقم يكتبه بعدها يبدأ قيمة جديدة تلقائياً.
-        self.entry.select_range(0, tk.END)
-        self.entry.icursor(tk.END)
-        self._fresh = True
+        # رجوع للخانة بعد ما كانت معبّأة (تنقّل حقيقي): نُبرز (نحدّد)
+        # القيمة الحالية بدل ما نمسحها — تبقى ظاهرة وما تنفقد لو نقرت
+        # بالغلط أو ضغطت Tab بدون كتابة. أول رقم يكتبه بعدها يبدأ قيمة
+        # جديدة تلقائياً. ما ينطبق لو الرجوع مجرد Alt+Tab من برنامج آخر
+        # (راجع select_all_on_real_focus) — عندها نكمّل من نفس المكان.
+        if select_all_on_real_focus(self.entry):
+            self._fresh = True
 
     def _on_key(self, event):
         if event.keysym == "BackSpace":
@@ -344,17 +469,23 @@ class SplitDateEntry(tk.Frame):
             self.day_var.set(self._day_digits)
 
     def _on_day_focus_in(self, _event):
-        # رجوع للخانة بعد ما كانت معبّاة: نُبرز (نحدّد) القيمة الحالية
-        # بدل ما نمسحها فوراً — تبقى ظاهرة وواضحة إنها قابلة للاستبدال،
-        # وما تنفقد لو المستخدم بس نقر بالغلط أو ضغط Tab/Enter بدون
-        # كتابة. أول رقم يكتبه بعدها يبدأ قيمة جديدة تلقائياً (بدون
-        # حاجة لحذف بالسهم يدوياً). ما ينطبق لو التركيز جالها بانتقال
-        # تلقائي للأمام (راجع شرح _suppress_focus_targets).
+        # رجوع للخانة بعد ما كانت معبّاة (تنقّل حقيقي): نُبرز (نحدّد)
+        # القيمة الحالية بدل ما نمسحها فوراً — تبقى ظاهرة وواضحة إنها
+        # قابلة للاستبدال، وما تنفقد لو المستخدم بس نقر بالغلط أو ضغط
+        # Tab/Enter بدون كتابة. أول رقم يكتبه بعدها يبدأ قيمة جديدة
+        # تلقائياً (بدون حاجة لحذف بالسهم يدوياً). ما ينطبق لو التركيز
+        # جالها بانتقال تلقائي للأمام (راجع شرح _suppress_focus_targets)
+        # ولا لو مجرد Alt+Tab من برنامج آخر ثم الرجوع لنفس الخانة (راجع
+        # is_window_reactivation_focus) — عندها نكمّل من نفس المكان.
+        # نستهلك الالتقاط دائماً أولاً (قبل فحص suppress)، حتى ما يبقى
+        # عالقاً ويأثر غلط على تنقّل حقيقي لاحق.
+        real_focus = not is_window_reactivation_focus(self.day_entry)
         if self._consume_suppress(self.day_entry):
             return
-        self.day_entry.select_range(0, tk.END)
-        self.day_entry.icursor(tk.END)
-        self._day_fresh = True
+        if real_focus:
+            self.day_entry.select_range(0, tk.END)
+            self.day_entry.icursor(tk.END)
+            self._day_fresh = True
 
     def _day_advance(self, _event):
         """Enter أو Tab بخانة اليوم: ثبّت القيمة وانتقل لخانة الشهر."""
@@ -463,21 +594,28 @@ class SplitDateEntry(tk.Frame):
 
     def _on_month_focus_in(self, _event):
         # نفس مبدأ اليوم: نُبرز القيمة الحالية بدل ما نمسحها، وأول رقم
-        # يبدأ قيمة جديدة. ما ينطبق لانتقال تلقائي للأمام (راجع الشرح).
+        # يبدأ قيمة جديدة. ما ينطبق لانتقال تلقائي للأمام (راجع الشرح)
+        # ولا لمجرد Alt+Tab من برنامج آخر (راجع is_window_reactivation_focus)
+        # — نستهلك الالتقاط دائماً أولاً حتى ما يبقى عالقاً على مسار suppress.
+        real_focus = not is_window_reactivation_focus(self.month_entry)
         if self._consume_suppress(self.month_entry):
             return
-        self.month_entry.select_range(0, tk.END)
-        self.month_entry.icursor(tk.END)
-        self._month_fresh = True
+        if real_focus:
+            self.month_entry.select_range(0, tk.END)
+            self.month_entry.icursor(tk.END)
+            self._month_fresh = True
 
     def _on_year_focus_in(self, _event):
-        # ما ينطبق لو التركيز جالها بانتقال تلقائي للأمام (راجع الشرح).
+        # ما ينطبق لو التركيز جالها بانتقال تلقائي للأمام (راجع الشرح)
+        # ولا لمجرد Alt+Tab من برنامج آخر (نفس مبدأ اليوم/الشهر أعلاه).
         # خانة السنة Entry عادية — تحديد كامل النص يكفي؛ Tk نفسه يستبدل
         # المحدَّد أوتوماتيكياً بأول رقم يُكتب (بدون أي مسح يدوي منا).
+        real_focus = not is_window_reactivation_focus(self.year_entry)
         if self._consume_suppress(self.year_entry):
             return
-        self.year_entry.select_range(0, tk.END)
-        self.year_entry.icursor(tk.END)
+        if real_focus:
+            self.year_entry.select_range(0, tk.END)
+            self.year_entry.icursor(tk.END)
 
     def reposition_year(self):
         """يحرّك خانة السنة لتوقف مباشرة بعد آخر حرف من نص الشهر الحالي
@@ -524,11 +662,17 @@ class SplitDateEntry(tk.Frame):
         """يتحقق لو اليوم/الشهر/السنة الثلاثة معبّأة تشكّل تاريخاً ممكناً
         فعلياً تقويمياً، ويلوّن الخانات الثلاث بالأحمر الخفيف لو لا —
         مو خطأ بالكتابة (كل رقم لحاله صالح)، بس التركيبة نفسها مستحيلة
-        (زي يوم 31 بشهر فبراير)."""
+        (زي يوم 31 بشهر فبراير).
+
+        نفس التنبيه لو الشهر مكتوب بالحروف وبقي ملتبس (زي "Ju" اللي
+        يطابق Juin وJuillet معاً) بدون ما يتحدد لشهر وحيد واضح — قبل
+        هالإضافة كانت الخانة تبقى بيضاء عادية وكأن كل شي تمام، مع إنها
+        فعلياً قيمة ميتة (get_date() يرمي خطأ) لو ابتعدت عنها بهالحالة."""
         year_s = self.year_var.get()
+        month_ambiguous = bool(self._month_letters) and not self._month_digits
         complete = bool(self._day_digits) and bool(self._month_digits) and len(year_s) == 4
-        invalid = False
-        if complete:
+        invalid = month_ambiguous
+        if not invalid and complete:
             try:
                 date(int(year_s), int(self._month_digits), int(self._day_digits))
             except ValueError:

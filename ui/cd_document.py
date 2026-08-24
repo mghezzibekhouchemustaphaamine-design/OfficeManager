@@ -38,13 +38,61 @@ LINE_HEIGHT_MIDDLE_PT = 12.45  # تباعد أسطر خط 11 (من Model Vierge)
 
 TITLE_COL = 25   # عدد المسافات قبل العنوان (محسوبة من: 182.8-30.5 / 6.0)
 DATE_COL = 54    # عدد المسافات قبل التاريخ (محسوبة من: 354.5-30.5 / 6.0)
-GUICHET_NAME_COL = 47  # عمود اسم الراكب المكرر بآخر سطر Guichet، زي الأصل بالضبط
-OBTENT_COL = 56  # عمود "Obtent." الثابت بسطر Nature piece identite، زي الأصل بالضبط
+
+# سطر Guichet: فراغ واحد بعد النقطتين، ثم حقل الكتابة (30 حرف بالضبط —
+# هذا حده الأقصى)، ثم فراغين، ثم يبدأ اسم الراكب المكرر — يعني 33 فراغ
+# بالضبط من النقطتين لبداية التكرار (1 فاصل + 30 حقل + 2 فراغ).
+GUICHET_LABEL = "Guichet .....: "
+GUICHET_VALUE_COL = len(GUICHET_LABEL)  # فراغ واحد بعد النقطتين
+GUICHET_FIELD_WIDTH = 30                # سعة حقل الكتابة بالضبط الحالية
+
+# مكان التكرار مثبّت هنا نهائياً — بطلب صريح ما ينزاح أبداً حتى لو تغيّر
+# عرض حقل الكتابة (GUICHET_FIELD_WIDTH) لاحقاً. الفراغ الفاصل بينهما هو
+# اللي يتمدد أو يضيق تلقائياً بدل ما يتحرك مكان التكرار نفسه.
+# +32 من GUICHET_VALUE_COL (لا +33): GUICHET_VALUE_COL نفسه أصلاً بعد
+# الفاصل الأول (فراغ واحد بعد النقطتين)، فـ33 فراغ الإجمالية من النقطتين
+# = 1(الفاصل، مُحتسَب أصلاً بـGUICHET_VALUE_COL) + 32 بعده.
+GUICHET_NAME_COL = GUICHET_VALUE_COL + 32
+
+# سطر Nature piece identite: فراغ واحد بعد النقطتين، "PSP" ثابت، 10
+# فراغات ثابتة، "No" ثابت، نقطتين مباشرة (بلا فراغ بينهما، تحقّقنا من
+# الأصل) — وبعد هالنقطتين مباشرة كمان (بلا فراغ) يبدأ حقل N° Passport
+# (12 حرف/رقم بالضبط، هذا حده الأقصى). بعده 5 فراغات ثابتة، "Obtent."
+# ثابت، فراغ، نقطتين — وبعد هالنقطتين مباشرة (بلا فراغ) يبدأ حقل تاريخ
+# الحصول عليها (DD/MM/YYYY، بفواصل "/" دائماً).
+PASSPORT_LABEL = "Nature piece identite : PSP" + " " * 10 + "No:"
+PASSPORT_VALUE_COL = len(PASSPORT_LABEL)
+PASSPORT_FIELD_WIDTH = 12
+OBTENT_GAP = 5  # فراغات ثابتة بين نهاية حقل N° Passport وبداية "Obtent."
+OBTENT_LABEL = "Obtent. :"
+OBTENT_COL = PASSPORT_VALUE_COL + PASSPORT_FIELD_WIDTH + OBTENT_GAP
+DATE_DELIVRANCE_COL = OBTENT_COL + len(OBTENT_LABEL)  # مباشرة بعد النقطتين، بلا فراغ
 
 # Motif ثابت دائماً حسب طلبك (Commission/Frais/Taxe كمان دائماً 0 بالأسفل).
 # باقي الخانات الفاضية (No، Devise، N° Passport...) تُعبّى من لوحة التحكم؛
 # ما فيها قيمة افتراضية ولا نقاط تعبئة — فاضية لين تُملأ.
 MOTIF_TEXT = "Cession DEV nationaux résident"
+
+# سطر Montant en devise: حقل كتابة المبلغ (اليورو) لازم ينتهي دائماً بفاصل
+# مسافة واحدة بالضبط قبل كلمة "EUR" — هالمكان ثابت ما يتحرك أبداً (نفس
+# مكانه الأصلي). لكن عرض الحقل الفعلي المسموح للكتابة فيه صار 10 أرقام
+# بس (بدل 20)، فبداية الحقل تقدّمت 10 خانات نحو اليمين، وباقي كل شي —
+# التسمية، النقاط، "EUR"، "Tx de change" — بمكانه الأصلي بدون أي تغيير.
+EUR_TOTAL_SLOT = 20   # العرض الإجمالي الأصلي المحجوز قبل " EUR" (ثابت، ما يتحرك)
+EUR_FIELD_WIDTH = 10  # عرض حقل الكتابة الفعلي الجديد (10 أرقام بالضبط)
+EUR_COL = 24 + (EUR_TOTAL_SLOT - EUR_FIELD_WIDTH)  # = 34
+
+# حقل Tx de change (taux): بعد النقطتين — 6 فراغات ثابتة، ثم حقل الكتابة.
+# صيغة فرنسية (فاصلة عشرية "," زي باقي حقول المبالغ) بس 3 أرقام صحيحة
+# بالضبط كحد أقصى (999) و7 أرقام عشرية بالضبط دائماً (بدل 2 مثل EUR/DZD)
+# — يعني السعة الإجمالية 3 + فاصلة + 7 = 11 خانة، والرقم دائماً أقصى
+# اليمين (مسافات فاضية على اليسار لو الجزء الصحيح أقل من 3 أرقام).
+TX_DE_CHANGE_LABEL = "Tx de change :"
+TAUX_GAP = 6
+TAUX_INT_DIGITS = 3
+TAUX_DEC_DIGITS = 7
+TAUX_FIELD_WIDTH = TAUX_INT_DIGITS + 1 + TAUX_DEC_DIGITS  # = 11 (3 + فاصلة + 7)
+TAUX_MAX_VALUE = 10 ** TAUX_INT_DIGITS - 1  # = 999
 
 
 def _french_date(d):
@@ -78,6 +126,19 @@ def _label(text, width=22):
     return f"{text} ".ljust(width, ".") + ":"
 
 
+# عمود بداية حقل "Nom du remettant" محسوب مباشرة من نفس التسمية اللي
+# تُبنى بيها السطر الحقيقي (_label) + فراغ واحد بعد النقطتين — مو رقم
+# ثابت مكتوب يدوياً، حتى يستحيل ينحرف حقل الكتابة الحي عن مكانه الفعلي
+# بالمستند حتى لو تغيّر نص التسمية أو عرضها لاحقاً.
+NOM_REMETTANT_COL = len(_label("Nom du remettant")) + 1
+
+# عمود بداية حقل taux محسوب من نفس الأجزاء الثابتة اللي تُبنى بيها السطر
+# الحقيقي (تسمية Montant en devise + حقل EUR بعرضه الإجمالي + " EUR " +
+# تسمية Tx de change) — مو رقم ثابت مكتوب يدوياً.
+_MONTANT_PREFIX_LEN = len(_label("Montant en devise")) + 1 + EUR_TOTAL_SLOT + len(f" EUR {TX_DE_CHANGE_LABEL}")
+TAUX_COL = _MONTANT_PREFIX_LEN + TAUX_GAP
+
+
 def _mono_paragraph(doc, text="", size=FONT_SIZE):
     p = doc.add_paragraph()
     p.paragraph_format.space_after = Pt(0)
@@ -102,12 +163,16 @@ def _build_document_entries(data):
     no_text = data["no"]
     delivrance_str = data["date_delivrance"].strftime("%d/%m/%Y") if data["date_delivrance"] else ""
 
-    # Taux وEUR: فاضيين لو لوحة التحكم ما عبّتهم (بدل ما نحط 0 افتراضياً)،
-    # بنفس عرض الحقل الثابت حتى ما تتزحزح "EUR" و"Tx de change" من مكانها.
-    # عرض حقل القيمة (21) موحّد مع Commission/Frais/Taxe/Net a créditer،
-    # حتى تصطف كل كلمات العملة (EUR/DZD) بعمود واحد بالضبط.
-    taux_part = f"{data['taux']:.7f}".rjust(15) if data["taux"] is not None else " " * 15
-    eur_part = _fr_amount(data['eur']).rjust(20) if data["eur"] is not None else " " * 20
+    # Taux وEUR: فاضيين لو لوحة التحكم ما عبّتهم (بدل ما نحط 0 افتراضياً).
+    # taux بصيغة فرنسية (فاصلة عشرية "،" زي باقي حقول المبالغ) بـ7 أرقام
+    # عشرية بالضبط دائماً، محاذى أقصى اليمين بعرض حقله الكامل (11 خانة).
+    taux_part = (
+        _fr_amount(data["taux"], decimals=TAUX_DEC_DIGITS).rjust(TAUX_FIELD_WIDTH)
+        if data["taux"] is not None else " " * TAUX_FIELD_WIDTH
+    )
+    # rjust بعرض الـslot الإجمالي (20) — مو عرض حقل الكتابة (10) — حتى
+    # "EUR" يبقى بنفس مكانه الثابت دائماً بغض النظر عن عرض حقل الكتابة.
+    eur_part = _fr_amount(data['eur']).rjust(EUR_TOTAL_SLOT) if data["eur"] is not None else " " * EUR_TOTAL_SLOT
     # Soit وNet a créditer: فاضيين بردو لو DZD ما تعبّى (بدل 0,00 ثابتة)،
     # نفس مبدأ باقي الحقول اللي تحددها لوحة التحكم.
     dzd_value_str = _fr_amount(data["dzd"]) if data["dzd"] is not None else ""
@@ -138,19 +203,25 @@ def _build_document_entries(data):
         ("", S),
         (f"Agence ......: {data['agence']}", M),
         (f"Devise ......: {data.get('devise', '')}", M),
-        (f"Guichet .....: {data['guichet']}".ljust(GUICHET_NAME_COL) + data['passager'], M),
+        (f"{GUICHET_LABEL}{data['guichet']}".ljust(GUICHET_NAME_COL) + data['passager'], M),
         (f"Caisse ......: {data['caisse']}", M),
         (f"Guichetier ..: {data['guichetier']}", M),
         ("", M),
         ("", M),
         (f"{_label('Nom du remettant')} {data['passager']}", M),
         (
-            f"Nature piece identite : PSP        No : {data['passport_no']}".ljust(OBTENT_COL)
-            + f"Obtent. :{delivrance_str}",
+            f"{PASSPORT_LABEL}{data['passport_no'].ljust(PASSPORT_FIELD_WIDTH)}"
+            + " " * OBTENT_GAP
+            + f"{OBTENT_LABEL}{delivrance_str}",
             M,
         ),
         (f"{_label('Motif')} {MOTIF_TEXT}", M),
-        (f"{_label('Montant en devise')} {eur_part} EUR Tx de change : {taux_part}", M),
+        (
+            f"{_label('Montant en devise')} {eur_part} EUR {TX_DE_CHANGE_LABEL}"
+            + " " * TAUX_GAP
+            + taux_part,
+            M,
+        ),
         (f"{_label('Soit')} {_value_field(dzd_value_str)}", M),
         (f"{_label('Commission  1')} {_value_field(_fr_amount(0))}", M),
         (f"{_label('Commission  2')} {_value_field(_fr_amount(0))}", M),
@@ -212,22 +283,25 @@ def generate_cd_document(data):
 # بالحرف، عرض الخانة بالحروف). حجم الخط يُستنتج من رقم السطر (نفس منطق
 # _build_document_entries: 8-24 خط 11، الباقي خط 10).
 FIELD_LAYOUT = {
-    "no": (0, 54, 14),   # فراغين قبل الرقم أصلاً جزء من النص الأصلي "No  "
+    "no": (0, 54, 12),   # فراغين قبل الرقم أصلاً جزء من النص الأصلي "No  " — حده الأقصى الحقيقي 12 رقم
     "date": (3, 54, 13),
     # عمود "time" هنا (70) قيمة احتياطية غير مستخدمة فعلياً — cd_tab.py
     # يحسب مكانه الحقيقي حياً بالبكسل تبعاً لحرف "a" (راجع SplitDateEntry
     # .a_right_edge_px)، مُستخدم منها بس رقم السطر (3) لحساب الارتفاع y.
     "time": (3, 70, 6),
     "agence": (8, 15, 32),
-    "guichet": (10, 15, 32),
+    "guichet": (10, GUICHET_VALUE_COL, GUICHET_FIELD_WIDTH),
     "caisse": (11, 15, 32),
     "guichetier": (12, 15, 15),
-    "passager": (15, 24, 32),
-    "passport_no": (16, 40, 15),
-    "date_delivrance": (16, 65, 12),
-    "eur": (18, 24, 20),
-    "taux": (18, 65, 15),
-    "dzd": (19, 24, 20),
+    "passager": (15, NOM_REMETTANT_COL, 32),
+    "passport_no": (16, PASSPORT_VALUE_COL, PASSPORT_FIELD_WIDTH),
+    "date_delivrance": (16, DATE_DELIVRANCE_COL, 12),
+    "eur": (18, EUR_COL, EUR_FIELD_WIDTH),
+    "taux": (18, TAUX_COL, TAUX_FIELD_WIDTH),
+    # Soit (dzd): نفس عمود وعرض حقل Montant en devise (EUR) بالضبط —
+    # الاثنان مشتقّان من نفس الثوابت عمداً، بطلب صريح "نفس السعة
+    # والخصائص"، حتى ما ينحرفوا عن بعض لو تغيّرت لاحقاً.
+    "dzd": (19, EUR_COL, EUR_FIELD_WIDTH),
     "net_crediter": (24, 24, 20),
     "guichet_mirror": (10, GUICHET_NAME_COL, 32),
 }

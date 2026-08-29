@@ -11,6 +11,7 @@
 التراجع/الإعادة، المسودة وإعدادات المكتب. خانات الكتابة المخصّصة
 (CDEntryFactoryMixin) وسجل المستندات (CDHistoryWindow) بملفين منفصلين
 بنفس الحزمة (ui/cd/entries.py، ui/cd/history.py) — راجعهم لتفاصيلهم."""
+import math
 import os
 import tkinter as tk
 import tkinter.font as tkfont
@@ -28,7 +29,7 @@ from ui.cd.constants import (
     CD_SETTINGS_PATH, CD_DRAFT_PATH, CD_UI_PREFS_PATH,
     OFFICE_FIELD_KEYS, DRAFT_FIELD_KEYS, _TRANSACTIONAL_DRAFT_KEYS,
     TARGET_W, CANVAS_MARGIN, BASE_FONT_SIZE, ENTRY_CHROME_PX,
-    ZOOM_LEVELS, DEFAULT_ZOOM_INDEX,
+    ZOOM_MIN, ZOOM_MAX, ZOOM_STEP, ZOOM_DEFAULT,
 )
 # نوافذ التأكيد صارت مشتركة لكل البرنامج — راجع ui/common/alerts.py.
 # alias محلي (_confirm) حتى ما نغيّر كل نداء بالملف (5 استخدامات).
@@ -111,7 +112,15 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         super().__init__(parent, padding=10)
         self.app = app
 
-        self.zoom_index = self._load_zoom_pref()
+        # مصدر الحقيقة الوحيد لمستوى الزوم — نسبة مئوية صحيحة مباشرة (مو
+        # فهرس بقائمة)، حتى تقدر تاخذ أي قيمة (زي ناتج Fit to Window غير
+        # المضاعف لـ25) — راجع set_zoom بالأسفل لشرح كامل النظام.
+        self.zoom = self._load_zoom_pref()
+        self._bg_ox = self._bg_oy = 0  # آخر إزاحة (توسيط) محسوبة بـ_relayout — يستخدمها زوم حول المؤشر
+        # يبقى None لغاية أول _relayout() ناجح (بعد _load_background) —
+        # fit_to_window/_zoom_anchor_from_event يفحصونه قبل أي استخدام،
+        # حتى ضغطة اختصار زوم مبكرة (قبل تحميل الخلفية) ما تعطّب البرنامج.
+        self.current_bg_image = None
         self._bg_photo_cache = {}  # نسبة الزوم -> PhotoImage بدقة أصلية (بدون تكبير/تضبيب)
         self.field_widgets = {}
         self.field_window_ids = {}
@@ -200,6 +209,19 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         self.bind_all("<Control-Y>", lambda _e: self._redo())
         self.bind_all("<Control-Shift-Z>", lambda _e: self._redo())
 
+        # اختصارات الزوم بالكيبورد (بطلب صريح) — نربط عدة صيغ لكل مفتاح
+        # حتى تشتغل بغض النظر عن لوحة المفاتيح/حالة Shift: "+" غالباً
+        # يحتاج Shift مع "=" (فـ<Control-plus> وحدها ما تكفي دايماً)،
+        # وفيه كيبوردات فيها الرمز المطبوع فوق "=" مباشرة بلا Shift.
+        # زر الفأرة الرقمي (Keypad) مربوط بردو لنفس السبب.
+        self.bind_all("<Control-plus>", lambda _e: self.zoom_in())
+        self.bind_all("<Control-equal>", lambda _e: self.zoom_in())
+        self.bind_all("<Control-KP_Add>", lambda _e: self.zoom_in())
+        self.bind_all("<Control-minus>", lambda _e: self.zoom_out())
+        self.bind_all("<Control-KP_Subtract>", lambda _e: self.zoom_out())
+        self.bind_all("<Control-0>", lambda _e: self.zoom_reset())
+        self.bind_all("<Control-KP_0>", lambda _e: self.zoom_reset())
+
     # ---------- الشريط العلوي ----------
     def _build_top_bar(self):
         top_bar = ttk.Frame(self)
@@ -281,6 +303,11 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         self.zoom_label.pack(side="right", padx=4)
         self.zoom_label.bind("<Button-1>", lambda _e: self.zoom_reset())
         ttk.Button(zoom_bar, text="－", width=3, command=self.zoom_out).pack(side="right")
+        # ⤢ ملاءمة النافذة: تحسب أقل نسبة تخلي الورقة كاملة ظاهرة بمساحة
+        # العرض الحالية بلا سكرول (راجع fit_to_window) — فعل لمرة وحدة،
+        # مو وضع دائم يتابع تغيّر حجم النافذة. الرجوع لـ100% يبقى بكليك
+        # على النسبة نفسها (زر منفصل هون كان تكراراً بلا داعي).
+        ttk.Button(zoom_bar, text="⤢", width=3, command=self.fit_to_window).pack(side="right", padx=(4, 0))
 
         self._more_menu = tk.Menu(tools_bar, tearoff=0)
         self._more_menu.add_command(label="❓ الاختصارات", command=self._show_shortcuts_help)
@@ -961,52 +988,137 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         self._update_next_button_state()
 
     # ---------- الزوم ----------
-    def zoom_in(self):
-        if self.zoom_index < len(ZOOM_LEVELS) - 1:
-            self.zoom_index += 1
-            self._save_zoom_pref()
-            self._relayout()
+    # self.zoom هو مصدر الحقيقة الوحيد لمستوى التكبير (نسبة مئوية صحيحة
+    # مباشرة، لا فهرس بقائمة) — set_zoom() هي نقطة الدخول المركزية
+    # الوحيدة لتغييره، وكل طريقة زوم ثانية (الأزرار، عجلة الفأرة،
+    # اختصارات الكيبورد، Fit to Window، تحميل التفضيل المحفوظ) تمر
+    # منها. كل مستوى يُعاد رسمه من الصورة الأصلية بدقتها الحقيقية من
+    # جديد (راجع _bg_image_for_pct أسفل و get_blank_background بـ
+    # document.py) — بلا تكبير فوق تكبير وبلا أي تراكم أخطاء تقريب مهما
+    # تكرر التكبير/التصغير ذهاباً وإياباً.
+    def set_zoom(self, pct, anchor=None):
+        """
+        anchor (اختياري): tuple (widget_x, widget_y, frac_x, frac_y) من
+        _zoom_anchor_from_event — نقطة بمساحة العمل ووقت الطلب، وموقعها
+        النسبي (0..1) داخل صورة المستند. لو انعطت، بعد تطبيق الزوم
+        الجديد نصحّح موضع التمرير حتى تبقى نفس النقطة قريبة من نفس مكان
+        المؤشر (زوم حول المؤشر) بدل ما يقفز العرض فجأة لمكان ثاني.
+        تُستخدم فقط من عجلة الفأرة (Ctrl+Wheel) — الأزرار والاختصارات
+        تسيب موضع العرض كما هو (بلا معنى لمكان مؤشر بالكيبورد).
+        """
+        pct = max(ZOOM_MIN, min(ZOOM_MAX, round(pct)))
+        if pct == self.zoom and anchor is None:
+            return
+        self.zoom = pct
+        self._save_zoom_pref()
+        self._relayout(anchor=anchor)
 
-    def zoom_out(self):
-        if self.zoom_index > 0:
-            self.zoom_index -= 1
-            self._save_zoom_pref()
-            self._relayout()
+    def _step_zoom(self, direction, anchor=None):
+        """يحسب المستوى المنطقي التالي/السابق بخطوات ثابتة (ZOOM_STEP)
+        حتى لو الزوم الحالي مو على مضاعف الخطوة أصلاً (بعد Fit to Window
+        مثلاً) — يقرّب للأعلى (تكبير) أو للأسفل (تصغير) لأقرب حد خطوة،
+        مو يزيدها/ينقصها بشكل أعمى، حتى يضل تدرّج الزوم منطقياً ومتوقعاً
+        دائماً بغض النظر من وين بدأنا."""
+        if direction > 0:
+            next_pct = ((self.zoom // ZOOM_STEP) + 1) * ZOOM_STEP
+        else:
+            next_pct = (math.ceil(self.zoom / ZOOM_STEP) - 1) * ZOOM_STEP
+        self.set_zoom(next_pct, anchor=anchor)
+
+    def zoom_in(self, anchor=None):
+        self._step_zoom(1, anchor=anchor)
+
+    def zoom_out(self, anchor=None):
+        self._step_zoom(-1, anchor=anchor)
 
     def zoom_reset(self):
         """يرجّع الزوم لـ100% بضغطة وحدة (كليك على نسبة الزوم نفسها) —
         بدل الضغط المتكرر على "－"/"＋" للرجوع للحالة الطبيعية، بطلب صريح."""
-        if self.zoom_index != DEFAULT_ZOOM_INDEX:
-            self.zoom_index = DEFAULT_ZOOM_INDEX
-            self._save_zoom_pref()
-            self._relayout()
+        self.set_zoom(ZOOM_DEFAULT)
+
+    def fit_to_window(self):
+        """يحسب أقل نسبة زوم تخلي الورقة كاملة (عرضاً وطولاً معاً) ظاهرة
+        داخل مساحة العمل المرئية حالياً بلا أي سكرول — بالاعتماد على
+        أبعاد آخر صورة خلفية مرسومة فعلياً (self.current_bg_image، تحمل
+        نفس نسبة عرض/طول المستند دائماً بغض النظر عن دقتها الحالية).
+        فعل لمرة وحدة (يضبط self.zoom على القيمة الناتجة) — مو وضع دائم
+        يتابع تغيّر حجم النافذة تلقائياً بعدها."""
+        if self.current_bg_image is None:
+            return
+        avail_w = max(self.canvas.winfo_width() - 2 * CANVAS_MARGIN, 1)
+        avail_h = max(self.canvas.winfo_height() - 2 * CANVAS_MARGIN, 1)
+        aspect = self.current_bg_image.height() / self.current_bg_image.width()
+        fit_w = min(avail_w, avail_h / aspect)
+        self.set_zoom(fit_w / TARGET_W * 100)
 
     def _on_ctrl_wheel(self, event):
+        anchor = self._zoom_anchor_from_event(event)
         if event.delta > 0:
-            self.zoom_in()
+            self.zoom_in(anchor=anchor)
         else:
-            self.zoom_out()
-        return "break"  # يمنع السكرول العادي وقت الزوم بـ Ctrl
+            self.zoom_out(anchor=anchor)
+        return "break"  # يمنع السكرول العادي وقت الزوم بـ Ctrl (العجلة العادية تبقى للسكرول فقط)
 
-    def _current_zoom_pct(self):
-        return ZOOM_LEVELS[self.zoom_index]
+    def _zoom_anchor_from_event(self, event):
+        """يحوّل موضع المؤشر وقت عجلة الزوم لنقطة نسبية (0..1) داخل صورة
+        المستند الحالية + موضعه بالبكسل داخل self.canvas — يُستخدم بعدين
+        (بعد ما يتغيّر الزوم فعلياً بـ_relayout) لتصحيح موضع التمرير حتى
+        تضل نفس النقطة قريبة من نفس مكان المؤشر (زوم حول المؤشر)."""
+        if self.current_bg_image is None:
+            return None
+        cx = self.canvas.canvasx(event.x)
+        cy = self.canvas.canvasy(event.y)
+        img_w = self.current_bg_image.width()
+        img_h = self.current_bg_image.height()
+        if img_w <= 0 or img_h <= 0:
+            return None
+        frac_x = (cx - self._bg_ox) / img_w
+        frac_y = (cy - self._bg_oy) / img_h
+        return (event.x, event.y, frac_x, frac_y)
+
+    def _apply_zoom_anchor(self, anchor, ox, oy, img_w, img_h, scroll_w, scroll_h):
+        """يُستدعى من _relayout بعد ما تتحدّث كل الإحداثيات للزوم الجديد
+        — يحرّك التمرير (لا أي عنصر) حتى تبقى نفس النقطة النسبية اللي
+        كانت تحت المؤشر (راجع _zoom_anchor_from_event) بنفس مكان المؤشر
+        تقريباً. أي خطأ حسابي (كنسبة خارج المدى بحافة الورقة) يُتجاهل
+        بأمان — أسوأ حالة العرض يرجع للتوسيط الافتراضي، بلا كراش."""
+        try:
+            widget_x, widget_y, frac_x, frac_y = anchor
+            new_cx = ox + frac_x * img_w
+            new_cy = oy + frac_y * img_h
+            target_left = new_cx - widget_x
+            target_top = new_cy - widget_y
+            if scroll_w > 0:
+                self.canvas.xview_moveto(max(0.0, min(1.0, target_left / scroll_w)))
+            if scroll_h > 0:
+                self.canvas.yview_moveto(max(0.0, min(1.0, target_top / scroll_h)))
+        except (TypeError, ValueError, ZeroDivisionError, tk.TclError):
+            pass
 
     @staticmethod
     def _load_zoom_pref():
-        """يرجّع مستوى الزوم المحفوظ من الجلسة السابقة (لو موجود وصالح)،
-        وإلا الافتراضي (100%) — تذكّر مستوى الزوم بين الجلسات بطلب صريح."""
+        """يرجّع مستوى الزوم المحفوظ من الجلسة السابقة (لو موجود ورقم
+        صالح)، وإلا الافتراضي (100%) — تذكّر مستوى الزوم بين الجلسات
+        بطلب صريح. القيمة المخزَّنة نسبة مئوية مباشرة (مو فهرس بقائمة)،
+        تُقصّ لحدود الزوم الحالية احتياطاً (زوم محفوظ بجلسة قديمة بحدود
+        مختلفة، أو ملف تُلوعب فيه يدوياً)."""
         prefs = _load_json(CD_UI_PREFS_PATH)
         pct = prefs.get("zoom_pct")
-        if pct in ZOOM_LEVELS:
-            return ZOOM_LEVELS.index(pct)
-        return DEFAULT_ZOOM_INDEX
+        if isinstance(pct, (int, float)) and not isinstance(pct, bool):
+            return max(ZOOM_MIN, min(ZOOM_MAX, round(pct)))
+        return ZOOM_DEFAULT
 
     def _save_zoom_pref(self):
         # نقرأ ونعدّل ونكتب (بدل استبدال الملف كامل) — حتى ما نمسح تفضيلات
         # ثانية مخزَّنة بنفس الملف (زي إظهار/إخفاء شريط الملفات تحت).
         prefs = _load_json(CD_UI_PREFS_PATH)
-        prefs["zoom_pct"] = self._current_zoom_pct()
+        prefs["zoom_pct"] = self.zoom
         _save_json(CD_UI_PREFS_PATH, prefs)
+
+    def _current_zoom_pct(self):
+        # يبقى للتوافق مع كود/اختبارات قديمة تناديها — self.zoom نفسه
+        # هو المصدر الوحيد للحقيقة الآن (راجع شرح فوق).
+        return self.zoom
 
     # ---------- شريط الملفات الجانبي (إظهار/إخفاء + تذكّره بين الجلسات) ----------
     @staticmethod
@@ -1105,11 +1217,11 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
             reposition()
 
     # ---------- إعادة التوضّع: توسيط الورقة + تطبيق مستوى الزوم ----------
-    def _relayout(self):
+    def _relayout(self, anchor=None):
         if self.bg_item_id is None:
             return
 
-        pct = self._current_zoom_pct()
+        pct = self.zoom
         self.zoom_label.config(text=f"{pct}%")
 
         target_w = round(TARGET_W * pct / 100)
@@ -1124,6 +1236,7 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         img_w, img_h = bg_image.width(), bg_image.height()
         ox = max((canvas_w - img_w) // 2, CANVAS_MARGIN)
         oy = max((canvas_h - img_h) // 2, CANVAS_MARGIN)
+        self._bg_ox, self._bg_oy = ox, oy  # يستخدمها _zoom_anchor_from_event بالمرة الجاية
 
         self.canvas.itemconfigure(self.bg_item_id, image=bg_image)
         self.canvas.coords(self.bg_item_id, ox, oy)
@@ -1179,9 +1292,12 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         time_y = oy + self.layout["time"][1]
         self.canvas.coords(self.field_window_ids["time"], time_x, time_y)
 
-        self.canvas.configure(
-            scrollregion=(0, 0, max(img_w + 2 * ox, canvas_w), max(img_h + 2 * oy, canvas_h))
-        )
+        scroll_w = max(img_w + 2 * ox, canvas_w)
+        scroll_h = max(img_h + 2 * oy, canvas_h)
+        self.canvas.configure(scrollregion=(0, 0, scroll_w, scroll_h))
+
+        if anchor is not None:
+            self._apply_zoom_anchor(anchor, ox, oy, img_w, img_h, scroll_w, scroll_h)
 
     # ---------- الحقول فوق الصورة ----------
     def _place(self, name, widget, natural_size=False):
@@ -2115,7 +2231,10 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
             " نفس Tx de change/Devise)\n"
             "Ctrl+Z — تراجع\n"
             "Ctrl+Y (أو Ctrl+Shift+Z) — إعادة\n"
-            "Ctrl + عجلة الفأرة — تكبير/تصغير\n"
+            "Ctrl + عجلة الفأرة — تكبير/تصغير حول موقع المؤشر\n"
+            "Ctrl + (أو Ctrl =) — تكبير | Ctrl - — تصغير | Ctrl+0 — إرجاع لـ100%\n"
+            "⤢ (بجانب نسبة الزوم) — ملاءمة الورقة كاملة بمساحة العرض\n"
+            "حدود الزوم: 25% إلى 300%\n"
             "Esc — رجوع للرئيسية\n"
             "دبل-كليك بحقل مبلغ/تاريخ — تحديد قطعة وحيدة منه\n"
             "تريبل-كليك بأي حقل — تحديد الكل\n\n"

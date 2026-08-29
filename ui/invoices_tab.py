@@ -2,11 +2,13 @@
 تبويب إدارة الفواتير: قائمة الفواتير + نافذة منبثقة لإنشاء/تعديل فاتورة ببنودها.
 """
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, filedialog
+
+from ui.common import alerts
 from datetime import date
 
-from database import get_connection
-from utils import generate_invoice_number, export_rows_to_csv
+from programme.database import get_connection
+from programme.utils import generate_invoice_number, export_rows_to_csv
 
 
 class InvoiceDialog(tk.Toplevel):
@@ -83,13 +85,13 @@ class InvoiceDialog(tk.Toplevel):
     def add_item(self):
         desc = self.desc_var.get().strip()
         if not desc:
-            messagebox.showwarning("تنبيه", "أدخل وصف البند")
+            alerts.warning("تنبيه", "أدخل وصف البند")
             return
         try:
             qty = float(self.qty_var.get())
             price = float(self.price_var.get())
         except ValueError:
-            messagebox.showwarning("تنبيه", "الكمية والسعر يجب أن يكونا أرقاماً")
+            alerts.warning("تنبيه", "الكمية والسعر يجب أن يكونا أرقاماً")
             return
         self.items.append({"description": desc, "quantity": qty, "unit_price": price})
         self.items_tree.insert("", "end", values=(desc, qty, price, f"{qty * price:.2f}"))
@@ -135,10 +137,10 @@ class InvoiceDialog(tk.Toplevel):
     def save(self):
         client_name = self.client_var.get()
         if not client_name:
-            messagebox.showwarning("تنبيه", "اختر عميلاً")
+            alerts.warning("تنبيه", "اختر عميلاً")
             return
         if not self.items:
-            messagebox.showwarning("تنبيه", "أضف بنداً واحداً على الأقل")
+            alerts.warning("تنبيه", "أضف بنداً واحداً على الأقل")
             return
         client_id = next((c["id"] for c in self.clients if c["name"] == client_name), None)
         conn = get_connection()
@@ -198,7 +200,7 @@ class InvoicesTab(ttk.Frame):
     def get_selected_id(self):
         sel = self.tree.selection()
         if not sel:
-            messagebox.showwarning("تنبيه", "اختر فاتورة من القائمة")
+            alerts.warning("تنبيه", "اختر فاتورة من القائمة")
             return None
         return int(self.tree.item(sel[0], "tags")[0])
 
@@ -222,7 +224,7 @@ class InvoicesTab(ttk.Frame):
         invoice_id = self.get_selected_id()
         if not invoice_id:
             return
-        if not messagebox.askyesno("تأكيد", "هل تريد حذف هذه الفاتورة؟"):
+        if not alerts.confirm_always("تأكيد", "هل تريد حذف هذه الفاتورة؟"):
             return
         conn = get_connection()
         conn.execute("DELETE FROM invoices WHERE id=?", (invoice_id,))
@@ -250,7 +252,7 @@ class InvoicesTab(ttk.Frame):
             ["رقم الفاتورة", "العميل", "التاريخ", "الاستحقاق", "الحالة", "الإجمالي"],
             path,
         )
-        messagebox.showinfo("تم", "تم تصدير البيانات بنجاح")
+        alerts.info("تم", "تم تصدير البيانات بنجاح")
 
     def refresh(self):
         for row in self.tree.get_children():

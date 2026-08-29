@@ -10,7 +10,23 @@ from datetime import date, datetime
 
 from tkinter import ttk
 
-from ui.cd_document import FRENCH_MONTHS
+# أسماء الأشهر بالفرنسية (بدون همزات/أكسنت، زي ما تُكتب بمستندات CD:
+# "Aout" لا "Août") — الملف اللي يعرّفها هو الملف الرئيسي المستخدم (خانات
+# التاريخ هنا)؛ ui/cd/document.py يستوردها من هنا (مو العكس)، حتى الحزمة
+# المشتركة (ui/common) تبقى مستقلة عن أي خدمة معيّنة (CD أو غيرها لاحقاً).
+FRENCH_MONTHS = [
+    "Janvier", "Fevrier", "Mars", "Avril", "Mai", "Juin",
+    "Juillet", "Aout", "Septembre", "Octobre", "Novembre", "Decembre",
+]
+
+# تمييز خانة فاضية (لسا ما كُتب فيها شي) بخلفية ملوّنة خفيفة — أصفر فاتح
+# جداً، إشارة "يحتاج تعبئة" مألوفة وغير منبّهة (بعكس الأحمر/الوردي اللي
+# يوحي بخطأ، مستخدَم لحاله بـ_INVALID_BG بكل من MaskedDateEntry/
+# SplitDateEntry تحت). معرَّفة هنا (مو ui/cd/constants.py) لأن خانات
+# التاريخ/الوقت هنا تحتاجها مباشرة بمنطقها الداخلي (_validate)، وui/cd
+# يستوردها من هنا (مو العكس) — نفس مبدأ FRENCH_MONTHS فوق بالضبط.
+EMPTY_BG_COLOR = "#fff3cd"
+FILLED_BG_COLOR = "white"
 
 # نفس شكل الخانات العادية بالشاشة (بدون إطار ظاهر افتراضياً، Courier صغير)
 _ENTRY_STYLE = dict(
@@ -49,6 +65,30 @@ def bind_enter_advances_focus(entry):
 
     entry.bind("<Return>", _advance)
     entry.bind("<KP_Enter>", _advance)
+
+
+def bind_advance_on_maxlen(entry, var, maxlen):
+    """لما الحقل يوصل حده الأقصى (maxlen حرف) أثناء الكتابة الحقيقية،
+    ينتقل تلقائياً للحقل التالي (بترتيب التنقّل العادي، زي Tab) — بدل ما
+    يبقى يرفض أي حرف زيادة بصمت وينتظر Tab/Enter يدوي، رغم إن الخانة
+    فعلياً ما فيها مكان لحرف زيادة أصلاً (نفس مبدأ اليوم/الشهر/السنة).
+
+    مربوطة بـ<KeyRelease> لا بـtrace على var — <KeyRelease> ينطلق بس
+    بضغطة لوحة مفاتيح حقيقية، بعكس trace اللي ينطلق حتى لو القيمة
+    اتغيّرت برمجياً (تحميل بيانات محفوظة/مسودة، أو استرجاع من السجل)،
+    وهالحالات ما لازم تحرّك التركيز إطلاقاً."""
+    def on_key_release(event):
+        # Backspace/Delete ما تزيد الطول أبداً (تجاهلها رخيص وواضح).
+        # Tab/Return/KP_Enter مستثناة عمداً: لهم انتقال خاص فعلاً (تنقّل
+        # Tk الافتراضي، أو bind_enter_advances_focus) — لو ما استثنيناها
+        # هون، حقل ممتلئ بالضبط + Enter يطلق قفزتين متتاليتين (Enter
+        # يقفز خانة، وهذا يقفز خانة ثانية فوقها) بدل قفزة وحدة.
+        if event.keysym in ("BackSpace", "Delete", "Tab", "Return", "KP_Enter"):
+            return
+        if len(var.get() or "") >= maxlen:
+            entry.event_generate("<Tab>")
+
+    entry.bind("<KeyRelease>", on_key_release, add="+")
 
 
 # لما نافذة البرنامج تفقد التركيز على مستوى النظام (Alt+Tab لبرنامج
@@ -321,8 +361,15 @@ class MaskedDateEntry(tk.Frame):
         """يتحقق لو اليوم/الشهر/السنة الثلاثة معبّأة تشكّل تاريخاً ممكناً
         فعلياً تقويمياً (زي 31 فبراير) — كل رقم لحاله صالح بمداه، بس
         التركيبة نفسها مستحيلة. يعتمد على النص المعروض فعلياً (مو الحالة
-        الداخلية بس)، حتى يبقى صحيح حتى لو النص انضبط من برّا مباشرة."""
-        parts = self.var.get().split("/")
+        الداخلية بس)، حتى يبقى صحيح حتى لو النص انضبط من برّا مباشرة.
+
+        خانة فاضية تماماً (لسا ما كُتب فيها شي) تاخذ EMPTY_BG_COLOR بدل
+        فحص الصلاحية (ماكو شي نتحقق منه أصلاً)."""
+        text = self.var.get()
+        if not text.strip():
+            self.entry.configure(bg=EMPTY_BG_COLOR)
+            return
+        parts = text.split("/")
         invalid = False
         if len(parts) == 3 and len(parts[0]) == 2 and len(parts[1]) == 2 and len(parts[2]) == 4:
             try:
@@ -335,12 +382,30 @@ class MaskedDateEntry(tk.Frame):
         """يرجّع كائن date، أو يرمي ValueError لو التاريخ ناقص/غلط."""
         return datetime.strptime(self.var.get(), "%d/%m/%Y").date()
 
+    def set_date(self, d):
+        """يعيّن التاريخ برمجياً (DD/MM/YYYY) — مفيد لاسترجاع مستند سابق
+        كامل بحقوله للاستمارة. d=None يفضّي الحقل."""
+        if d is None:
+            self.clear()
+            return
+        self._digits = {"day": f"{d.day:02d}", "month": f"{d.month:02d}", "year": f"{d.year:04d}"}
+        self._active = None
+        self._active_fresh = False
+        self._refresh()
+
     def clear(self):
         """يفضّي الحقل بالكامل — مفيد لبدء معاملة/مستند جديد."""
         self._digits = {"day": "", "month": "", "year": ""}
         self._active = None
         self._active_fresh = False
         self._refresh()
+
+    def set_readonly(self, readonly):
+        """يقفل/يفك قفل الكتابة اليدوية بالحقل — "readonly" (مو
+        "disabled") حتى يبقى النص مقروءاً بوضوح طبيعي (بلا تعتيم) ويظل
+        قابلاً للتحديد/النسخ حتى وهو مقفول. راجع set_form_readonly
+        بـui/cd/tab.py لشرح متى وليش."""
+        self.entry.configure(state="readonly" if readonly else "normal")
 
 
 # فترات دوام العمل المسموحة (بالدقيقة من بداية اليوم): 09:00–11:59
@@ -373,7 +438,13 @@ class MaskedTimeEntry(tk.Frame):
         self.entry.bind("<Key>", self._on_key)
         self.entry.bind("<FocusIn>", self._on_focus_in)
         bind_triple_click_select_all(self.entry)
-        bind_enter_advances_focus(self.entry)
+        # Enter/Tab-الرقمية ينهي الحقل زي bind_enter_advances_focus
+        # العادية، لكن بدل الانتقال بترتيب التنقّل الافتراضي (Tab)، نطلق
+        # حدث افتراضي (<<TimeComplete>>) — نفس مبدأ <<CDTabNext/Prev>>
+        # بالضبط: هذا الودجت عام (ما يفترض يعرف شي عن أي حقل CD تحديداً)،
+        # والشاشة المستخدمة (CD) هي اللي تربط الحدث بوجهتها الخاصة.
+        self.entry.bind("<Return>", self._emit_complete)
+        self.entry.bind("<KP_Enter>", self._emit_complete)
 
         if default_now:
             now = datetime.now()
@@ -396,6 +467,13 @@ class MaskedTimeEntry(tk.Frame):
         # (راجع select_all_on_real_focus) — عندها نكمّل من نفس المكان.
         if select_all_on_real_focus(self.entry):
             self._fresh = True
+
+    def _emit_complete(self, _event=None):
+        """يطلق <<TimeComplete>> — إما لأن الوقت اكتمل (4 أرقام) أثناء
+        الكتابة، أو لأن Enter اتضغط (بغض النظر عن اكتمال الوقت فعلياً،
+        نفس مبدأ Enter بباقي الحقول: يثبّت أفضل حالة ممكنة وينتقل)."""
+        self.entry.event_generate("<<TimeComplete>>")
+        return "break"
 
     def _on_key(self, event):
         if event.keysym == "BackSpace":
@@ -446,6 +524,14 @@ class MaskedTimeEntry(tk.Frame):
                     ok = _time_allowed(hour, int(candidate))
                 if ok:
                     self._minute_digits = candidate
+                    if len(candidate) == 2:
+                        # الوقت اكتمل (4 أرقام) -> نطلق نفس الحدث العام
+                        # اللي يطلقه Enter (<<TimeComplete>>)، بلا انتظار
+                        # ضغطة يدوية — نفس مبدأ اكتمال السنة بالضبط
+                        # (SplitDateEntry._maybe_year_complete). مؤجَّل
+                        # بـafter_idle حتى ما نغيّر التركيز ونحن لسا وسط
+                        # معالجة ضغطة الرقم نفسها.
+                        self.after_idle(self._emit_complete)
                 self._refresh()
             return "break"
         if event.char and event.char.isprintable():
@@ -463,12 +549,30 @@ class MaskedTimeEntry(tk.Frame):
             raise ValueError("الوقت خارج فترات الدوام المسموحة")
         return val
 
+    def set_time_str(self, text):
+        """يعيّن الوقت برمجياً من نص "HH:MM" (نفس صيغة get_time_str) —
+        مفيد لاسترجاع مستند سابق كامل بحقوله للاستمارة. text فاضي/None
+        يفضّي الحقل."""
+        if not text:
+            self.clear()
+            return
+        hour_s, minute_s = text.split(":")
+        self._hour_digits = hour_s
+        self._minute_digits = minute_s
+        self._fresh = False
+        self._refresh()
+
     def clear(self):
         """يفضّي الحقل بالكامل — مفيد لبدء معاملة/مستند جديد."""
         self._hour_digits = ""
         self._minute_digits = ""
         self._fresh = False
         self._refresh()
+
+    def set_readonly(self, readonly):
+        """يقفل/يفك قفل الكتابة اليدوية بالحقل — راجع نفس الشرح بـ
+        MaskedDateEntry.set_readonly أعلاه."""
+        self.entry.configure(state="readonly" if readonly else "normal")
 
 
 class SplitDateEntry(tk.Frame):
@@ -536,6 +640,21 @@ class SplitDateEntry(tk.Frame):
         # يشتغل عادي (وأي رجوع بيوصل عبره يفعّل التحديد الكامل تلقائياً
         # عبر <FocusIn> العادي، بدون أي تدخل إضافي).
         self.day_entry.bind("<Shift-Tab>", lambda _e: None)
+        # Ctrl+Tab / Ctrl+Shift+Tab لازم يتنقّلا بين تبويبات المستند (زي
+        # كروم)، مو بين خانات التاريخ — لكن <Tab> أعلاه يمسك أي ضغطة Tab
+        # حتى لو مصحوبة بـCtrl (نفس مشكلة Shift+Tab بالضبط: Tk يطابق
+        # keysym بلا اعتبار للمفاتيح المعدِّلة إلا لو النمط حدّدها صراحة)،
+        # فلازم نصرّح بنمط أدق (<Control-Tab>) صراحة هون حتى يتغلّب عليه.
+        # هذا الودجت عام (مو خاص بشاشة CD) وما يفترض يعرف شي عن مفهوم
+        # "تبويبات مستند" أصلاً — نطلق حدث افتراضي بس (<<CDTabNext/Prev>>)،
+        # والشاشة اللي تستخدمنا (CDTab) هي اللي تربطه بمنطقها الخاص عبر
+        # bind_all. ملاحظة مهمة: تجربة سابقة أثبتت إن ربط فاضٍ (no-op،
+        # زي حيلة Shift-Tab فوق) هون ما يشتغل — يمنع bind_all من استقبال
+        # الحدث نهائياً بدل ما يسمح له يمرّ (خلاف Shift-Tab، اللي كانت
+        # تسلّم التنقّل الافتراضي لـTk نفسه لا لمعالج مخصّص). لازم نربط
+        # المعالج الحقيقي (أو ما يطلقه) مباشرة، مو no-op.
+        self.day_entry.bind("<Control-Tab>", self._emit_tab_next)
+        self.day_entry.bind("<Control-Shift-Tab>", self._emit_tab_prev)
         bind_triple_click_select_all(self.day_entry)
 
         self.month_var = tk.StringVar()
@@ -552,6 +671,8 @@ class SplitDateEntry(tk.Frame):
         self.month_entry.bind("<Return>", self._month_advance)
         self.month_entry.bind("<Tab>", self._month_advance)
         self.month_entry.bind("<Shift-Tab>", lambda _e: None)  # راجع شرح اليوم أعلاه
+        self.month_entry.bind("<Control-Tab>", self._emit_tab_next)  # راجع شرح اليوم أعلاه
+        self.month_entry.bind("<Control-Shift-Tab>", self._emit_tab_prev)
         bind_triple_click_select_all(self.month_entry)
 
         self.year_var = tk.StringVar()
@@ -609,6 +730,17 @@ class SplitDateEntry(tk.Frame):
             return True
         return False
 
+    # ---------- Ctrl+Tab / Ctrl+Shift+Tab: تمرير لحدث افتراضي عام ----------
+    @staticmethod
+    def _emit_tab_next(event):
+        event.widget.event_generate("<<CDTabNext>>")
+        return "break"
+
+    @staticmethod
+    def _emit_tab_prev(event):
+        event.widget.event_generate("<<CDTabPrev>>")
+        return "break"
+
     # ---------- اليوم ----------
     def _on_day_key(self, event):
         if event.keysym == "BackSpace":
@@ -630,8 +762,14 @@ class SplitDateEntry(tk.Frame):
             if len(candidate) == 1 or (len(candidate) == 2 and 1 <= int(candidate) <= 31):
                 self._day_digits = candidate
                 self.day_var.set(self._day_digits)
-                if len(candidate) == 2:
-                    # اليوم اكتمل (رقمين) -> ننتقل أوتوماتيكياً لخانة الشهر
+                # رقم وحيد بلا أي احتمال رقم ثاني يكوّن يوم صحيح (4-9:
+                # أي رقم ثاني يعطي 40-99، كلها أكبر من 31) يُعتبر مكتمل
+                # وواضح فوراً — نفس مبدأ الشهر بالضبط (digits in
+                # "23456789" هناك)، بدل ما ننتظر رقم ثاني هو أصلاً
+                # مرفوض دائماً بصمت (زي "8" ثم أي رقم بعده).
+                complete = len(candidate) == 2 or (len(candidate) == 1 and candidate in "456789")
+                if complete:
+                    # اليوم اكتمل -> ننتقل أوتوماتيكياً لخانة الشهر
                     self.after_idle(lambda: self._advance_focus(self.month_entry))
             self._validate()
             return "break"
@@ -843,7 +981,11 @@ class SplitDateEntry(tk.Frame):
         نفس التنبيه لو الشهر مكتوب بالحروف وبقي ملتبس (زي "Ju" اللي
         يطابق Juin وJuillet معاً) بدون ما يتحدد لشهر وحيد واضح — قبل
         هالإضافة كانت الخانة تبقى بيضاء عادية وكأن كل شي تمام، مع إنها
-        فعلياً قيمة ميتة (get_date() يرمي خطأ) لو ابتعدت عنها بهالحالة."""
+        فعلياً قيمة ميتة (get_date() يرمي خطأ) لو ابتعدت عنها بهالحالة.
+
+        كل خانة (يوم/شهر/سنة) فاضية لحالها تاخذ EMPTY_BG_COLOR مستقلة
+        عن الثانيتين — فحص التركيبة الكاملة (فوق) منفصل تماماً، ويلوّن
+        بس الخانات المعبّأة فعلياً لو التركيبة مستحيلة."""
         year_s = self.year_var.get()
         month_ambiguous = bool(self._month_letters) and not self._month_digits
         complete = bool(self._day_digits) and bool(self._month_digits) and len(year_s) == 4
@@ -853,9 +995,14 @@ class SplitDateEntry(tk.Frame):
                 date(int(year_s), int(self._month_digits), int(self._day_digits))
             except ValueError:
                 invalid = True
-        bg = self._INVALID_BG if invalid else self._NORMAL_BG
-        for entry in (self.day_entry, self.month_entry, self.year_entry):
-            entry.configure(bg=bg)
+        shared_bg = self._INVALID_BG if invalid else self._NORMAL_BG
+        fields = (
+            (self.day_entry, self._day_digits),
+            (self.month_entry, self._month_digits or self._month_letters),
+            (self.year_entry, year_s),
+        )
+        for entry, digits in fields:
+            entry.configure(bg=EMPTY_BG_COLOR if not digits else shared_bg)
 
     def a_right_edge_px(self):
         """أقصى نقطة يمين (بالبكسل الحقيقي) لحرف "a" — تُستخدم من الشاشة
@@ -873,6 +1020,23 @@ class SplitDateEntry(tk.Frame):
             raise ValueError("تاريخ غير صحيح")
         return date(int(year_s), int(self._month_digits), int(self._day_digits))
 
+    def set_date(self, d):
+        """يعيّن التاريخ برمجياً (يوم/شهر/سنة) — يحدّث القيم المعروضة
+        وحالتها الداخلية معاً (نفس منطق default_today بالتهيئة)، مفيد
+        لاسترجاع مستند سابق كامل بحقوله للاستمارة. d=None يفضّي الحقل."""
+        if d is None:
+            self.clear()
+            return
+        self._day_digits = str(d.day)
+        self._day_fresh = False
+        self.day_var.set(self._day_digits)
+        self._month_digits = f"{d.month:02d}"
+        self._month_letters = ""
+        self._month_fresh = False
+        self._set_month_display(FRENCH_MONTHS[d.month - 1])
+        self.year_var.set(f"{d.year:04d}")
+        self.after_idle(self.reposition_year)
+
     def clear(self):
         """يفضّي اليوم/الشهر/السنة الثلاثة — مفيد لبدء معاملة/مستند جديد."""
         self._day_digits = ""
@@ -885,3 +1049,11 @@ class SplitDateEntry(tk.Frame):
         self.year_var.set("")
         self.reposition_year()
         self._validate()
+
+    def set_readonly(self, readonly):
+        """يقفل/يفك قفل الكتابة اليدوية بالخانات الثلاث معاً (يوم/شهر/
+        سنة) دفعة وحدة — راجع نفس الشرح بـMaskedDateEntry.set_readonly."""
+        state = "readonly" if readonly else "normal"
+        self.day_entry.configure(state=state)
+        self.month_entry.configure(state=state)
+        self.year_entry.configure(state=state)

@@ -9,7 +9,9 @@ Titre de congé).
 يُبنى في خطوة لاحقة.
 """
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk
+
+from ui.common import alerts
 
 SERVICE_TYPES = [
     "Attestation de travail",
@@ -56,7 +58,7 @@ class DossierTab(ttk.Frame):
     def go_next(self):
         selected = [name for name, var in self.check_vars.items() if var.get()]
         if not selected:
-            messagebox.showwarning("تنبيه", "اختر نوعاً واحداً على الأقل قبل المتابعة")
+            alerts.warning("تنبيه", "اختر نوعاً واحداً على الأقل قبل المتابعة")
             return
         self.show_confirmation(selected)
 

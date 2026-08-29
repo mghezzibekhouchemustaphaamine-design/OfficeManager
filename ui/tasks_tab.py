@@ -2,9 +2,11 @@
 تبويب إدارة المهام والمواعيد.
 """
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk
 
-from database import get_connection
+from ui.common import alerts
+
+from programme.database import get_connection
 
 
 class TasksTab(ttk.Frame):
@@ -112,7 +114,7 @@ class TasksTab(ttk.Frame):
     def save(self):
         title = self.title_var.get().strip()
         if not title:
-            messagebox.showwarning("تنبيه", "العنوان مطلوب")
+            alerts.warning("تنبيه", "العنوان مطلوب")
             return
         conn = get_connection()
         conn.execute(
@@ -134,11 +136,11 @@ class TasksTab(ttk.Frame):
 
     def update_selected(self):
         if not self.selected_id:
-            messagebox.showwarning("تنبيه", "اختر مهمة من القائمة أولاً")
+            alerts.warning("تنبيه", "اختر مهمة من القائمة أولاً")
             return
         title = self.title_var.get().strip()
         if not title:
-            messagebox.showwarning("تنبيه", "العنوان مطلوب")
+            alerts.warning("تنبيه", "العنوان مطلوب")
             return
         conn = get_connection()
         conn.execute(
@@ -160,7 +162,7 @@ class TasksTab(ttk.Frame):
 
     def mark_done(self):
         if not self.selected_id:
-            messagebox.showwarning("تنبيه", "اختر مهمة من القائمة أولاً")
+            alerts.warning("تنبيه", "اختر مهمة من القائمة أولاً")
             return
         conn = get_connection()
         conn.execute("UPDATE tasks SET status='مكتملة' WHERE id=?", (self.selected_id,))
@@ -171,9 +173,9 @@ class TasksTab(ttk.Frame):
 
     def delete_selected(self):
         if not self.selected_id:
-            messagebox.showwarning("تنبيه", "اختر مهمة من القائمة أولاً")
+            alerts.warning("تنبيه", "اختر مهمة من القائمة أولاً")
             return
-        if not messagebox.askyesno("تأكيد", "هل تريد حذف هذه المهمة؟"):
+        if not alerts.confirm_always("تأكيد", "هل تريد حذف هذه المهمة؟"):
             return
         conn = get_connection()
         conn.execute("DELETE FROM tasks WHERE id=?", (self.selected_id,))

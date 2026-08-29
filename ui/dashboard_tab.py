@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 from datetime import date
 
-from database import get_connection
+from programme.database import get_connection
 
 
 class DashboardTab(ttk.Frame):

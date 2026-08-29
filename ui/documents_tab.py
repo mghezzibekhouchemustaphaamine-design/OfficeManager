@@ -2,10 +2,12 @@
 تبويب إدارة المستندات: ربط ملفات موجودة على الجهاز بعملاء وتصنيفات، وفتحها مباشرة.
 """
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, filedialog
 
-from database import get_connection
-from utils import open_path
+from ui.common import alerts
+
+from programme.database import get_connection
+from programme.utils import open_path
 
 
 class DocumentsTab(ttk.Frame):
@@ -94,17 +96,17 @@ class DocumentsTab(ttk.Frame):
     def open_selected(self):
         doc_id, path = self.get_selected()
         if not doc_id:
-            messagebox.showwarning("تنبيه", "اختر مستنداً من القائمة")
+            alerts.warning("تنبيه", "اختر مستنداً من القائمة")
             return
         if not open_path(path):
-            messagebox.showerror("خطأ", "تعذر العثور على الملف في مساره الأصلي")
+            alerts.error("خطأ", "تعذر العثور على الملف في مساره الأصلي")
 
     def delete_selected(self):
         doc_id, _ = self.get_selected()
         if not doc_id:
-            messagebox.showwarning("تنبيه", "اختر مستنداً من القائمة")
+            alerts.warning("تنبيه", "اختر مستنداً من القائمة")
             return
-        if not messagebox.askyesno("تأكيد", "هل تريد حذف هذا السجل (لن يُحذف الملف الأصلي)؟"):
+        if not alerts.confirm_always("تأكيد", "هل تريد حذف هذا السجل (لن يُحذف الملف الأصلي)؟"):
             return
         conn = get_connection()
         conn.execute("DELETE FROM documents WHERE id=?", (doc_id,))

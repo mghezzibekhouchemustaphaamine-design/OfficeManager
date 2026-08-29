@@ -16,15 +16,17 @@ from datetime import datetime
 
 from docx import Document
 from docx.shared import Pt, Mm
+from PIL import Image, ImageDraw, ImageFont
 
-# نفس الأسماء المستخدمة بالنموذج الأصلي (بدون همزات/أكسنت، زي ما هي
-# بالمستند المصدر: "Aout" لا "Août").
-FRENCH_MONTHS = [
-    "Janvier", "Fevrier", "Mars", "Avril", "Mai", "Juin",
-    "Juillet", "Aout", "Septembre", "Octobre", "Novembre", "Decembre",
-]
+# معرَّفة بـui/common/widgets.py (خانات التاريخ هي المستخدم الأساسي
+# الحقيقي — 7 استخدامات مقابل استخدام وحيد هنا) — نفس الأسماء المستخدمة
+# بالنموذج الأصلي (بدون همزات/أكسنت: "Aout" لا "Août").
+from ui.common.widgets import FRENCH_MONTHS
+from programme.paths import get_screen_dir
 
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "output", "CD")
+# مكان حفظ مستندات CD الحقيقية: مجلد travail/CD بسطح المكتب — مو جوا
+# مجلد البرنامج نفسه (راجع paths.py للتفاصيل والسبب).
+OUTPUT_DIR = get_screen_dir("CD")
 
 # --- قياسات مستخرجة رقمياً من Model Change Devise.pdf وModel Vierge.pdf عبر PyMuPDF ---
 FONT_NAME = "Courier New"
@@ -39,35 +41,69 @@ LINE_HEIGHT_MIDDLE_PT = 12.45  # تباعد أسطر خط 11 (من Model Vierge)
 TITLE_COL = 25   # عدد المسافات قبل العنوان (محسوبة من: 182.8-30.5 / 6.0)
 DATE_COL = 54    # عدد المسافات قبل التاريخ (محسوبة من: 354.5-30.5 / 6.0)
 
-# سطر Devise: نفس طول تسمية Agence بالضبط ("Devise ......: ")، فبداية
-# الحقل بنفس العمود (15). كود عملة/اسمها (زي EUR أو Euro)، ما فيه شي
-# بعده بنفس السطر فما يحتاج حد أقصى مشدد — نفس عرض Agence/Caisse (32).
+# الأسطر الخمسة الأولى (Agence/Devise/Guichet/Caisse/Guichetier) كلها
+# بنفس النمط الموحّد (بطلب صريح): حقل أول 5 خانات (أرقام إلا Devise:
+# حروف كبيرة فقط)، فراغ واحد ثابت، ثم حقل ثاني 25 حرف (حروف كبيرة أو
+# أرقام، بلا مسافة) — ما عدا Guichetier اللي ما فيه حقل ثاني إطلاقاً
+# (رقم 5 خانات بس، لوحده على السطر). عمود الحقل الثاني بكل سطر ثابت
+# دائماً بغض النظر عن طول الحقل الأول الفعلي المكتوب (.ljust() بالعمود
+# الكامل، لا بطول القيمة) — نفس مبدأ Guichet قبل اسم الراكب المكرر.
+FIRST_FIELD_WIDTH = 5
+FIRST_FIELD_GAP = 1
+SECOND_FIELD_WIDTH = 25
+
+AGENCE_LABEL = "Agence ......: "
+AGENCE_NO_COL = len(AGENCE_LABEL)  # = 15
+AGENCE_NO_FIELD_WIDTH = FIRST_FIELD_WIDTH
+AGENCE_GAP = FIRST_FIELD_GAP
+AGENCE_COL = AGENCE_NO_COL + AGENCE_NO_FIELD_WIDTH + AGENCE_GAP  # = 21
+AGENCE_FIELD_WIDTH = SECOND_FIELD_WIDTH
+
 DEVISE_LABEL = "Devise ......: "
-DEVISE_COL = len(DEVISE_LABEL)
-DEVISE_FIELD_WIDTH = 32
+DEVISE_CODE_COL = len(DEVISE_LABEL)  # = 15
+DEVISE_CODE_FIELD_WIDTH = FIRST_FIELD_WIDTH
+DEVISE_GAP = FIRST_FIELD_GAP
+DEVISE_COL = DEVISE_CODE_COL + DEVISE_CODE_FIELD_WIDTH + DEVISE_GAP  # = 21
+DEVISE_FIELD_WIDTH = SECOND_FIELD_WIDTH
 
-# سطر Guichet: فراغ واحد بعد النقطتين، ثم حقل الكتابة (30 حرف بالضبط —
-# هذا حده الأقصى)، ثم فراغين، ثم يبدأ اسم الراكب المكرر — يعني 33 فراغ
-# بالضبط من النقطتين لبداية التكرار (1 فاصل + 30 حقل + 2 فراغ).
 GUICHET_LABEL = "Guichet .....: "
-GUICHET_VALUE_COL = len(GUICHET_LABEL)  # فراغ واحد بعد النقطتين
-GUICHET_FIELD_WIDTH = 30                # سعة حقل الكتابة بالضبط الحالية
+GUICHET_NO_COL = len(GUICHET_LABEL)  # = 15
+GUICHET_NO_FIELD_WIDTH = FIRST_FIELD_WIDTH
+GUICHET_GAP = FIRST_FIELD_GAP
+GUICHET_COL = GUICHET_NO_COL + GUICHET_NO_FIELD_WIDTH + GUICHET_GAP  # = 21
+GUICHET_FIELD_WIDTH = SECOND_FIELD_WIDTH
 
-# مكان التكرار مثبّت هنا نهائياً — بطلب صريح ما ينزاح أبداً حتى لو تغيّر
-# عرض حقل الكتابة (GUICHET_FIELD_WIDTH) لاحقاً. الفراغ الفاصل بينهما هو
-# اللي يتمدد أو يضيق تلقائياً بدل ما يتحرك مكان التكرار نفسه.
-# +32 من GUICHET_VALUE_COL (لا +33): GUICHET_VALUE_COL نفسه أصلاً بعد
-# الفاصل الأول (فراغ واحد بعد النقطتين)، فـ33 فراغ الإجمالية من النقطتين
-# = 1(الفاصل، مُحتسَب أصلاً بـGUICHET_VALUE_COL) + 32 بعده.
-GUICHET_NAME_COL = GUICHET_VALUE_COL + 32
+# مكان تكرار اسم الراكب مثبّت هنا نهائياً — بطلب صريح ما ينزاح أبداً حتى
+# بعد تقسيم حقل Guichet لحقلين (5+1+25 = 31 خانة، أقل من الـ32 المحجوزة
+# هنا، فيبقى فراغ حرف واحد كحاجز أمان قبل بداية التكرار، بلا أي تصادم).
+# +32 من GUICHET_NO_COL (لا +33): GUICHET_NO_COL نفسه أصلاً بعد الفاصل
+# الأول (فراغ واحد بعد النقطتين)، فـ33 فراغ الإجمالية من النقطتين =
+# 1(الفاصل، مُحتسَب أصلاً بـGUICHET_NO_COL) + 32 بعده.
+GUICHET_NAME_COL = GUICHET_NO_COL + 32
 
-# سطر Nature piece identite: فراغ واحد بعد النقطتين، "PSP" ثابت، 10
-# فراغات ثابتة، "No" ثابت، نقطتين مباشرة (بلا فراغ بينهما، تحقّقنا من
-# الأصل) — وبعد هالنقطتين مباشرة كمان (بلا فراغ) يبدأ حقل N° Passport
-# (12 حرف/رقم بالضبط، هذا حده الأقصى). بعده 5 فراغات ثابتة، "Obtent."
-# ثابت، فراغ، نقطتين — وبعد هالنقطتين مباشرة (بلا فراغ) يبدأ حقل تاريخ
-# الحصول عليها (DD/MM/YYYY، بفواصل "/" دائماً).
-PASSPORT_LABEL = "Nature piece identite : PSP" + " " * 10 + "No:"
+CAISSE_LABEL = "Caisse ......: "
+CAISSE_NO_COL = len(CAISSE_LABEL)  # = 15
+CAISSE_NO_FIELD_WIDTH = FIRST_FIELD_WIDTH
+CAISSE_GAP = FIRST_FIELD_GAP
+CAISSE_COL = CAISSE_NO_COL + CAISSE_NO_FIELD_WIDTH + CAISSE_GAP  # = 21
+CAISSE_FIELD_WIDTH = SECOND_FIELD_WIDTH
+
+# Guichetier استثناء: حقل واحد بس (رقم 5 خانات)، بلا حقل ثاني إطلاقاً.
+GUICHETIER_LABEL = "Guichetier ..: "
+GUICHETIER_COL = len(GUICHETIER_LABEL)  # = 15
+GUICHETIER_FIELD_WIDTH = FIRST_FIELD_WIDTH
+
+# سطر Nature piece identite: فراغ واحد بعد النقطتين، "PSP" ثابت، 8
+# فراغات ثابتة، "No" ثابت، فراغ، نقطتين — وبعد هالنقطتين مباشرة (بلا
+# فراغ) يبدأ حقل N° Passport (12 حرف/رقم بالضبط، هذا حده الأقصى). بعده
+# 5 فراغات ثابتة، "Obtent." ثابت، فراغ، نقطتين — وبعد هالنقطتين مباشرة
+# (بلا فراغ) يبدأ حقل تاريخ الحصول عليها (DD/MM/YYYY، بفواصل "/" دائماً).
+# (قِيست هذي الأعداد بدقة من ملف Model Change Devise.pdf نفسه — استخراج
+# موضع كل حرف بالنقطة عبر PyMuPDF — بعد ما تبيّن إن نسخة سابقة كانت
+# مبنية على عدّ يدوي غلط: 10 فراغات لا 8، و"No:" بلا فراغ قبل النقطتين
+# بدل "No :" الصحيحة، فرق عمود واحد كان يخلي حقل Obtent وTx de change
+# ينزاحان عن مكانهما الحقيقي.)
+PASSPORT_LABEL = "Nature piece identite : PSP" + " " * 8 + "No :"
 PASSPORT_VALUE_COL = len(PASSPORT_LABEL)
 PASSPORT_FIELD_WIDTH = 12
 OBTENT_GAP = 5  # فراغات ثابتة بين نهاية حقل N° Passport وبداية "Obtent."
@@ -208,11 +244,15 @@ def _build_document_entries(data):
         ("", S),
         ("", S),
         ("", S),
-        (f"Agence ......: {data['agence']}", M),
-        (f"{DEVISE_LABEL}{data.get('devise', '')}", M),
-        (f"{GUICHET_LABEL}{data['guichet']}".ljust(GUICHET_NAME_COL) + data['passager'], M),
-        (f"Caisse ......: {data['caisse']}", M),
-        (f"Guichetier ..: {data['guichetier']}", M),
+        (f"{AGENCE_LABEL}{data.get('agence_no', '')}".ljust(AGENCE_COL) + data['agence'], M),
+        (f"{DEVISE_LABEL}{data.get('devise_code', '')}".ljust(DEVISE_COL) + data.get('devise', ''), M),
+        (
+            (f"{GUICHET_LABEL}{data.get('guichet_no', '')}".ljust(GUICHET_COL) + data['guichet']).ljust(GUICHET_NAME_COL)
+            + data['passager'],
+            M,
+        ),
+        (f"{CAISSE_LABEL}{data.get('caisse_no', '')}".ljust(CAISSE_COL) + data['caisse'], M),
+        (f"{GUICHETIER_LABEL}{data['guichetier']}", M),
         ("", M),
         ("", M),
         (f"{_label('Nom du remettant')} {data['passager']}", M),
@@ -272,21 +312,74 @@ def _build_docx(data):
     return doc
 
 
-def generate_cd_document(data):
-    """يبني المستند ويحفظه كملف Word نهائي، ويرجّع مساره.
+def _named_path(dir_path, passager, ext):
+    """مسار ملف جديد داخل مجلد محدَّد صراحة، بنفس اصطلاح التسمية دائماً
+    (CD_<الراكب>_<الوقت>.<الامتداد>) — يُستخدم لكل من المجلد التلقائي
+    (مجلد الشهر، راجع _month_output_path) ولمكان يختاره المستخدم صراحة
+    ("حفظ في مكان آخر" بـtab.py)."""
+    os.makedirs(dir_path, exist_ok=True)
+    safe_passager = "".join(c for c in passager if c.isalnum() or c in " _-").strip() or "sans_nom"
+    filename = f"CD_{safe_passager}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
+    return os.path.join(dir_path, filename)
 
-    المستندات الحقيقية (بعكس ملفات المعاينة/الخلفية المخزّنة مؤقتاً) تُحفظ
-    بمجلد فرعي حسب الشهر/السنة (output/CD/2026-08/...) تلقائياً — أسهل
-    للأرشفة اليدوية لاحقاً بدل تراكم كل الملفات بمجلد واحد مسطّح."""
+
+def _month_output_path(passager, ext):
+    """مسار الحفظ التلقائي الافتراضي لأي مستند CD جديد: مجلد فرعي حسب
+    الشهر/السنة الحالي (travail/CD/2026-08/...) — أسهل للأرشفة اليدوية
+    لاحقاً بدل تراكم كل الملفات بمجلد واحد مسطّح."""
+    month_dir = os.path.join(OUTPUT_DIR, datetime.now().strftime("%Y-%m"))
+    return _named_path(month_dir, passager, ext)
+
+
+def generate_cd_document(data, out_path=None):
+    """يبني المستند ويحفظه كملف Word نهائي، ويرجّع مساره. out_path
+    (اختياري): مسار محدَّد صراحة (تحديث فوق حالة موجودة، أو حفظ بمكان
+    آخر يختاره المستخدم) — بلا تمرير، يُبنى تلقائياً بمجلد الشهر الحالي
+    (نفس الاصطلاح دائماً)."""
     doc = _build_docx(data)
-
-    now = datetime.now()
-    month_dir = os.path.join(OUTPUT_DIR, now.strftime("%Y-%m"))
-    os.makedirs(month_dir, exist_ok=True)
-    safe_passager = "".join(c for c in data["passager"] if c.isalnum() or c in " _-").strip() or "sans_nom"
-    filename = f"CD_{safe_passager}_{now.strftime('%Y%m%d_%H%M%S')}.docx"
-    out_path = os.path.join(month_dir, filename)
+    if out_path is None:
+        out_path = _month_output_path(data["passager"], "docx")
+    else:
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     doc.save(out_path)
+    return out_path
+
+
+# متوسّط قيمتَي ascent/descent الرسميتَين لخط Courier القياسي بصيغة PDF
+# (629 و157 من 1000، عن pdfmetrics.getFont("Courier").face) — نستخدمها
+# لحساب موضع خط الأساس (baseline) بمنتصف صندوق ارتفاع كل سطر بالضبط،
+# نفس مبدأ anchor="lm" المستخدم لرسم الخلفية بـPillow (راجع
+# render_blank_background)، حتى النص يصطف بمنتصف سطره رأسياً لا أعلاه.
+_COURIER_PDF_ASCENT = 0.629
+_COURIER_PDF_DESCENT = 0.157
+
+
+def generate_cd_pdf(data, out_path=None):
+    """يبني نسخة PDF من نفس بيانات الاستمارة — نص متجهي حقيقي (حاد
+    بالطباعة/التكبير، مو صورة)، بنفس مصدر النص الوحيد وحسابات الموضع
+    المستخدمة بكل مكان آخر بالمشروع (_build_document_entries، _y_top_pt،
+    _line_height_for) — بلا أي اعتماد على Word أو برنامج خارجي (خط
+    Courier القياسي مدمج بصيغة PDF نفسها، عرض حرفه 0.6em بالضبط زي
+    المستخدم بكل حساباتنا، فما يحتاج أي معايرة إضافية أفقياً)."""
+    from reportlab.pdfgen.canvas import Canvas
+
+    if out_path is None:
+        out_path = _month_output_path(data["passager"], "pdf")
+    else:
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+
+    c = Canvas(out_path, pagesize=(PAGE_WIDTH_PT, PAGE_HEIGHT_PT))
+    for index, (text, size) in enumerate(_build_document_entries(data)):
+        if not text.strip():
+            continue
+        c.setFont("Courier", size)
+        line_h = _line_height_for(index)
+        glyph_h = (_COURIER_PDF_ASCENT + _COURIER_PDF_DESCENT) * size
+        top_pad = (line_h - glyph_h) / 2
+        baseline_from_top = _y_top_pt(index) + top_pad + _COURIER_PDF_ASCENT * size
+        c.drawString(LEFT_MARGIN_PT, PAGE_HEIGHT_PT - baseline_from_top, text)
+    c.showPage()
+    c.save()
     return out_path
 
 
@@ -301,11 +394,15 @@ FIELD_LAYOUT = {
     # يحسب مكانه الحقيقي حياً بالبكسل تبعاً لحرف "a" (راجع SplitDateEntry
     # .a_right_edge_px)، مُستخدم منها بس رقم السطر (3) لحساب الارتفاع y.
     "time": (3, 70, 6),
-    "agence": (8, 15, 32),
+    "agence_no": (8, AGENCE_NO_COL, AGENCE_NO_FIELD_WIDTH),
+    "agence": (8, AGENCE_COL, AGENCE_FIELD_WIDTH),
+    "devise_code": (9, DEVISE_CODE_COL, DEVISE_CODE_FIELD_WIDTH),
     "devise": (9, DEVISE_COL, DEVISE_FIELD_WIDTH),
-    "guichet": (10, GUICHET_VALUE_COL, GUICHET_FIELD_WIDTH),
-    "caisse": (11, 15, 32),
-    "guichetier": (12, 15, 15),
+    "guichet_no": (10, GUICHET_NO_COL, GUICHET_NO_FIELD_WIDTH),
+    "guichet": (10, GUICHET_COL, GUICHET_FIELD_WIDTH),
+    "caisse_no": (11, CAISSE_NO_COL, CAISSE_NO_FIELD_WIDTH),
+    "caisse": (11, CAISSE_COL, CAISSE_FIELD_WIDTH),
+    "guichetier": (12, GUICHETIER_COL, GUICHETIER_FIELD_WIDTH),
     "passager": (15, NOM_REMETTANT_COL, 32),
     "passport_no": (16, PASSPORT_VALUE_COL, PASSPORT_FIELD_WIDTH),
     "date_delivrance": (16, DATE_DELIVRANCE_COL, 12),
@@ -357,52 +454,84 @@ def field_layout_px(target_width_px):
     return result
 
 
-# --- ملفات المعاينة المؤقتة (تُستبدل في كل ضغطة "معاينة"، ما تتراكم) ---
-PREVIEW_DOCX = os.path.join(OUTPUT_DIR, "_preview.docx")
-PREVIEW_PDF = os.path.join(OUTPUT_DIR, "_preview.pdf")
+# --- ملف المعاينة المؤقت (يُستبدل في كل ضغطة "معاينة"، ما يتراكم) ---
+# (كان فيه أيضاً PREVIEW_DOCX/PREVIEW_PDF وسيطين لما كان الرسم يمر عبر
+# Word — انشالوا مع render_preview_image نفسها، راجع render_blank_background
+# فوق: رسم مباشر ببايثون/Pillow، بلا حاجة لـWord ولا لملف PDF وسيط إطلاقاً.)
 PREVIEW_PNG = os.path.join(OUTPUT_DIR, "_preview.png")
 
 
-def render_preview_image(data, target_width_px=750, out_png=None):
-    """
-    يبني المستند فعلياً، يحوّله PDF عن طريق Word نفسه (نفس ما يطبعه
-    المستخدم بالضبط)، ثم يرسمه كصورة PNG حقيقية للمعاينة.
-    يرجّع مسار ملف الـ PNG.
-    """
-    out_png = out_png or PREVIEW_PNG
-    doc = _build_docx(data)
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    doc.save(PREVIEW_DOCX)
-
-    import win32com.client as win32
-
-    word = win32.gencache.EnsureDispatch("Word.Application")
-    word.Visible = False
-    try:
-        wdoc = word.Documents.Open(PREVIEW_DOCX)
-        wdoc.SaveAs(PREVIEW_PDF, FileFormat=17)  # wdFormatPDF
-        wdoc.Close(False)
-    finally:
-        word.Quit()
-
-    import fitz
-
-    pdf = fitz.open(PREVIEW_PDF)
-    page = pdf[0]
-    zoom = target_width_px / page.rect.width
-    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
-    pix.save(out_png)
-    pdf.close()
-
-    return out_png
-
-
 _EMPTY_DATA = {
-    "no": "", "date": None, "time": "", "agence": "", "guichet": "", "caisse": "",
+    "no": "", "date": None, "time": "", "agence_no": "", "agence": "",
+    "devise_code": "", "guichet_no": "", "guichet": "", "caisse_no": "", "caisse": "",
     "guichetier": "", "passager": "", "passport_no": "", "date_delivrance": None,
     "taux": None, "eur": None, "dzd": None,
     "_omit_a_literal": True,  # الخلفية الفاضية بس — راجع الشرح أعلاه
 }
+
+# مسار خط Courier New الحقيقي على وندوز — نفس الخط المستخدم أصلاً بكل
+# من ملف الـWord (FONT_NAME) وحقول الكتابة الحية بالواجهة، فرسم الخلفية
+# به مباشرة (بدل الاعتماد على Word لرسمها) يحافظ على نفس المظهر تماماً.
+COURIER_TTF_PATH = r"C:\Windows\Fonts\cour.ttf"
+
+_font_cache = {}
+
+
+def _courier_font(px_size):
+    """يرجّع خط Courier New Pillow بالحجم المطلوب (بالبكسل، كسور مسموحة
+    لدقة أعلى) — مع تخزين مؤقت بالذاكرة (تحميل ملف الخط من القرص مكلف
+    نسبياً، ونفس الحجم يتكرر لعشرات الأسطر بكل رسمة)."""
+    key = round(px_size, 2)
+    font = _font_cache.get(key)
+    if font is None:
+        font = ImageFont.truetype(COURIER_TTF_PATH, px_size)
+        _font_cache[key] = font
+    return font
+
+
+def render_blank_background(data, target_width_px=750, out_png=None):
+    """
+    يرسم صورة المستند مباشرة ببايثون (Pillow) — بدون فتح Word إطلاقاً.
+    يستخدم بالضبط نفس مصدر النص الوحيد (_build_document_entries) ونفس
+    حسابات الموضع المستخدمة أصلاً لحقول الكتابة الحية (_y_top_pt،
+    _line_font_size، وصيغة عرض الحرف 0.6×حجم الخط بـfield_layout_px)،
+    فيضمن تطابق الخلفية مع الحقول الحية تماماً بلا أي اعتماد على تثبيت
+    Word أو تشغيله — أسرع بكثير كمان (رسم مباشر، بلا فتح برنامج ولا
+    تحويل PDF وسيط).
+    """
+    out_png = out_png or PREVIEW_PNG
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    scale = target_width_px / PAGE_WIDTH_PT
+    img_h = round(PAGE_HEIGHT_PT * scale)
+    img = Image.new("RGB", (target_width_px, img_h), "white")
+    draw = ImageDraw.Draw(img)
+
+    for index, (text, size) in enumerate(_build_document_entries(data)):
+        if not text.strip():
+            continue  # سطر فاضي كلياً — ما فيه شي نرسمه
+        font = _courier_font(size * scale)
+        char_w_px = 0.6 * size * scale
+        # نرسم النص بمنتصف صندوق ارتفاع السطر رأسياً (anchor="lm") — نفس
+        # المبدأ اللي يعتمده Tk تلقائياً بخانة الكتابة الحية المفروض
+        # عليها نفس الارتفاع (h من field_layout_px)، فالنص الثابت يصطف
+        # على نفس السطر بالضبط مع أي حقل حي جنبه بغض النظر عن أبعاد
+        # الخط الداخلية (ascent/descent) — بدل تخمين هامش علوي يدوياً.
+        y_center_px = (_y_top_pt(index) + _line_height_for(index) / 2) * scale
+        # نرسم كل حرف لحاله بعموده المحسوب مباشرة (مو السطر كامل بدفعة
+        # وحدة) — تأكدنا (بالقياس المباشر) إن FreeType يطبّق تصحيح تقريب
+        # (hinting) على تقدّم كل حرف عند أحجام الخط الصغيرة (زي حجمنا
+        # هنا)، فيتراكم انحراف ملحوظ عبر سطر طويل (وصل ~24px بسطر 54
+        # حرف) لو رسمناه كنص واحد متصل. الرسم حرف-حرف بموضعه الدقيق
+        # يتجاوز هالمشكلة كلياً ويضمن مطابقة تامة مع أعمدة field_layout_px.
+        for col, ch in enumerate(text):
+            if ch == " ":
+                continue
+            x_px = LEFT_MARGIN_PT * scale + col * char_w_px
+            draw.text((x_px, y_center_px), ch, font=font, fill="black", anchor="lm")
+
+    img.save(out_png)
+    return out_png
 
 
 def get_blank_background(target_width_px=750, force=False):
@@ -416,4 +545,4 @@ def get_blank_background(target_width_px=750, force=False):
     path = os.path.join(OUTPUT_DIR, f"_blank_bg_{target_width_px}.png")
     if not force and os.path.exists(path):
         return path
-    return render_preview_image(_EMPTY_DATA, target_width_px=target_width_px, out_png=path)
+    return render_blank_background(_EMPTY_DATA, target_width_px=target_width_px, out_png=path)

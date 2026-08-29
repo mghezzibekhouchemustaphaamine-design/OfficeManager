@@ -2,9 +2,11 @@
 تبويب إدارة العملاء: إضافة، تعديل، حذف، بحث.
 """
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk
 
-from database import get_connection
+from ui.common import alerts
+
+from programme.database import get_connection
 
 
 class ClientsTab(ttk.Frame):
@@ -92,7 +94,7 @@ class ClientsTab(ttk.Frame):
     def save(self):
         name = self.name_var.get().strip()
         if not name:
-            messagebox.showwarning("تنبيه", "الاسم مطلوب")
+            alerts.warning("تنبيه", "الاسم مطلوب")
             return
         conn = get_connection()
         conn.execute(
@@ -112,11 +114,11 @@ class ClientsTab(ttk.Frame):
 
     def update_selected(self):
         if not self.selected_id:
-            messagebox.showwarning("تنبيه", "اختر عميلاً من القائمة أولاً")
+            alerts.warning("تنبيه", "اختر عميلاً من القائمة أولاً")
             return
         name = self.name_var.get().strip()
         if not name:
-            messagebox.showwarning("تنبيه", "الاسم مطلوب")
+            alerts.warning("تنبيه", "الاسم مطلوب")
             return
         conn = get_connection()
         conn.execute(
@@ -137,9 +139,9 @@ class ClientsTab(ttk.Frame):
 
     def delete_selected(self):
         if not self.selected_id:
-            messagebox.showwarning("تنبيه", "اختر عميلاً من القائمة أولاً")
+            alerts.warning("تنبيه", "اختر عميلاً من القائمة أولاً")
             return
-        if not messagebox.askyesno("تأكيد", "هل أنت متأكد من حذف هذا العميل؟"):
+        if not alerts.confirm_always("تأكيد", "هل أنت متأكد من حذف هذا العميل؟"):
             return
         conn = get_connection()
         conn.execute("DELETE FROM clients WHERE id=?", (self.selected_id,))

@@ -133,6 +133,14 @@ def init_db():
     # للتعديل). فاضي للمستندات القديمة المولَّدة قبل هذا التغيير (Word بس).
     if "pdf_path" not in existing_cols:
         cur.execute("ALTER TABLE cd_documents ADD COLUMN pdf_path TEXT")
+    # recovery_code_hash: أضيف بعد ما كان جدول users موجود أصلاً بقواعد
+    # بيانات سابقة (نفس سبب full_data_json فوق) — hash كود الاسترجاع
+    # (راجع programme/auth.py:generate_recovery_code) يُستعمل لحذف
+    # الحساب الحالي لو نُسيت كلمة المرور. فاضي للحسابات المُنشأة قبل
+    # إضافة هذي الميزة.
+    existing_user_cols = {row[1] for row in cur.execute("PRAGMA table_info(users)")}
+    if "recovery_code_hash" not in existing_user_cols:
+        cur.execute("ALTER TABLE users ADD COLUMN recovery_code_hash TEXT")
     conn.commit()
     conn.close()
 

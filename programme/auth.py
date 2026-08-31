@@ -23,6 +23,22 @@ _HASH_ITERATIONS = 200_000
 # واحدة بس (برنامج سطح مكتب، مستخدم واحد بكل مرة).
 _current_session_id = None
 
+# أحرف/أرقام واضحة بصرياً بس (بلا 0/O ولا 1/I/L) — كود الاسترجاع يُكتب
+# يدوياً على ورقة عادة، فالالتباس بين حرف ورقم يشبهه يعطّل الاسترجاع
+# نفسه وقت الحاجة الفعلية له.
+_RECOVERY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def generate_recovery_code(groups=4, group_length=4):
+    """يولّد كود استرجاع عشوائي قوي (secrets، مو random) بصيغة مقروءة
+    يسهل نسخها يدوياً — مثلاً "XXXX-XXXX-XXXX-XXXX". يُستعمل مرة وحدة
+    عند إنشاء الحساب (راجع create_account) لإتاحة حذف الحساب لاحقاً لو
+    نُسيت كلمة المرور (راجع reset_account_with_recovery_code)."""
+    return "-".join(
+        "".join(secrets.choice(_RECOVERY_ALPHABET) for _ in range(group_length))
+        for _ in range(groups)
+    )
+
 
 def _hash_password(password, salt=None):
     if salt is None:
@@ -52,15 +68,23 @@ def has_account():
 
 def create_account(username, password):
     """ينشئ الحساب الوحيد للبرنامج — يُستدعى مرة وحدة بس (أول تشغيل، لو
-    has_account() False). لا تحقق هنا من عدم وجود حساب سابق — هذي
-    مسؤولية شاشة الدخول عبر has_account()."""
+    has_account() False، أو بعد استرجاع ناجح — راجع
+    reset_account_with_recovery_code). لا تحقق هنا من عدم وجود حساب
+    سابق — هذي مسؤولية شاشة الدخول عبر has_account().
+
+    يرجّع كود الاسترجاع الخام (raw) — يُعرض مرة وحدة بس بشاشة الدخول
+    (ui/login_screen.py) مباشرة بعد الإنشاء؛ لا يُخزَّن ولا يُحفَظ هنا
+    بأي شكل غير الـhash بقاعدة البيانات، فلو ضاع بعد هذي اللحظة ما فيه
+    طريقة لاسترجاعه — بس لحذف الحساب وإنشاء واحد جديد."""
+    recovery_code = generate_recovery_code()
     conn = get_connection()
     conn.execute(
-        "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-        (username, _hash_password(password)),
+        "INSERT INTO users (username, password_hash, recovery_code_hash) VALUES (?, ?, ?)",
+        (username, _hash_password(password), _hash_password(recovery_code)),
     )
     conn.commit()
     conn.close()
+    return recovery_code
 
 
 def verify_login(username, password):
@@ -73,6 +97,27 @@ def verify_login(username, password):
     if row is None:
         return False
     return _verify_password(password, row["password_hash"])
+
+
+def reset_account_with_recovery_code(code):
+    """يتحقق من كود الاسترجاع مقابل recovery_code_hash المخزّن للحساب
+    الحالي (حساب واحد بس بكل تنصيب). لو صحيح: يحذف سطر الحساب من users
+    بس (بدون لمس login_sessions — يبقى تاريخ الجلسات القديمة كما هو)
+    ويرجّع True. لو غلط أو ماكو حساب أصلاً: ما يغيّر أي شي ويرجّع False.
+
+    بلا حد لعدد المحاولات — نطاق ضيّق بطلب صريح لهذي المرحلة."""
+    conn = get_connection()
+    row = conn.execute("SELECT id, recovery_code_hash FROM users LIMIT 1").fetchone()
+    if row is None or not row["recovery_code_hash"]:
+        conn.close()
+        return False
+    if not _verify_password(code, row["recovery_code_hash"]):
+        conn.close()
+        return False
+    conn.execute("DELETE FROM users WHERE id = ?", (row["id"],))
+    conn.commit()
+    conn.close()
+    return True
 
 
 def record_login(username):

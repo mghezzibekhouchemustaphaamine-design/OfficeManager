@@ -249,7 +249,7 @@ def find_cd_document_by_path(path):
     منتهي — راجع _open_case_readonly بـui/cd/tab.py)، أو مو مرتبط بأي
     سطر أصلاً (يُفتح عادي بالنظام). يرجّع None لو ما لقى تطابق."""
     try:
-        abs_path = os.path.abspath(path)
+        abs_path = os.path.normcase(os.path.abspath(path))
     except (TypeError, ValueError):
         return None
     conn = get_connection()
@@ -258,7 +258,7 @@ def find_cd_document_by_path(path):
     for row in rows:
         row = dict(row)
         for candidate in (row.get("file_path"), row.get("pdf_path")):
-            if candidate and os.path.abspath(candidate) == abs_path:
+            if candidate and os.path.normcase(os.path.abspath(candidate)) == abs_path:
                 return row
     return None
 

@@ -11,6 +11,7 @@
 التراجع/الإعادة، المسودة وإعدادات المكتب. خانات الكتابة المخصّصة
 (CDEntryFactoryMixin) وسجل المستندات (CDHistoryWindow) بملفين منفصلين
 بنفس الحزمة (ui/cd/entries.py، ui/cd/history.py) — راجعهم لتفاصيلهم."""
+import logging
 import math
 import os
 import tkinter as tk
@@ -51,6 +52,12 @@ from ui.common.widgets import MaskedDateEntry, MaskedTimeEntry, SplitDateEntry, 
 from ui.common.file_explorer import FileExplorerPanel
 from programme.utils import open_path
 import random
+
+
+def _norm_path(path):
+    """تطبيع مسار للمقارنة — abspath + normcase (حماية فرق حالة
+    الأحرف بويندوز عند مقارنة مسار ملف بمسار محفوظ بقاعدة البيانات)."""
+    return os.path.normcase(os.path.abspath(path))
 
 
 def _increment_dossier_no(no_str):
@@ -467,13 +474,13 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         False لو الملف مو مرتبط بأي سطر (أو مستند قديم بلا بيانات كاملة
         محفوظة) — يُفتح عادي بالنظام بمساره الطبيعي."""
         try:
-            abs_path = os.path.abspath(file_path)
+            abs_path = _norm_path(file_path)
         except (TypeError, ValueError):
             return False
         for tab in self._tabs:
             loaded_from = tab.get("loaded_from")
             if loaded_from and any(
-                candidate and os.path.abspath(candidate) == abs_path
+                candidate and _norm_path(candidate) == abs_path
                 for candidate in (loaded_from.get("file_path"), loaded_from.get("pdf_path"))
             ):
                 self._activate_tab(tab["id"])
@@ -927,6 +934,10 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         self._update_no_tab_state()
         self._update_tab_scroll_arrows()
         self._update_next_button_state()
+        # إغلاق تبويب "محمَّل" من حالة CD يغيّر حالة القفل بالشريط الجانبي
+        # (الملف يرجع "شغل منتهي") — بدون هذا الاستدعاء، أيقونة 🔒 تبقى
+        # قديمة بصرياً لحد أي refresh() ثاني بسبب فعل مختلف تماماً.
+        self.explorer_panel.refresh()
 
     def _open_data_in_new_tab(self, data, source_row_id=None, source_file_path=None, source_pdf_path=None):
         """يفتح بيانات مستند (من السجل مثلاً) بتبويب جديد مستقل — ما يلمس
@@ -1264,7 +1275,7 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         بلا أي حماية إضافية بالشريط، رغم إنه فعلياً محمي من التعديل
         بالضبط زي "شغل منتهي" لحد ما يُفتح صراحة."""
         try:
-            abs_path = os.path.abspath(path)
+            abs_path = _norm_path(path)
         except (TypeError, ValueError):
             return True
         for tab in self._tabs:
@@ -1272,7 +1283,7 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
             if not loaded_from:
                 continue
             for candidate in (loaded_from.get("file_path"), loaded_from.get("pdf_path")):
-                if candidate and os.path.abspath(candidate) == abs_path:
+                if candidate and _norm_path(candidate) == abs_path:
                     return not tab.get("readonly", False)
         return False
 
@@ -1287,13 +1298,13 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         أيقونة الشريط 🔒↔🔓 فوراً (الودجت نفسه ما يعيد تقييم
         is_path_active إلا عند إعادة بناء الصف)."""
         try:
-            abs_path = os.path.abspath(path)
+            abs_path = _norm_path(path)
         except (TypeError, ValueError):
             return
         for tab in self._tabs:
             loaded_from = tab.get("loaded_from")
             if loaded_from and any(
-                candidate and os.path.abspath(candidate) == abs_path
+                candidate and _norm_path(candidate) == abs_path
                 for candidate in (loaded_from.get("file_path"), loaded_from.get("pdf_path"))
             ):
                 self._activate_tab(tab["id"])
@@ -2227,7 +2238,10 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
             else:
                 row_id = log_cd_document(record, full_data=data)
         except Exception:  # noqa: BLE001
-            pass  # فشل تسجيل السجل ثانوي — ما يوقف تسليم المستند الفعلي
+            logging.getLogger("officemanager").exception(
+                "فشل تسجيل مستند CD بسجل قاعدة البيانات (file_path=%r, row_id=%r)",
+                path, row_id,
+            )
         else:
             if active_tab is not None and row_id is not None:
                 # من الآن، هذا التبويب "محمَّل" من هذي الحالة بالذات — أي

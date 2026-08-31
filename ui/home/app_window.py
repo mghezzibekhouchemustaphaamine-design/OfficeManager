@@ -12,6 +12,7 @@ from ui.backup_tab import BackupTab
 from ui.cd.tab import CDTab
 from ui.common.alerts import confirm as _confirm
 from ui.home.services import build_services
+from ui.settings_screen import SettingsScreen
 
 
 class OfficeApp(tk.Tk):
@@ -62,10 +63,10 @@ class OfficeApp(tk.Tk):
         )
         self.home_button.pack(side="left", padx=(0, 8))
 
-        self.backup_button = ttk.Button(
-            self.header_actions, text="🗄️ النسخ الاحتياطي", command=self.open_backup
+        self.settings_button = ttk.Button(
+            self.header_actions, text="⚙️ الإعدادات", command=self.open_settings
         )
-        self.backup_button.pack(side="left")
+        self.settings_button.pack(side="left")
 
         ttk.Separator(self, orient="horizontal").pack(fill="x")
 
@@ -159,3 +160,9 @@ class OfficeApp(tk.Tk):
         self._current_service = "backup"
         self._set_status("النسخ الاحتياطي — حماية بيانات OfficeManager")
         BackupTab(self.body, self).pack(fill="both", expand=True)
+
+    def open_settings(self):
+        self.clear_body()
+        self._current_service = "settings"
+        self._set_status("الإعدادات — الحساب، الأمان، والنسخ الاحتياطي")
+        SettingsScreen(self.body, self).pack(fill="both", expand=True)

@@ -117,6 +117,14 @@ def init_db():
             login_at TEXT DEFAULT (datetime('now','localtime')),
             logout_at TEXT
         );
+
+        -- إعدادات عامة للبرنامج بصيغة key/value — عامة بما يكفي لأي
+        -- إعداد مستقبلي (راجع programme/settings.py)، بدل عمود/جدول
+        -- مخصّص لكل إعداد جديد.
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        );
         """
     )
     # full_data_json: أضيف بعد ما كان الجدول موجود أصلاً بقواعد بيانات

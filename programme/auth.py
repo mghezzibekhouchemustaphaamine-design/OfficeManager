@@ -99,6 +99,45 @@ def verify_login(username, password):
     return _verify_password(password, row["password_hash"])
 
 
+def get_current_username():
+    """ترجّع اسم المستخدم الحالي (الحساب الوحيد بالبرنامج) — None لو
+    ماكو حساب أصلاً. تُستخدم لعرضه بشاشة الإعدادات (ui/settings_screen.py)."""
+    conn = get_connection()
+    row = conn.execute("SELECT username FROM users LIMIT 1").fetchone()
+    conn.close()
+    return row["username"] if row is not None else None
+
+
+def update_account(current_password, new_username=None, new_password=None):
+    """يحدّث اسم المستخدم و/أو كلمة المرور للحساب الحالي — بعد التحقق
+    من current_password أولاً. recovery_code_hash ما ينلمس هنا إطلاقاً
+    (تغييره خارج نطاق هذي الدالة — راجع reset_account_with_recovery_code
+    لمسار مختلف كليّاً، مخصّص لحالة نسيان الباسوورد بس).
+
+    يرجّع False (بدون أي تغيير) لو current_password غلط أو ماكو حساب
+    أصلاً. يرجّع True لو التحقق نجح — حتى لو new_username وnew_password
+    الاثنين None (نجاح بلا أي تعديل فعلي)."""
+    conn = get_connection()
+    row = conn.execute("SELECT id, password_hash FROM users LIMIT 1").fetchone()
+    if row is None or not _verify_password(current_password, row["password_hash"]):
+        conn.close()
+        return False
+
+    updates, params = [], []
+    if new_username:
+        updates.append("username = ?")
+        params.append(new_username)
+    if new_password:
+        updates.append("password_hash = ?")
+        params.append(_hash_password(new_password))
+    if updates:
+        params.append(row["id"])
+        conn.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
+        conn.commit()
+    conn.close()
+    return True
+
+
 def reset_account_with_recovery_code(code):
     """يتحقق من كود الاسترجاع مقابل recovery_code_hash المخزّن للحساب
     الحالي (حساب واحد بس بكل تنصيب). لو صحيح: يحذف سطر الحساب من users

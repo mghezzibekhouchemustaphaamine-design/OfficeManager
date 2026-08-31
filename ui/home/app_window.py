@@ -7,6 +7,7 @@
 import tkinter as tk
 from tkinter import ttk
 
+import programme.auth as auth
 from ui.backup_tab import BackupTab
 from ui.cd.tab import CDTab
 from ui.common.alerts import confirm as _confirm
@@ -111,6 +112,7 @@ class OfficeApp(tk.Tk):
             )
             if not leave:
                 return
+        auth.record_logout_current()
         self.destroy()
 
     def show_home(self):

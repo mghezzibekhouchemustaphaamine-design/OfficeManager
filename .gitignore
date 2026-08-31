@@ -20,3 +20,7 @@ backup_settings.json
 
 # قاعدة بيانات قديمة فارغة غير مستخدمة (بقايا من إعادة تسمية سابقة)
 officemanager.db
+
+# سجل أخطاء التشغيل (programme/logging_setup.py) — يُنشأ محلياً تلقائياً،
+# مو جزء من الكود
+office_manager.log

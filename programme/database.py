@@ -96,6 +96,27 @@ def init_db():
             full_data_json TEXT,
             created_at TEXT DEFAULT (datetime('now','localtime'))
         );
+
+        -- حساب الدخول الوحيد للبرنامج (بوابة دخول قبل أي شي — راجع
+        -- ui/login_screen.py وprogramme/auth.py). حساب واحد بس يُنشأ
+        -- مرة وحدة عند أول تشغيل؛ password_hash يخزّن salt وhash معاً
+        -- بصيغة "salt$hash" (PBKDF2-HMAC-SHA256، مكتبة قياسية بس).
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+
+        -- سجل دخول/خروج بسيط للمحاسبة — سطر جديد كل دخول ناجح
+        -- (login_at)، يتحدّث logout_at لنفس السطر عند إغلاق البرنامج
+        -- عادي (راجع _on_close_request بـui/home/app_window.py).
+        CREATE TABLE IF NOT EXISTS login_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            login_at TEXT DEFAULT (datetime('now','localtime')),
+            logout_at TEXT
+        );
         """
     )
     # full_data_json: أضيف بعد ما كان الجدول موجود أصلاً بقواعد بيانات

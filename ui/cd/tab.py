@@ -159,6 +159,10 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         # وشرح "readonly" بـ_new_tab_state.
         self._readonly_active = False
 
+        # مزامنة تحديد الشريط الجانبي بعد رجوع تركيز النافذة (Alt+Tab
+        # ورجوع) — راجع _on_app_reactivated/_maybe_resync_explorer_on_focus_return.
+        self._resync_pending_after_reactivation = False
+
         # تراجع/إعادة (Ctrl+Z / Ctrl+Y) — راجع الشرح الكامل عند _undo بالأسفل.
         # الحالة هنا دائماً تخص التبويب *النشط حالياً* بس — تُستبدل بالكامل
         # عند أي تبديل تبويب (راجع _activate_tab).
@@ -233,6 +237,14 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         self.bind_all("<Control-0>", self._shortcut(self.zoom_reset))
         self.bind_all("<Control-KP_0>", self._shortcut(self.zoom_reset))
 
+        # مزامنة تحديد الشريط الجانبي بعد رجوع تركيز النافذة (راجع
+        # _sync_explorer_to_active_tab وشرح الدالتين تحت بالتفصيل):
+        # <Activate> على النافذة الجذرية يعلّم "فيه مزامنة معلَّقة"، وأول
+        # تفاعل حقيقي (كليك/كتابة) بمساحة عمل CD نفسها ينفّذها.
+        self.winfo_toplevel().bind("<Activate>", self._on_app_reactivated, add="+")
+        self.bind_all("<Button-1>", self._maybe_resync_explorer_on_focus_return, add="+")
+        self.bind_all("<KeyPress>", self._maybe_resync_explorer_on_focus_return, add="+")
+
     def _shortcut(self, func):
         """يلف أي استدعاء اختصار كيبورد بفحص self._shortcuts_active —
         وقت ما يكون فعّال (True)، يستدعي func() عادي بلا أي تغيير على
@@ -255,6 +267,35 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         موقوفة مؤقتاً حتى ما تشتغل وشاشة ثانية هي الظاهرة)."""
         self._shortcuts_active = False
 
+    def _on_app_reactivated(self, _event):
+        """<Activate> على النافذة الجذرية — النافذة رجعت تاخذ تركيز
+        النظام (Alt+Tab من برنامج آخر ورجوع). ما نزامن الشريط فوراً هون
+        (المستخدم ممكن يكون بشاشة ثانية أصلاً، أو ينوي يحدّد شي ثاني
+        بالشريط بنفسه) — بس نعلّم "فيه مزامنة معلَّقة"، تنفَّذ عند أول
+        تفاعل حقيقي بمساحة عمل CD (راجع _maybe_resync_explorer_on_focus_return)."""
+        self._resync_pending_after_reactivation = True
+
+    def _maybe_resync_explorer_on_focus_return(self, event):
+        """أول كليك/كتابة حقيقية بمساحة عمل CD نفسها بعد رجوع تركيز
+        النافذة (راجع _on_app_reactivated) — تزامن تحديد الشريط الجانبي
+        مع التبويب النشط حالياً، مرة وحدة بس (تصفّر العلم فوراً)، ثم
+        تحديد الشجرة يبقى حر تماماً بأي وقت ثاني بلا أي فرض. مربوطة
+        bind_all (عالمياً) عمداً — بس نتحقق هون إن مصدر الحدث فعلاً
+        داخل CD نفسها (مو شاشة ثانية أو تبويب خدمة حي ثاني) قبل التنفيذ."""
+        if not self._resync_pending_after_reactivation:
+            return
+        widget = getattr(event, "widget", None)
+        if widget is None:
+            return
+        try:
+            is_within_cd = str(widget).startswith(str(self))
+        except tk.TclError:
+            is_within_cd = False
+        if not is_within_cd:
+            return
+        self._resync_pending_after_reactivation = False
+        self._sync_explorer_to_active_tab()
+
     # ---------- الشريط العلوي ----------
     def _build_top_bar(self):
         top_bar = ttk.Frame(self)
@@ -276,6 +317,10 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         # التنقّل بين التبويبات انتقلا للشريط السفلي (راجع تحت) — عائلة
         # "تنقّل تسلسلي بالشغل" وحدة (تبويب بعده، زبون بعده)، بطلب صريح.
         self._document_dependent_buttons = []
+        # نطاق فرعي من الأعلى: تتعطّل بصرياً كمان (إضافة للشرط الحالي —
+        # وجود تبويب مفتوح) وقت readonly (راجع set_form_readonly تحت) —
+        # طباعة/السجل/الزوم/◀▶/الزبون التالي بلا أي لمس (بطلب صريح).
+        self._readonly_guarded_buttons = []
         save_btn = ttk.Button(top_bar, text="💾 حفظ", command=self.generate_document)
         save_btn.pack(side="right")
         # زر "📄 PDF" المنفصل انحذف (بطلب صريح) — صار كل حفظ حقيقي يولّد
@@ -293,6 +338,7 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         ttk.Separator(top_bar, orient="vertical").pack(side="right", fill="y", padx=8, pady=2)
         ttk.Button(top_bar, text="🕘 السجل", command=self.open_history).pack(side="right")
         self._document_dependent_buttons.extend([save_btn, save_as_btn, print_btn, new_doc_btn])
+        self._readonly_guarded_buttons.extend([save_btn, save_as_btn, new_doc_btn])
 
         # ---------- شريط ثاني (سفلي): تنقّل وعرض — تراجع/إعادة، تنقّل
         # تسلسلي (تبويب سابق/تالٍ + زبون تالٍ)، وزوم أقصى اليمين مع إرجاع
@@ -311,6 +357,7 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         redo_btn = ttk.Button(undo_bar, text="↷ إعادة", command=self._redo)
         redo_btn.pack(side="left", padx=(4, 0))
         self._document_dependent_buttons.extend([undo_btn, redo_btn])
+        self._readonly_guarded_buttons.extend([undo_btn, redo_btn])
 
         ttk.Separator(tools_bar, orient="vertical").pack(side="left", fill="y", padx=12, pady=2)
 
@@ -386,12 +433,25 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
             if tab is not None:
                 tab["readonly"] = readonly
         self._update_readonly_banner()
+        self._update_readonly_guarded_buttons()
 
     def _update_readonly_banner(self):
         if self._readonly_active:
             self._readonly_banner.pack(fill="x", pady=(0, 6), before=self._paned)
         else:
             self._readonly_banner.pack_forget()
+
+    def _update_readonly_guarded_buttons(self):
+        """💾 حفظ/💾 حفظ في مكان آخر/🆕 مستند جديد/↶ تراجع/↷ إعادة —
+        تتعطّل بصرياً وقت readonly، بالإضافة لشرطها الأصلي (وجود تبويب
+        مفتوح — راجع _document_dependent_buttons/_set_document_controls_enabled).
+        الشرطان معاً محسوبان من جديد هنا (AND) بدل تبديل حالة كل واحد
+        لحاله، حتى ما يتعارضا (زي إعادة تفعيل الأزرار غلط عند فتح قفل
+        وقت ما ما يبقى أي تبويب مفتوح أصلاً)."""
+        enabled = self._active_tab_id is not None and not self._readonly_active
+        state = "!disabled" if enabled else "disabled"
+        for btn in self._readonly_guarded_buttons:
+            btn.state([state])
 
     def _unlock_active_tab(self):
         self.set_form_readonly(False)
@@ -693,6 +753,7 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         دايماً بغض النظر عن عدد التبويبات (راجع _build_top_bar)."""
         has_active = self._active_tab_id is not None
         self._set_document_controls_enabled(has_active)
+        self._update_readonly_guarded_buttons()
         if has_active:
             self._no_tab_placeholder.place_forget()
         else:
@@ -783,6 +844,24 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         self._refresh_tab_styles()
         self._ensure_tab_visible(tab_id)
         self._update_next_button_state()
+        self._sync_explorer_to_active_tab()
+
+    def _sync_explorer_to_active_tab(self):
+        """يحدّد بالشريط الجانبي مسار التبويب النشط حالياً (لو محمَّل من
+        ملف فعلي — تبويب جديد فاضٍ ما فيه شي يُحدَّد له) — يُنادى عند
+        تبديل التبويب (راجع _activate_tab) وعند أول تفاعل بمساحة الشغل
+        بعد رجوع تركيز النافذة (راجع _maybe_resync_explorer_on_focus_return).
+        تحديد الشجرة يبقى حر تماماً بأي وقت ثاني (المستخدم يقدر يحدّد
+        أي مكان ثاني بالشريط بلا ما نرجّعه لهون قسراً)."""
+        tab = self._tab_by_id(self._active_tab_id) if self._active_tab_id is not None else None
+        if tab is None:
+            return
+        loaded_from = tab.get("loaded_from")
+        if not loaded_from:
+            return
+        path = loaded_from.get("pdf_path") or loaded_from.get("file_path")
+        if path:
+            self.explorer_panel.reveal_path(path)
 
     def _new_tab(self):
         """يفتح تبويب جديد فاضٍ (زر "+" أو Ctrl+T) — يحفظ حالة التبويب
@@ -953,6 +1032,7 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
             self._paned, width=220,
             is_path_active=self._is_case_path_active,
             on_open_file=self._open_case_readonly,
+            on_toggle_lock=self._toggle_lock_for_path,
         )
 
         holder_outer = tk.Frame(self._paned)
@@ -1169,12 +1249,20 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
 
     def _is_case_path_active(self, path):
         """"شغل جارٍ" (True) لأي مسار (Word أو PDF) يخص تبويب مفتوح
-        فعلاً الآن — والعكس: أي ملف تبويبه مسكّر (أو غير معروف إطلاقاً)
-        يُعتبر "شغل منتهي" (False)، فيحصل حماية إضافية بالشريط الجانبي
-        (تأكيد أوضح قبل نقل/حذف/إعادة تسمية — راجع is_path_active بـ
-        ui/common/file_explorer.py). يُمرَّر كدالة (callback) للشريط
-        الجانبي عند بنائه — الشريط نفسه ما يعرف شي عن مفهوم "تبويبات"
-        إطلاقاً، عام تماماً."""
+        فعلاً الآن **وقابل للتعديل** (مو بوضع readonly) — والعكس: ملف
+        تبويبه مسكّر، أو تبويبه مفتوح بس لسا بوضع "عرض فقط" (راجع
+        set_form_readonly)، أو غير معروف إطلاقاً — يُعتبر "شغل منتهي"
+        (False)، فيحصل حماية إضافية بالشريط الجانبي (تأكيد أوضح قبل
+        نقل/حذف/إعادة تسمية، وأيقونة 🔒 قابلة للنقر لفتحه/فكّه — راجع
+        is_path_active/on_toggle_lock بـui/common/file_explorer.py).
+        يُمرَّر كدالة (callback) للشريط الجانبي عند بنائه — الشريط نفسه
+        ما يعرف شي عن مفهوم "تبويبات"/"readonly" إطلاقاً، عام تماماً.
+
+        الإصلاح المهم هنا: قبل كانت ترجّع True لمجرد وجود تبويب محمَّل
+        من هالمسار، بغض النظر عن حالة القفل — يعني ملف تبويبه مفتوح بس
+        لسا مقفول (لم يُفتح للتعديل بعد) كان يُعامَل خطأً كـ"شغل جارٍ"
+        بلا أي حماية إضافية بالشريط، رغم إنه فعلياً محمي من التعديل
+        بالضبط زي "شغل منتهي" لحد ما يُفتح صراحة."""
         try:
             abs_path = os.path.abspath(path)
         except (TypeError, ValueError):
@@ -1185,8 +1273,36 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
                 continue
             for candidate in (loaded_from.get("file_path"), loaded_from.get("pdf_path")):
                 if candidate and os.path.abspath(candidate) == abs_path:
-                    return True
+                    return not tab.get("readonly", False)
         return False
+
+    def _toggle_lock_for_path(self, path):
+        """تُستدعى من الشريط الجانبي عند دبل كليك على أيقونة 🔒 تحديداً
+        (راجع on_toggle_lock بـFileExplorerPanel) — تفتح/تفك التبويب
+        المرتبط بهذا الملف بضغطة وحدة: لو تبويبه مفتوح أصلاً (بس لسا
+        مقفول)، تفكّه مباشرة (نفس زر "🔓 فتح للتعديل" بالضبط، بلا أي
+        تأكيد إضافي — بطلب صريح). لو "شغل منتهي" حقيقي (بلا تبويب مفتوح
+        أصلاً)، تفتحه أولاً للقراءة فقط (نفس _open_case_readonly) ثم
+        تفكّه مباشرة — فتح وفك بضغطة وحدة. refresh() بالنهاية يحدّث
+        أيقونة الشريط 🔒↔🔓 فوراً (الودجت نفسه ما يعيد تقييم
+        is_path_active إلا عند إعادة بناء الصف)."""
+        try:
+            abs_path = os.path.abspath(path)
+        except (TypeError, ValueError):
+            return
+        for tab in self._tabs:
+            loaded_from = tab.get("loaded_from")
+            if loaded_from and any(
+                candidate and os.path.abspath(candidate) == abs_path
+                for candidate in (loaded_from.get("file_path"), loaded_from.get("pdf_path"))
+            ):
+                self._activate_tab(tab["id"])
+                self.set_form_readonly(False)
+                self.explorer_panel.refresh()
+                return
+        if self._open_case_readonly(path):
+            self.set_form_readonly(False)
+            self.explorer_panel.refresh()
 
     def _is_explorer_visible(self):
         return str(self.explorer_panel) in self._paned.panes()
@@ -2145,6 +2261,12 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         return path
 
     def generate_document(self):
+        # حراسة إضافية (نفس نمط _undo/_redo بالضبط) — زر "💾 حفظ" يتعطّل
+        # بصرياً أصلاً وقت readonly (راجع _update_readonly_guarded_buttons)،
+        # لكن الاختصار المرتبط (زي Ctrl+داخل بعض السياقات) أو أي نداء
+        # برمجي ثاني يقدر يتجاوز حالة الزر المعطَّل.
+        if self._readonly_active:
+            return
         # نتحقق *قبل* التوليد (اللي يحدّث الحالة نفسها) هل هذا الطلب
         # بلا أثر فعلياً (نفس شرط تجاوز _do_generate بالضبط: حالة محمَّلة
         # أصلاً بلا أي تعديل حقيقي) — حتى ما نفتح ملف قديم بلا داعي لمجرد
@@ -2163,6 +2285,9 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         باسم زبون معيّن)، بلا أي وصول خارج travail (نفس قيد الشريط
         الجانبي بالضبط، لضمان الملف يبقى مرئي بالشريط ومحمي بالنسخ
         الاحتياطي التلقائي بغض النظر أي مجلد فرعي اخترته)."""
+        # حراسة إضافية (نفس نمط _undo/_redo/generate_document بالضبط).
+        if self._readonly_active:
+            return
         travail_root = os.path.abspath(get_travail_root())
         chosen = filedialog.askdirectory(
             title="اختر مجلداً داخل travail لحفظ المستند فيه", initialdir=travail_root, parent=self,

@@ -2,7 +2,11 @@
 تعديل)، وتسمح بإعداد وجهتين مطلوبتين (نسخة ثانية بقرص مختلف، ونسخة
 سحابة) بالإضافة لأي وجهات إضافية اختيارية — بلا حاجة لأي تعديل كود.
 راجع backup.py للتفاصيل الكاملة (مرآة + نسخ بتواريخ، فرض قرص مختلف
-للنسخة الثانية...)."""
+للنسخة الثانية...).
+
+تُفتح بس من جوا شاشة الإعدادات (راجع ui/settings_screen.py) — مو خدمة
+مستقلة بالرئيسية. زر "← رجوع" يودي لـapp.return_to_settings() (يرجع
+للإعدادات نفسها، لا للرئيسية)."""
 import os
 import tkinter as tk
 from tkinter import ttk, filedialog, simpledialog
@@ -25,7 +29,7 @@ class BackupTab(ttk.Frame):
         ttk.Label(
             top_bar, text="🗄️ النسخ الاحتياطي وحماية البيانات", font=("Segoe UI", 14, "bold")
         ).pack(side="left")
-        ttk.Button(top_bar, text="← رجوع", command=self.app.show_home).pack(side="right")
+        ttk.Button(top_bar, text="← رجوع", command=self.app.return_to_settings).pack(side="right")
 
         primary_text = f"📍 المكان الرئيسي (بلا تغيير): {backup.DB_PATH}  |  {get_travail_root()}"
         ttk.Label(self, text=primary_text, foreground="#555", wraplength=760, justify="right").pack(

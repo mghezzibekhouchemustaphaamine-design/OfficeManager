@@ -266,8 +266,10 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
 
         # أزرار مرتبطة بتبويب/مستند فعلي مفتوح — تتعطّل تلقائياً لما ما
         # يبقى أي تبويب مفتوح (راجع _set_document_controls_enabled).
-        # "🕘 السجل" و"← رجوع" مستثناة عمداً: تبقيان شغالتين دايماً (تفتح
-        # مستند/تطلع من CD حتى بصفر تبويبات).
+        # "🕘 السجل" مستثناة عمداً: تبقى شغالة دايماً (تفتح مستند حتى
+        # بصفر تبويبات). زر "رجوع" منفصل انحذف (بطلب صريح — CD صارت
+        # تبويب خدمة حي يبقى مفتوح بالخلفية، Escape كافي كاختصار رجوع
+        # سريع بلا زر مرئي مكرر — راجع _on_back تحت).
         # الأزرار مجمَّعة منطقياً بفواصل بصرية (بطلب صريح — كانت 7 أزرار
         # متلاصقة بلا أي تمييز): [حفظ/طباعة] فعل التوليد الأساسي | [مستند
         # جديد] بدء معاملة | [السجل/رجوع] تنقّل. "⏭️ الزبون التالي" ونظام
@@ -290,7 +292,6 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         new_doc_btn.pack(side="right")
         ttk.Separator(top_bar, orient="vertical").pack(side="right", fill="y", padx=8, pady=2)
         ttk.Button(top_bar, text="🕘 السجل", command=self.open_history).pack(side="right")
-        ttk.Button(top_bar, text="← رجوع", command=self._on_back).pack(side="right", padx=(8, 0))
         self._document_dependent_buttons.extend([save_btn, save_as_btn, print_btn, new_doc_btn])
 
         # ---------- شريط ثاني (سفلي): تنقّل وعرض — تراجع/إعادة، تنقّل
@@ -1901,13 +1902,11 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         return any(self._tab_is_dirty(tab["id"]) for tab in self._tabs)
 
     def _on_back(self):
-        if self.has_unsaved_changes():
-            leave = _confirm(
-                "تنبيه",
-                "فيه بيانات مكتوبة ما اتحفظت بمستند بعد.\nتريد تخرج بدون إنشاء المستند؟",
-            )
-            if not leave:
-                return
+        # بلا أي تحذير هنا (بعكس إغلاق التبويب ✕ أو إغلاق البرنامج
+        # بالكامل — has_unsaved_changes() تبقى مستخدَمة هناك بلا أي
+        # تغيير) — CD صارت تبويب خدمة حي يبقى مفتوحاً بالخلفية بكامل
+        # حالته، فـEscape/الرجوع للرئيسية ما يخسر أي شي فعلياً، والتحذير
+        # كان كاذباً (يوهم بخسارة بيانات ما تنخسر أصلاً).
         self.app.show_home()
 
     def _update_net_crediter(self):

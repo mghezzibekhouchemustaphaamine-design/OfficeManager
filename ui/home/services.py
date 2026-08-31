@@ -19,7 +19,10 @@ class ServiceDefinition:
 
 
 def build_services(app):
-    """يرجع الخدمات المتاحة حاليًا بالترتيب المعروض في الصفحة الرئيسية."""
+    """يرجع الخدمات المتاحة حاليًا بالترتيب المعروض في الصفحة الرئيسية.
+
+    النسخ الاحتياطي مو "خدمة" هنا (تُفتح بس من جوا شاشة الإعدادات —
+    راجع ui/settings_screen.py وapp.open_backup/return_to_settings)."""
     return [
         ServiceDefinition(
             key="cd",
@@ -27,12 +30,5 @@ def build_services(app):
             description="إنشاء وإدارة مستندات Change Devise",
             open_handler=lambda owner: owner.open_cd(),
             icon="💱",
-        ),
-        ServiceDefinition(
-            key="backup",
-            title="النسخ الاحتياطي",
-            description="حماية قاعدة البيانات وملفات العمل",
-            open_handler=lambda owner: owner.open_backup(),
-            icon="🗄️",
         ),
     ]

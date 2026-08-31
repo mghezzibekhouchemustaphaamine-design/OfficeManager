@@ -6,8 +6,10 @@
 3) النسخ الاحتياطي: زر وحيد يفتح BackupTab الموجودة نفسها — بلا أي
    تعديل عليها.
 
-نفس نمط ui/backup_tab.py بالضبط (ttk.Frame، __init__(self, parent, app)،
-زر "← رجوع" أعلى يودي لـapp.show_home)."""
+نفس نمط ui/backup_tab.py بالضبط (ttk.Frame، __init__(self, parent, app))،
+بس زر "← رجوع" يودي لـapp.close_settings() — يرجع لمكانك الأصلي قبل ما
+تفتح الإعدادات (تبويب CD حي لو كان مفتوحاً، وإلا الرئيسية)، لا للرئيسية
+دايماً. راجع app.open_settings/close_settings بـui/home/app_window.py."""
 import tkinter as tk
 from tkinter import ttk
 
@@ -24,7 +26,7 @@ class SettingsScreen(ttk.Frame):
         top_bar = ttk.Frame(self)
         top_bar.pack(fill="x", pady=(0, 12))
         ttk.Label(top_bar, text="⚙️ الإعدادات", font=("Segoe UI", 14, "bold")).pack(side="left")
-        ttk.Button(top_bar, text="← رجوع", command=self.app.show_home).pack(side="right")
+        ttk.Button(top_bar, text="← رجوع", command=self.app.close_settings).pack(side="right")
 
         self._build_account_section()
         self._build_security_section()

@@ -61,6 +61,11 @@ class OfficeApp(tk.Tk):
         # المعروضة حالياً (لو فيه) — كلاهما فاضي قبل show_home() بالأسفل.
         self._service_tabs = {}
         self._transient_view = None
+        # وين ترجع لما تسكّر الإعدادات (زر "رجوع" جواها، أو ضغطة ثانية
+        # على "⚙️ الإعدادات" بالهيدر) — راجع open_settings/close_settings/
+        # return_to_settings تحت. مفتاح تبويب خدمة حي (زي "cd") لو كنت
+        # جواه، وإلا None (الرئيسية).
+        self._settings_return_to = None
 
         self._configure_style()
         self._build_shell()
@@ -281,7 +286,10 @@ class OfficeApp(tk.Tk):
             ttk.Label(card, text=service.description, wraplength=250).pack(
                 anchor="w", pady=(8, 16)
             )
-            ttk.Button(card, text="فتح", command=lambda s=service: s.open_handler(self)).pack(
+            # لو الخدمة مفتوحة أصلاً كتبويب حي (راجع self._service_tabs)،
+            # النص يوضّح إنك راجع لشغل جاري، لا فاتح شي من الصفر.
+            btn_text = "↩️ متابعة الشغل" if service.key in self._service_tabs else "فتح"
+            ttk.Button(card, text=btn_text, command=lambda s=service: s.open_handler(self)).pack(
                 anchor="w"
             )
 
@@ -300,7 +308,37 @@ class OfficeApp(tk.Tk):
         self._set_status("النسخ الاحتياطي — حماية بيانات OfficeManager")
         self._show_transient_view(BackupTab(self.view_area, self))
 
-    def open_settings(self):
+    def _display_settings(self):
         self._current_service = "settings"
         self._set_status("الإعدادات — الحساب، الأمان، والنسخ الاحتياطي")
         self._show_transient_view(SettingsScreen(self.view_area, self))
+
+    def open_settings(self):
+        """زر "⚙️ الإعدادات" بالهيدر — تبديل (toggle): لو الإعدادات
+        ظاهرة أصلاً، تسكّرها (ترجع لمكانك الأصلي عبر close_settings()).
+        غير كذا، تحفظ وجهتك الحالية (تبويب خدمة حي لو كنت جواه، وإلا
+        None = الرئيسية) قبل ما تعرضها."""
+        if self._current_service == "settings":
+            self.close_settings()
+            return
+        self._settings_return_to = (
+            self._current_service if self._current_service in self._service_tabs else None
+        )
+        self._display_settings()
+
+    def close_settings(self):
+        """زر "رجوع" جوا شاشة الإعدادات — يرجعك لمكانك الأصلي المحفوظ
+        بـopen_settings() (تبويب خدمة حي لو فيه، وإلا الرئيسية)."""
+        target = self._settings_return_to
+        self._settings_return_to = None
+        if target is not None and target in self._service_tabs:
+            self._activate_service_tab(target)
+        else:
+            self.show_home()
+
+    def return_to_settings(self):
+        """زر "رجوع" جوا شاشة النسخ الاحتياطي (تُفتح بس من جوا
+        الإعدادات — راجع ui/backup_tab.py) — تعرض الإعدادات من جديد بلا
+        أي لمس على self._settings_return_to، حتى الوجهة الأصلية تبقى
+        محفوظة رغم المرور بالنسخ الاحتياطي بالنص."""
+        self._display_settings()

@@ -4,14 +4,17 @@
 وحداتها، والخدمات المعروضة تُعرّف في ui.home.services حتى نتمكن من إضافة
 خدمات مستقبلية بدون إعادة بناء النافذة الرئيسية.
 """
+import time
 import tkinter as tk
 from tkinter import ttk
 
 import programme.auth as auth
+import programme.settings as settings
 from ui.backup_tab import BackupTab
 from ui.cd.tab import CDTab
 from ui.common.alerts import confirm as _confirm
 from ui.home.services import build_services
+from ui.lock_overlay import LockOverlay
 from ui.settings_screen import SettingsScreen
 
 
@@ -25,15 +28,25 @@ class OfficeApp(tk.Tk):
         self._current_service = None
         self._current_focus_widget = None
         self._deactivated_focus_widget = None
+        self._is_locked = False
+        self._last_activity_time = time.time()
 
         self._configure_style()
         self._build_shell()
 
         self.bind_all("<FocusIn>", self._on_any_focus_in, add="+")
         self.bind("<Deactivate>", self._on_window_deactivate)
+        # أي نشاط حقيقي (فأرة/كيبورد) يؤجّل القفل التلقائي — راجع
+        # _check_idle. add="+" حتى ما نلغي أي ربط ثاني موجود على نفس
+        # الحدث (زي <FocusIn> فوق).
+        self.bind_all("<Motion>", self._on_activity, add="+")
+        self.bind_all("<KeyPress>", self._on_activity, add="+")
+        self.bind_all("<Button>", self._on_activity, add="+")
         self.protocol("WM_DELETE_WINDOW", self._on_close_request)
 
         self.show_home()
+        # فحص دوري كل 5 ثواني — يعيد جدولة نفسه دايماً (راجع _check_idle).
+        self.after(5000, self._check_idle)
 
     def _configure_style(self):
         style = ttk.Style(self)
@@ -66,7 +79,12 @@ class OfficeApp(tk.Tk):
         self.settings_button = ttk.Button(
             self.header_actions, text="⚙️ الإعدادات", command=self.open_settings
         )
-        self.settings_button.pack(side="left")
+        self.settings_button.pack(side="left", padx=(0, 8))
+
+        self.lock_button = ttk.Button(
+            self.header_actions, text="🔒 قفل", command=self._trigger_lock
+        )
+        self.lock_button.pack(side="left")
 
         ttk.Separator(self, orient="horizontal").pack(fill="x")
 
@@ -85,6 +103,26 @@ class OfficeApp(tk.Tk):
 
     def _on_window_deactivate(self, _event):
         self._deactivated_focus_widget = getattr(self, "_current_focus_widget", None)
+
+    def _on_activity(self, _event):
+        self._last_activity_time = time.time()
+
+    def _check_idle(self):
+        if not self._is_locked:
+            elapsed = time.time() - self._last_activity_time
+            if elapsed >= settings.get_auto_lock_minutes() * 60:
+                self._trigger_lock()
+        # تعيد جدولة نفسها دايماً — سواء قفلت الآن أو لسا بانتظار الخمول.
+        self.after(5000, self._check_idle)
+
+    def _trigger_lock(self):
+        if self._is_locked:
+            return
+        self._is_locked = True
+        overlay = LockOverlay(self)
+        self.wait_window(overlay)  # يعلّق هنا لحد ما LockOverlay تتدمر (فتح ناجح)
+        self._is_locked = False
+        self._last_activity_time = time.time()
 
     def _set_status(self, text):
         self.status_var.set(text)

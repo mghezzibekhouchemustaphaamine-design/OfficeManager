@@ -38,6 +38,11 @@ _UNSAVED_CD_MESSAGE = (
 # الممكن حالياً (راجع self._service_tabs).
 _SERVICE_TAB_LABELS = {"cd": "💱 CD"}
 
+# نص شريط الحالة السفلي لكل تبويب خدمة حي — تُقرأ من _activate_service_tab
+# بس (مصدر وحيد للحقيقة)، بغض النظر هل التفعيل جاء من open_cd() أو من
+# ضغطة مباشرة على زر التبويب بالشريط.
+_SERVICE_TAB_STATUS = {"cd": "CD — العمل على مستندات Change Devise"}
+
 
 class OfficeApp(tk.Tk):
     def __init__(self):
@@ -201,6 +206,8 @@ class OfficeApp(tk.Tk):
         if hasattr(tab, "activate_shortcuts"):
             tab.activate_shortcuts()
         tab.tkraise()
+        self._current_service = key
+        self._set_status(_SERVICE_TAB_STATUS.get(key, key))
 
     def _refresh_tab_strip(self):
         for widget in self.tab_strip.winfo_children():
@@ -286,8 +293,6 @@ class OfficeApp(tk.Tk):
             cd_tab.grid(row=0, column=0, sticky="nsew")
             self._service_tabs["cd"] = cd_tab
             self._refresh_tab_strip()
-        self._current_service = "cd"
-        self._set_status("CD — العمل على مستندات Change Devise")
         self._activate_service_tab("cd")
 
     def open_backup(self):

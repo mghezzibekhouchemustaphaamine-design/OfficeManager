@@ -172,22 +172,33 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         self._build_canvas_area()  # ينادي _build_tab_strip() بنفسه (راجع شرحها)
         self.after(50, self._load_background)
 
+        # تبويب CD يبقى حياً بالذاكرة حتى لو المستخدم انتقل لشاشة ثانية
+        # (راجع ui/home/app_window.py: self._service_tabs) — اختصارات
+        # الكيبورد تحت مربوطة بـbind_all (على مستوى التطبيق كامل، بغض
+        # النظر مين الظاهر فعلياً)، فلازم تتعطّل تلقائياً وقت ما CD مو
+        # الظاهرة، وإلا تشتغل حتى وشاشة ثانية (إعدادات مثلاً) مفتوحة.
+        # self._shortcut() هي نقطة التعطيل الوحيدة — فعّالة True افتراضياً
+        # (أول ما يُفتح CD، هو الظاهر مباشرة)، وapp_window.py تبدّلها عبر
+        # activate_shortcuts()/deactivate_shortcuts() تحت بس، بلا أي
+        # تغيير على سلوك أي اختصار وقت ما يكون فعّال.
+        self._shortcuts_active = True
+
         # اختصارات لوحة مفاتيح: Ctrl+P توليد+طباعة، Ctrl+N مستند جديد
         # (نفس التبويب الحالي)، Ctrl+T تبويب جديد، Ctrl+W إغلاق التبويب
         # الحالي (نفس عادة كروم بالضبط)، Esc رجوع (بنفس حماية البيانات
         # الجارية)، Ctrl+Z تراجع، Ctrl+Y أو Ctrl+Shift+Z إعادة (نفس عادة
         # برامج الكتابة المعروفة — Ctrl+Y الأشيع بويندوز، Ctrl+Shift+Z
         # بديل شائع بمحررات ثانية).
-        self.bind_all("<Control-p>", lambda _e: self._print_flow())
-        self.bind_all("<Control-P>", lambda _e: self._print_flow())
-        self.bind_all("<Control-n>", lambda _e: self.new_document())
-        self.bind_all("<Control-N>", lambda _e: self.new_document())
+        self.bind_all("<Control-p>", self._shortcut(self._print_flow))
+        self.bind_all("<Control-P>", self._shortcut(self._print_flow))
+        self.bind_all("<Control-n>", self._shortcut(self.new_document))
+        self.bind_all("<Control-N>", self._shortcut(self.new_document))
         # Ctrl+Shift+N: الزبون التالي بطابور متتالٍ — راجع _next_client_tab.
-        self.bind_all("<Control-Shift-N>", lambda _e: self._next_client_tab())
-        self.bind_all("<Control-t>", lambda _e: self._new_tab())
-        self.bind_all("<Control-T>", lambda _e: self._new_tab())
-        self.bind_all("<Control-w>", lambda _e: self._close_tab(self._active_tab_id))
-        self.bind_all("<Control-W>", lambda _e: self._close_tab(self._active_tab_id))
+        self.bind_all("<Control-Shift-N>", self._shortcut(self._next_client_tab))
+        self.bind_all("<Control-t>", self._shortcut(self._new_tab))
+        self.bind_all("<Control-T>", self._shortcut(self._new_tab))
+        self.bind_all("<Control-w>", self._shortcut(lambda: self._close_tab(self._active_tab_id)))
+        self.bind_all("<Control-W>", self._shortcut(lambda: self._close_tab(self._active_tab_id)))
         # Ctrl+Tab / Ctrl+Shift+Tab: التبويب التالي/السابق (زي كروم).
         # اكتشفنا تجريبياً إن bind_all("<Control-Tab>") لوحده ما يشتغل
         # أبداً من داخل أي خانة كتابة حقيقية (tk.Entry) — Tk نفسه عنده
@@ -198,29 +209,51 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         # _bind_tab_switch_shortcuts) تطلق حدث افتراضي (<<CDTabNext/
         # Prev>>) نستقبله هون. الربط العام تحت يبقى فقط كخط دفاع ثاني
         # لعناصر مو خانات كتابة (زر، الـcanvas نفسه...).
-        self.bind_all("<Control-Tab>", lambda _e: self._switch_to_next_tab())
-        self.bind_all("<Control-Shift-Tab>", lambda _e: self._switch_to_previous_tab())
-        self.bind_all("<<CDTabNext>>", lambda _e: self._switch_to_next_tab())
-        self.bind_all("<<CDTabPrev>>", lambda _e: self._switch_to_previous_tab())
-        self.bind_all("<Escape>", lambda _e: self._on_back())
-        self.bind_all("<Control-z>", lambda _e: self._undo())
-        self.bind_all("<Control-Z>", lambda _e: self._undo())
-        self.bind_all("<Control-y>", lambda _e: self._redo())
-        self.bind_all("<Control-Y>", lambda _e: self._redo())
-        self.bind_all("<Control-Shift-Z>", lambda _e: self._redo())
+        self.bind_all("<Control-Tab>", self._shortcut(self._switch_to_next_tab))
+        self.bind_all("<Control-Shift-Tab>", self._shortcut(self._switch_to_previous_tab))
+        self.bind_all("<<CDTabNext>>", self._shortcut(self._switch_to_next_tab))
+        self.bind_all("<<CDTabPrev>>", self._shortcut(self._switch_to_previous_tab))
+        self.bind_all("<Escape>", self._shortcut(self._on_back))
+        self.bind_all("<Control-z>", self._shortcut(self._undo))
+        self.bind_all("<Control-Z>", self._shortcut(self._undo))
+        self.bind_all("<Control-y>", self._shortcut(self._redo))
+        self.bind_all("<Control-Y>", self._shortcut(self._redo))
+        self.bind_all("<Control-Shift-Z>", self._shortcut(self._redo))
 
         # اختصارات الزوم بالكيبورد (بطلب صريح) — نربط عدة صيغ لكل مفتاح
         # حتى تشتغل بغض النظر عن لوحة المفاتيح/حالة Shift: "+" غالباً
         # يحتاج Shift مع "=" (فـ<Control-plus> وحدها ما تكفي دايماً)،
         # وفيه كيبوردات فيها الرمز المطبوع فوق "=" مباشرة بلا Shift.
         # زر الفأرة الرقمي (Keypad) مربوط بردو لنفس السبب.
-        self.bind_all("<Control-plus>", lambda _e: self.zoom_in())
-        self.bind_all("<Control-equal>", lambda _e: self.zoom_in())
-        self.bind_all("<Control-KP_Add>", lambda _e: self.zoom_in())
-        self.bind_all("<Control-minus>", lambda _e: self.zoom_out())
-        self.bind_all("<Control-KP_Subtract>", lambda _e: self.zoom_out())
-        self.bind_all("<Control-0>", lambda _e: self.zoom_reset())
-        self.bind_all("<Control-KP_0>", lambda _e: self.zoom_reset())
+        self.bind_all("<Control-plus>", self._shortcut(self.zoom_in))
+        self.bind_all("<Control-equal>", self._shortcut(self.zoom_in))
+        self.bind_all("<Control-KP_Add>", self._shortcut(self.zoom_in))
+        self.bind_all("<Control-minus>", self._shortcut(self.zoom_out))
+        self.bind_all("<Control-KP_Subtract>", self._shortcut(self.zoom_out))
+        self.bind_all("<Control-0>", self._shortcut(self.zoom_reset))
+        self.bind_all("<Control-KP_0>", self._shortcut(self.zoom_reset))
+
+    def _shortcut(self, func):
+        """يلف أي استدعاء اختصار كيبورد بفحص self._shortcuts_active —
+        وقت ما يكون فعّال (True)، يستدعي func() عادي بلا أي تغيير على
+        سلوكه أو وظيفته؛ وقت ما يكون موقوف (False، لأن CD حالياً
+        بالخلفية خلف شاشة ثانية — راجع activate_shortcuts/
+        deactivate_shortcuts)، يتجاهل الضغطة بصمت."""
+        def wrapper(_event=None):
+            if self._shortcuts_active:
+                return func()
+        return wrapper
+
+    def activate_shortcuts(self):
+        """تُستدعى من ui/home/app_window.py لما تبويب CD يصير الظاهر
+        فعلياً بمنطقة العرض — تفعّل كل اختصارات الكيبورد المربوطة أعلاه."""
+        self._shortcuts_active = True
+
+    def deactivate_shortcuts(self):
+        """عكس activate_shortcuts — تُستدعى لما ينتقل المستخدم لشاشة
+        ثانية (CD تبقى حية بالذاكرة بكامل حالتها بالخلفية، بس اختصاراتها
+        موقوفة مؤقتاً حتى ما تشتغل وشاشة ثانية هي الظاهرة)."""
+        self._shortcuts_active = False
 
     # ---------- الشريط العلوي ----------
     def _build_top_bar(self):

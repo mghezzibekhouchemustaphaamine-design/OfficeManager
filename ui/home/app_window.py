@@ -3,6 +3,14 @@
 هذه الطبقة مسؤولة عن إطار التطبيق والتنقل فقط. تفاصيل الخدمات تبقى داخل
 وحداتها، والخدمات المعروضة تُعرّف في ui.home.services حتى نتمكن من إضافة
 خدمات مستقبلية بدون إعادة بناء النافذة الرئيسية.
+
+مفهومان منفصلان بمنطقة العرض (self.view_area):
+- "شاشات بسيطة" (الرئيسية/الإعدادات/النسخ الاحتياطي): تُبنى وتُدمَّر بكل
+  زيارة (راجع _show_transient_view) — بلا أي حالة تبقى بينها.
+- "تبويبات خدمة حية" (CD حالياً بس، بـself._service_tabs): تُبنى مرة
+  وحدة وتبقى بالذاكرة حتى لو المستخدم انتقل لشاشة ثانية — الرجوع لها
+  عبر شريط التبويبات (self.tab_strip) يعرض نفس حالتها بالضبط، بلا أي
+  إعادة تحميل. راجع open_cd/_activate_service_tab/_close_service_tab.
 """
 import time
 import tkinter as tk
@@ -17,6 +25,19 @@ from ui.home.services import build_services
 from ui.lock_overlay import LockOverlay
 from ui.settings_screen import SettingsScreen
 
+# نفس نص تنبيه الشغل غير المحفوظ بكل مكان يُستعمل فيه (إغلاق البرنامج
+# كامل، أو إغلاق تبويب CD وحده بـ×) — رسالة واحدة بمكان واحد بدل نسختين
+# قد تنحرفان عن بعض لاحقاً.
+_UNSAVED_CD_TITLE = "تنبيه"
+_UNSAVED_CD_MESSAGE = (
+    "فيه بيانات مكتوبة بشاشة CD ما اتحفظت بمستند بعد.\n"
+    "تريد تغلق البرنامج بدون إنشاء المستند؟"
+)
+
+# نص/رمز زر كل تبويب خدمة حي بشريط التبويبات — "cd" هو المفتاح الوحيد
+# الممكن حالياً (راجع self._service_tabs).
+_SERVICE_TAB_LABELS = {"cd": "💱 CD"}
+
 
 class OfficeApp(tk.Tk):
     def __init__(self):
@@ -30,6 +51,11 @@ class OfficeApp(tk.Tk):
         self._deactivated_focus_widget = None
         self._is_locked = False
         self._last_activity_time = time.time()
+
+        # تبويبات خدمة حية (راجع docstring الملف) + الشاشة البسيطة
+        # المعروضة حالياً (لو فيه) — كلاهما فاضي قبل show_home() بالأسفل.
+        self._service_tabs = {}
+        self._transient_view = None
 
         self._configure_style()
         self._build_shell()
@@ -91,6 +117,24 @@ class OfficeApp(tk.Tk):
         self.body = ttk.Frame(self, padding=24)
         self.body.pack(fill="both", expand=True)
 
+        # شريط تبويبات الخدمات الحية (CD الآن بس)، فوق منطقة العمل —
+        # بلا pack أول الأمر (غير موجود بالتخطيط إطلاقاً) لحد ما يفتح
+        # أول تبويب حي؛ راجع _refresh_tab_strip.
+        self.tab_strip = ttk.Frame(self.body)
+
+        # حجز مكان فاضي لشريط أدوات الخدمة المستقبلي — بلا أي محتوى
+        # فعلي الآن، بس مكان محجوز بالهيكل تحت شريط التبويبات مباشرة.
+        self.toolbar_seam = ttk.Frame(self.body)
+        self.toolbar_seam.pack(fill="x", side="top")
+
+        # منطقة العرض المشتركة: كل شاشة (بسيطة أو تبويب خدمة حي) توضع
+        # هون بـgrid(row=0, column=0) وتُبان عبر tkraise() — الكل يشغل
+        # نفس المساحة تماماً، فوق بعضه، والظاهر بس اللي بالأعلى.
+        self.view_area = ttk.Frame(self.body)
+        self.view_area.pack(fill="both", expand=True, side="top")
+        self.view_area.rowconfigure(0, weight=1)
+        self.view_area.columnconfigure(0, weight=1)
+
         ttk.Separator(self, orient="horizontal").pack(fill="x", side="bottom")
         self.status_var = tk.StringVar(value="جاهز")
         self.status = ttk.Label(
@@ -127,40 +171,87 @@ class OfficeApp(tk.Tk):
     def _set_status(self, text):
         self.status_var.set(text)
 
-    def clear_body(self):
-        cd = self._current_cd_tab()
-        if cd is not None:
-            cd.flush_draft_save()
-        for widget in self.body.winfo_children():
-            widget.destroy()
+    # ---------- منطقة العرض: شاشات بسيطة مقابل تبويبات خدمة حية ----------
+    def _destroy_transient_view(self):
+        view = self._transient_view
+        if view is not None and view.winfo_exists():
+            view.destroy()
+        self._transient_view = None
 
-    def _current_cd_tab(self):
-        for widget in self.body.winfo_children():
-            if isinstance(widget, CDTab):
-                return widget
-        return None
+    def _show_transient_view(self, widget):
+        """تعرض شاشة بسيطة (رئيسية/إعدادات/نسخ احتياطي) — تدمّر أي شاشة
+        بسيطة سابقة (بلا أي تأثير على self._service_tabs، تبقى حية
+        بالخلفية بكامل حالتها) وتحط الجديدة بـview_area."""
+        self._destroy_transient_view()
+        for tab in self._service_tabs.values():
+            if hasattr(tab, "deactivate_shortcuts"):
+                tab.deactivate_shortcuts()
+        self._transient_view = widget
+        widget.grid(row=0, column=0, sticky="nsew")
+        widget.tkraise()
+
+    def _activate_service_tab(self, key):
+        tab = self._service_tabs.get(key)
+        if tab is None:
+            return
+        self._destroy_transient_view()
+        for other_key, other_tab in self._service_tabs.items():
+            if other_key != key and hasattr(other_tab, "deactivate_shortcuts"):
+                other_tab.deactivate_shortcuts()
+        if hasattr(tab, "activate_shortcuts"):
+            tab.activate_shortcuts()
+        tab.tkraise()
+
+    def _refresh_tab_strip(self):
+        for widget in self.tab_strip.winfo_children():
+            widget.destroy()
+        if not self._service_tabs:
+            self.tab_strip.pack_forget()
+            return
+        for key in self._service_tabs:
+            entry = ttk.Frame(self.tab_strip)
+            entry.pack(side="left", padx=(0, 4), pady=4)
+            ttk.Button(
+                entry, text=_SERVICE_TAB_LABELS.get(key, key),
+                command=lambda k=key: self._activate_service_tab(k),
+            ).pack(side="left")
+            ttk.Button(
+                entry, text="×", width=2, command=lambda k=key: self._close_service_tab(k),
+            ).pack(side="left")
+        self.tab_strip.pack(fill="x", side="top", before=self.toolbar_seam)
+
+    def _close_service_tab(self, key):
+        tab = self._service_tabs.get(key)
+        if tab is None:
+            return
+        if hasattr(tab, "flush_draft_save"):
+            tab.flush_draft_save()
+        if hasattr(tab, "has_unsaved_changes") and tab.has_unsaved_changes():
+            if not _confirm(_UNSAVED_CD_TITLE, _UNSAVED_CD_MESSAGE):
+                return
+        was_current = self._current_service == key
+        tab.destroy()
+        del self._service_tabs[key]
+        self._refresh_tab_strip()
+        if was_current:
+            self.show_home()
 
     def _on_close_request(self):
-        cd = self._current_cd_tab()
-        if cd is not None:
-            cd.flush_draft_save()
-        if cd is not None and cd.has_unsaved_changes():
-            leave = _confirm(
-                "تنبيه",
-                "فيه بيانات مكتوبة بشاشة CD ما اتحفظت بمستند بعد.\nتريد تغلق البرنامج بدون إنشاء المستند؟",
-            )
-            if not leave:
-                return
+        for tab in self._service_tabs.values():
+            if hasattr(tab, "flush_draft_save"):
+                tab.flush_draft_save()
+        for tab in self._service_tabs.values():
+            if hasattr(tab, "has_unsaved_changes") and tab.has_unsaved_changes():
+                if not _confirm(_UNSAVED_CD_TITLE, _UNSAVED_CD_MESSAGE):
+                    return
         auth.record_logout_current()
         self.destroy()
 
     def show_home(self):
-        self.clear_body()
         self._current_service = None
         self._set_status("الرئيسية — اختر الخدمة التي تريد العمل عليها")
 
-        container = ttk.Frame(self.body)
-        container.pack(fill="both", expand=True)
+        container = ttk.Frame(self.view_area)
 
         ttk.Label(container, text="الخدمات", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
@@ -187,20 +278,24 @@ class OfficeApp(tk.Tk):
                 anchor="w"
             )
 
+        self._show_transient_view(container)
+
     def open_cd(self):
-        self.clear_body()
+        if "cd" not in self._service_tabs:
+            cd_tab = CDTab(self.view_area, self)
+            cd_tab.grid(row=0, column=0, sticky="nsew")
+            self._service_tabs["cd"] = cd_tab
+            self._refresh_tab_strip()
         self._current_service = "cd"
         self._set_status("CD — العمل على مستندات Change Devise")
-        CDTab(self.body, self).pack(fill="both", expand=True)
+        self._activate_service_tab("cd")
 
     def open_backup(self):
-        self.clear_body()
         self._current_service = "backup"
         self._set_status("النسخ الاحتياطي — حماية بيانات OfficeManager")
-        BackupTab(self.body, self).pack(fill="both", expand=True)
+        self._show_transient_view(BackupTab(self.view_area, self))
 
     def open_settings(self):
-        self.clear_body()
         self._current_service = "settings"
         self._set_status("الإعدادات — الحساب، الأمان، والنسخ الاحتياطي")
-        SettingsScreen(self.body, self).pack(fill="both", expand=True)
+        self._show_transient_view(SettingsScreen(self.view_area, self))

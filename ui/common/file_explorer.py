@@ -134,6 +134,13 @@ class FileExplorerPanel(ttk.Frame):
 
         self._last_conflict = None
 
+        # ترتيب ملفات الحالات (leaves) جوّا كل مجلد — "name"/"created"/
+        # "modified"، محفوظ بـfile_explorer_prefs.json. مجلدات الجذر
+        # (زبائن + Autre) تبقى أبجدية دائماً، ومجلدات الشهور الأحدث
+        # أولاً — بلا تأثّر بهالتفضيل (راجع بند 6 بمستند التصميم).
+        self._sort_by = self._load_sort_pref()
+        self._sort_var = tk.StringVar(value=self._sort_by)
+
         self._lock_icon_locked = None
         self._lock_icon_unlocked = None
         self._build_lock_icons()
@@ -364,8 +371,40 @@ class FileExplorerPanel(ttk.Frame):
         self._paths[iid] = path
         self._rows[iid] = row
 
+    @staticmethod
+    def _load_sort_pref():
+        v = _load_json(PREFS_PATH).get("sort_by")
+        return v if v in ("name", "created", "modified") else "name"
+
+    def _set_sort_by(self, value):
+        if value not in ("name", "created", "modified"):
+            return
+        self._sort_by = value
+        self._sort_var.set(value)
+        prefs = _load_json(PREFS_PATH)
+        prefs["sort_by"] = value
+        _save_json(PREFS_PATH, prefs)
+        # لو كنا وسط بحث، أعِد ترتيب نتائجه؛ وإلا أعِد بناء الشجرة.
+        if self.search_var.get().strip():
+            self._on_search_change()
+        else:
+            self.refresh()
+
     def _sorted_rows(self, rows):
-        return sorted(rows, key=lambda r: self._row_display_name(r).casefold())
+        """ترتيب ملفات الحالات جوّا مجلد واحد حسب التفضيل المحفوظ:
+        الاسم (تصاعدي أبجدي)، أو تاريخ الإنشاء/آخر تعديل (الأحدث أولاً —
+        نفس اتجاه مجلدات الشهور بالشجرة). المصدر دايماً أعمدة قاعدة
+        البيانات (created_at/updated_at)، لا وقت الملف الفيزيائي —
+        updated_at فاضي لمستند قديم فنرجع لـcreated_at."""
+        if self._sort_by == "created":
+            return sorted(rows, key=lambda r: (r.get("created_at") or "", r["id"]), reverse=True)
+        if self._sort_by == "modified":
+            return sorted(
+                rows,
+                key=lambda r: (r.get("updated_at") or r.get("created_at") or "", r["id"]),
+                reverse=True,
+            )
+        return sorted(rows, key=lambda r: (self._row_display_name(r).casefold(), r["id"]))
 
     def _rebuild_tree(self):
         self.tree.delete(*self.tree.get_children(""))
@@ -563,6 +602,15 @@ class FileExplorerPanel(ttk.Frame):
         menu.add_command(label="📁 فتح بمستكشف ويندوز", command=self._open_selected_in_explorer)
         menu.add_command(label="📋 نسخ المسار", command=self._copy_selected_path)
         menu.add_separator()
+        sort_menu = tk.Menu(menu, tearoff=0)
+        for val, label in (
+            ("name", "🔤 الاسم"), ("created", "🕐 تاريخ الإنشاء"), ("modified", "🕑 آخر تعديل"),
+        ):
+            sort_menu.add_radiobutton(
+                label=label, value=val, variable=self._sort_var,
+                command=lambda v=val: self._set_sort_by(v),
+            )
+        menu.add_cascade(label="↕️ ترتيب حسب", menu=sort_menu)
         menu.add_command(label="🔄 تحديث", command=self.refresh)
         menu.add_command(label="📅 الشهر الحالي", command=self._jump_to_current_month)
         menu.tk_popup(event.x_root, event.y_root)
@@ -701,7 +749,7 @@ class FileExplorerPanel(ttk.Frame):
         self.tree.delete(*self.tree.get_children(""))
         self._paths = {"": self.root_dir}
         self._rows = {}
-        for r in results:
+        for r in self._sorted_rows(results):  # نفس تفضيل الترتيب المحفوظ
             path = r.get("pdf_path") or r.get("file_path")
             name = os.path.basename(path) if path else f"#{r['id']}"
             label = "📄 " + name

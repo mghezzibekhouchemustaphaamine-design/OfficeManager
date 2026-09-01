@@ -136,6 +136,17 @@ def rename_case(row_id, new_base_name):
         if not old_path:
             new_paths[path_field] = None
             continue
+        # الملف مو موجود فعلياً على القرص (نُقل/انمسح برّة البرنامج —
+        # الصف يبان بعلامة ⚠️ بالشريط) → ما نحسبله اسم جديد ولا نلمس
+        # عموده بقاعدة البيانات إطلاقاً، يضل زي ما هو (بالضبط نفس منطق
+        # move_case فوق). لو حسبناله مساراً جديداً هون بلا فحص وجوده،
+        # كنا نكتب بالقاعدة مساراً "وهمي" ما انخلق فعلياً — وأخطر من
+        # هيك: لو الملف الثاني (docx أو pdf) موجود فعلاً وانسمّى، هذا
+        # المفقود يضل مرتبط باسمه القديم بالقرص لكن القاعدة تفقد مساره
+        # الحقيقي نهائياً لو حسبناه هون.
+        if not os.path.exists(old_path):
+            new_paths[path_field] = old_path
+            continue
         folder = os.path.dirname(old_path)
         ext = os.path.splitext(old_path)[1]
         candidate = os.path.join(folder, f"{new_base_name}{ext}")

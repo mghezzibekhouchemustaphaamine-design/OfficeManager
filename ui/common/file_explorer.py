@@ -346,7 +346,10 @@ class FileExplorerPanel(ttk.Frame):
         )
         self._paths[iid] = disk_path
 
-    def _insert_leaf(self, row, parent):
+    def _insert_leaf(self, row, parent, suffix=""):
+        """suffix (اختياري): نص إضافي يُلحق بعد اسم الملف — يستخدمه
+        البحث لعرض اسم الزبون (⚠️/🔒 وكل شي ثاني يبقى نفسه بالضبط، بلا
+        تكرار منطق منفصل — راجع _on_search_change)."""
         iid = f"row:{row['id']}"
         path = row.get("pdf_path") or row.get("file_path")
         name = self._row_display_name(row)
@@ -364,6 +367,7 @@ class FileExplorerPanel(ttk.Frame):
                 insert_kwargs["image"] = self._lock_icon_locked
             else:
                 text += " 🔒"
+        text += suffix
         self.tree.insert(
             parent, "end", iid=iid, text=text,
             tags=(f"depth{min(depth, 4)}",), **insert_kwargs,
@@ -750,15 +754,13 @@ class FileExplorerPanel(ttk.Frame):
         self._paths = {"": self.root_dir}
         self._rows = {}
         for r in self._sorted_rows(results):  # نفس تفضيل الترتيب المحفوظ
-            path = r.get("pdf_path") or r.get("file_path")
-            name = os.path.basename(path) if path else f"#{r['id']}"
-            label = "📄 " + name
-            if r.get("client_name"):
-                label += f"   — {r['client_name']}"
-            iid = f"row:{r['id']}"
-            self.tree.insert("", "end", iid=iid, text=label)
-            self._paths[iid] = path
-            self._rows[iid] = r
+            # نفس _insert_leaf المستخدَمة بالتصفح العادي بالضبط — حتى
+            # ⚠️/🔒 يبانوا بنتائج البحث بردو (كانت نتائج البحث تبني عقدة
+            # مبسّطة لحالها هون، ناسية هالمؤشرات، فحالة مقفولة أو ملفها
+            # مفقود تبان "عادية" لحد ما يجرب المستخدم تسمية/فتح ويطلعله
+            # خطأ بلا أي تحذير مسبق).
+            suffix = f"   — {r['client_name']}" if r.get("client_name") else ""
+            self._insert_leaf(r, "", suffix=suffix)
 
     # ---------- سحب وإفلات = اختصار بصري لعملية "نقل الحالة" ----------
     def _on_drag_start(self, event):
@@ -795,6 +797,20 @@ class FileExplorerPanel(ttk.Frame):
             self._hide_tooltip()
         self._drag_started = True
         src_path = self._paths.get(self._drag_iid)
+        # وقت البحث ما فيه ولا عقدة مجلد بالشجرة (النتائج مسطّحة) —
+        # فأي سحب مرفوض دايماً بصمت تام، بالضبط باللحظة اللي المستخدم
+        # الأرجح يحب يستخدمها (لقى الحالة بالبحث وبده يربطها بزبون على
+        # طول). بدل الصمت المربك، نعطيه إشارة واضحة وقت السحب نفسه
+        # (مؤشر "ممنوع" + تلميح نصي) — بلا أي alert مزعج، ونوقف قبل أي
+        # منطق تظليل هدف (أصلاً ما فيه أهداف حقيقية بهالوضع).
+        if self.search_var.get().strip():
+            self.tree.configure(cursor="X_cursor")
+            self._show_drag_ghost(
+                src_path, event.x_root, event.y_root,
+                text="🚫 امسح البحث أولاً حتى تقدر تسحبها لمجلد زبون",
+            )
+            self._clear_drop_highlight()
+            return
         if src_path:
             self.tree.configure(cursor="fleur")
             self._show_drag_ghost(src_path, event.x_root, event.y_root)
@@ -804,7 +820,8 @@ class FileExplorerPanel(ttk.Frame):
             self.tree.item(target_iid, tags=("drop_target",))
             self._drop_target_iid = target_iid
 
-    def _show_drag_ghost(self, path, x_root, y_root):
+    def _show_drag_ghost(self, path, x_root, y_root, text=None):
+        label_text = text if text is not None else "📄 " + os.path.basename(path)
         if self._drag_ghost is None:
             self._drag_ghost = tk.Toplevel(self)
             self._drag_ghost.wm_overrideredirect(True)
@@ -813,11 +830,13 @@ class FileExplorerPanel(ttk.Frame):
             except tk.TclError:
                 pass
             self._drag_ghost_label = ttk.Label(
-                self._drag_ghost, text="📄 " + os.path.basename(path),
+                self._drag_ghost, text=label_text,
                 background="#ffffe0", relief="solid", borderwidth=1,
                 font=("Segoe UI", 9), padding=(4, 2),
             )
             self._drag_ghost_label.pack()
+        else:
+            self._drag_ghost_label.configure(text=label_text)
         self._drag_ghost.wm_geometry(f"+{x_root + 14}+{y_root + 14}")
 
     def _hide_drag_ghost(self):

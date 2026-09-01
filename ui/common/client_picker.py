@@ -26,6 +26,7 @@ class ClientPickerEntry(ttk.Frame):
         self._listbox = None
         self._results = []
         self._suppress_search = False  # يوقف البحث الحي وقت التعبئة البرمجية
+        self._selected_text = ""  # آخر نص مطابق فعلياً لـ_client_id (راجع _on_key_release)
 
         self.entry_var = tk.StringVar()
         self.entry = ttk.Entry(self, textvariable=self.entry_var, width=entry_width)
@@ -55,6 +56,7 @@ class ClientPickerEntry(ttk.Frame):
             else:
                 self._client_id = client_id
                 self.entry_var.set(client["name"])
+            self._selected_text = self.entry_var.get()
         finally:
             self._suppress_search = False
 
@@ -77,11 +79,20 @@ class ClientPickerEntry(ttk.Frame):
     def _on_key_release(self, event):
         if self._suppress_search or event.keysym in ("Up", "Down", "Return", "Escape", "Tab"):
             return
-        # أي كتابة يدوية تبطل أي اختيار سابق — لازم يعيد الاختيار من القائمة.
+        # مفاتيح تنقّل/تعديل بلا أي تغيير فعلي بالنص (أسهم، Home/End،
+        # رفع إصبع عن Shift/Ctrl/Alt لوحدهم...) ما تلغي الاختيار — بس
+        # تغيّر النص فعلاً يعتبر "كتابة يدوية". هيك لو زبون مُختار
+        # وضغط المستخدم سهم أو Ctrl+A يراجع الاسم، الربط ما ينفك بصمت
+        # (كان القديم بيلغي الاختيار لأي KeyRelease مو بالقائمة
+        # المستثناة فوق — حتى بلا تغيّر حرف وحد).
+        current_text = self.entry_var.get()
+        if self._client_id is not None and current_text == self._selected_text:
+            return
+        # أي كتابة يدوية غيّرت النص فعلاً تبطل أي اختيار سابق — لازم يعيد الاختيار من القائمة.
         if self._client_id is not None:
             self._client_id = None
             self._notify_change()
-        self._results = list_clients(self.entry_var.get().strip())
+        self._results = list_clients(current_text.strip())
         self._show_popup()
 
     def _show_popup(self):
@@ -140,6 +151,7 @@ class ClientPickerEntry(ttk.Frame):
             self._client_id = client["id"]
             self.entry_var.set(client["name"])
             self.entry.icursor(tk.END)
+            self._selected_text = self.entry_var.get()
         finally:
             self._suppress_search = False
         self._hide_popup()

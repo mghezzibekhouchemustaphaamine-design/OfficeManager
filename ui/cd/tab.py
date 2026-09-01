@@ -2442,7 +2442,19 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         if tab is not None:
             empty_fields = {k: "" for k in _TRANSACTIONAL_DRAFT_KEYS}
             tab["saved_snapshot"] = self._snapshot_of(empty_fields, None, "", None)
+            # فك الربط الفعلي بالحالة القديمة: لو هذا التبويب كان محمَّلاً
+            # من حالة (فتحته من السجل أو حفظته قبل)، "مستند جديد" **معاملة
+            # مستقلة جديدة** — بلا هذا السطر، أول حفظ بعده يحدّث فوق سطر/
+            # ملفات الحالة القديمة بدل تسجيل حالة جديدة. الزبون كمان
+            # اتصفّر فوق (client_picker.clear())، فنصفّر client_id بحالة
+            # التبويب بردو.
+            tab["loaded_from"] = None
+            tab["client_id"] = None
         self._reset_undo_history()  # حد "معاملة جديدة" — راجع شرح _reset_undo_history
+        # الشريط الجانبي: أي ملف كان "محمَّلاً" بهذا التبويب رجع "شغل
+        # منتهي" الآن (فُكّ الربط فوق) — نحدّث أيقونة القفل فوراً (نفس
+        # نمط _close_tab).
+        self.explorer_panel.refresh()
 
     # ملاحظة: "📁 فتح مجلد المستندات" انحذف (زر وطريقة) — الشريط الجانبي
     # يسوي نفس الوظيفة وأفضل (تصفّح + فتح بمستكشف ويندوز + كل عمليات

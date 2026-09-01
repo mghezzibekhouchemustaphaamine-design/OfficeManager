@@ -429,7 +429,7 @@ class FileExplorerPanel(ttk.Frame):
         # بعكس النص العادي القديم (كان أي نقرة بالصف تفتح الملف بس).
         if self._on_toggle_lock and not self._is_path_active(path):
             element = self.tree.identify_element(event.x, event.y)
-            if element == "image":
+            if element in ("image", "Treeitem.image"):
                 self._on_toggle_lock(path)
                 return
         if os.path.isfile(path):
@@ -536,6 +536,8 @@ class FileExplorerPanel(ttk.Frame):
         if is_file:
             menu.add_command(label="📂 فتح", command=lambda: self._open_file(path))
             menu.add_command(label="👁️ معاينة", command=self._preview_selected)
+            if self._on_toggle_lock and not self._is_path_active(path):
+                menu.add_command(label="🔓 فتح للتعديل", command=lambda: self._on_toggle_lock(path))
         menu.add_command(label="📁 فتح بمستكشف ويندوز", command=self._open_selected_in_explorer)
         menu.add_command(label="📋 نسخ المسار", command=self._copy_selected_path)
         menu.add_separator()

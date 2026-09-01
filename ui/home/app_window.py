@@ -173,10 +173,26 @@ class OfficeApp(tk.Tk):
         if self._is_locked:
             return
         self._is_locked = True
+        # قبل ما نفتح شاشة القفل: نحفظ مسودة كل تبويبات الخدمة الحية
+        # ونعطّل اختصاراتها (نفس اللوپ بالضبط اللي بـ_show_transient_view)
+        # — بدون هذا، اختصارات CD (bind_all على مستوى التطبيق كامل) تضل
+        # تشتغل حتى وشاشة القفل ظاهرة فوقها (Ctrl+P يطبع، Ctrl+N يفتح
+        # مستند جديد...)، لأن bindtag "all" موجود بكل الودجات بما فيها
+        # ودجات LockOverlay نفسها.
+        for tab in self._service_tabs.values():
+            if hasattr(tab, "flush_draft_save"):
+                tab.flush_draft_save()
+            if hasattr(tab, "deactivate_shortcuts"):
+                tab.deactivate_shortcuts()
         overlay = LockOverlay(self)
         self.wait_window(overlay)  # يعلّق هنا لحد ما LockOverlay تتدمر (فتح ناجح)
         self._is_locked = False
         self._last_activity_time = time.time()
+        # نعيد التفعيل لتبويب الخدمة *النشط حالياً* بس (نفس فحص
+        # _activate_service_tab) — ما نفعّل خدمات ثانية مو ظاهرة فعلياً.
+        active_tab = self._service_tabs.get(self._current_service)
+        if active_tab is not None and hasattr(active_tab, "activate_shortcuts"):
+            active_tab.activate_shortcuts()
 
     def _set_status(self, text):
         self.status_var.set(text)

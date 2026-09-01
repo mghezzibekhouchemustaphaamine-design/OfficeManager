@@ -349,26 +349,14 @@ def update_cd_document(row_id, record, full_data=None):
     conn.close()
 
 
-def find_cd_document_by_path(path):
-    """يلقى سطر cd_documents اللي ملف Word أو PDF فيه يطابق المسار
-    المُعطى بالضبط (بعد تطبيع المسار — راجع os.path.abspath) — يُستخدم
-    لما نفتح ملف من الشريط الجانبي (نقرة مزدوجة/📂 فتح) عشان نعرف هل
-    له حالة CD كاملة نقدر نفتحها بالاستمارة (للقراءة فقط، حماية عمل
-    منتهي — راجع _open_case_readonly بـui/cd/tab.py)، أو مو مرتبط بأي
-    سطر أصلاً (يُفتح عادي بالنظام). يرجّع None لو ما لقى تطابق."""
-    try:
-        abs_path = os.path.normcase(os.path.abspath(path))
-    except (TypeError, ValueError):
-        return None
+def get_cd_document(row_id):
+    """صف cd_documents واحد (dict) بمعرّفه، أو None — يُستخدم لما نفتح
+    حالة من الشريط الجانبي (الشجرة صارت تحمل row_id مباشرة، فما نحتاج
+    مطابقة مسار نص زي find_cd_document_by_path القديمة)."""
     conn = get_connection()
-    rows = conn.execute("SELECT * FROM cd_documents WHERE file_path IS NOT NULL OR pdf_path IS NOT NULL").fetchall()
+    row = conn.execute("SELECT * FROM cd_documents WHERE id=?", (row_id,)).fetchone()
     conn.close()
-    for row in rows:
-        row = dict(row)
-        for candidate in (row.get("file_path"), row.get("pdf_path")):
-            if candidate and os.path.normcase(os.path.abspath(candidate)) == abs_path:
-                return row
-    return None
+    return dict(row) if row is not None else None
 
 
 def search_cd_documents(query="", limit=200, client_id=None):

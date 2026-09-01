@@ -24,7 +24,7 @@ from ui.common import alerts
 
 import programme.backup as backup
 from programme.database import (
-    log_cd_document, update_cd_document, find_cd_document_by_path, deserialize_cd_data, get_client,
+    log_cd_document, update_cd_document, get_cd_document, deserialize_cd_data, get_client,
 )
 from programme.paths import get_travail_root, get_client_dir
 from programme.case_ops import move_case
@@ -56,12 +56,6 @@ from ui.common.file_explorer import FileExplorerPanel
 from ui.common.client_picker import ClientPickerEntry
 from programme.utils import open_path
 import random
-
-
-def _norm_path(path):
-    """تطبيع مسار للمقارنة — abspath + normcase (حماية فرق حالة
-    الأحرف بويندوز عند مقارنة مسار ملف بمسار محفوظ بقاعدة البيانات)."""
-    return os.path.normcase(os.path.abspath(path))
 
 
 def _increment_dossier_no(no_str):
@@ -494,29 +488,20 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
     def _unlock_active_tab(self):
         self.set_form_readonly(False)
 
-    def _open_case_readonly(self, file_path):
+    def _open_case_readonly(self, row_id, file_path):
         """يُستدعى من الشريط الجانبي (نقرة مزدوجة أو "📂 فتح" — راجع
-        on_open_file بـFileExplorerPanel) قبل الفتح الافتراضي بالنظام.
-        لو الملف مرتبط بسطر CD كامل البيانات: يفتحه بتبويب جديد
-        **للقراءة فقط** مباشرة (حماية من تعديل غير مقصود لعمل منتهي —
-        بطلب صريح)، أو يقفز للتبويب القابل للتعديل أصلاً لو نفس الملف
-        مفتوح فيه حالياً بدل فتح نسخة قراءة-فقط ثانية زيادة منه. يرجّع
-        True لو تكفّلنا بالفتح (فما داعي يفتحه الشريط بالنظام كمان)،
-        False لو الملف مو مرتبط بأي سطر (أو مستند قديم بلا بيانات كاملة
-        محفوظة) — يُفتح عادي بالنظام بمساره الطبيعي."""
-        try:
-            abs_path = _norm_path(file_path)
-        except (TypeError, ValueError):
-            return False
+        on_open_file بـFileExplorerPanel) قبل الفتح الافتراضي بالنظام،
+        بـ row_id مباشرة من الشجرة (المبنية من قاعدة البيانات — بلا مطابقة
+        مسار نص). لو للحالة بيانات كاملة محفوظة: يفتحها بتبويب جديد
+        **للقراءة فقط** (حماية عمل منتهي)، أو يقفز للتبويب المفتوح أصلاً
+        لو نفس الحالة مفتوحة فيه. يرجّع True لو تكفّلنا بالفتح، False لو
+        مستند قديم بلا بيانات كاملة (يُفتح عادي بالنظام)."""
         for tab in self._tabs:
             loaded_from = tab.get("loaded_from")
-            if loaded_from and any(
-                candidate and _norm_path(candidate) == abs_path
-                for candidate in (loaded_from.get("file_path"), loaded_from.get("pdf_path"))
-            ):
+            if loaded_from and loaded_from.get("row_id") == row_id:
                 self._activate_tab(tab["id"])
                 return True
-        row = find_cd_document_by_path(file_path)
+        row = get_cd_document(row_id)
         if row is None:
             return False
         data = deserialize_cd_data(row.get("full_data_json"))
@@ -908,9 +893,9 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         loaded_from = tab.get("loaded_from")
         if not loaded_from:
             return
-        path = loaded_from.get("pdf_path") or loaded_from.get("file_path")
-        if path:
-            self.explorer_panel.reveal_path(path)
+        row_id = loaded_from.get("row_id")
+        if row_id is not None:
+            self.explorer_panel.reveal_row(row_id)
 
     def _new_tab(self):
         """يفتح تبويب جديد فاضٍ (زر "+" أو Ctrl+T) — يحفظ حالة التبويب
@@ -1309,60 +1294,34 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         prefs["file_explorer_visible"] = visible
         _save_json(CD_UI_PREFS_PATH, prefs)
 
-    def _is_case_path_active(self, path):
-        """"شغل جارٍ" (True) لأي مسار (Word أو PDF) يخص تبويب مفتوح
-        فعلاً الآن **وقابل للتعديل** (مو بوضع readonly) — والعكس: ملف
-        تبويبه مسكّر، أو تبويبه مفتوح بس لسا بوضع "عرض فقط" (راجع
-        set_form_readonly)، أو غير معروف إطلاقاً — يُعتبر "شغل منتهي"
-        (False)، فيحصل حماية إضافية بالشريط الجانبي (تأكيد أوضح قبل
-        نقل/حذف/إعادة تسمية، وأيقونة 🔒 قابلة للنقر لفتحه/فكّه — راجع
-        is_path_active/on_toggle_lock بـui/common/file_explorer.py).
-        يُمرَّر كدالة (callback) للشريط الجانبي عند بنائه — الشريط نفسه
-        ما يعرف شي عن مفهوم "تبويبات"/"readonly" إطلاقاً، عام تماماً.
-
-        الإصلاح المهم هنا: قبل كانت ترجّع True لمجرد وجود تبويب محمَّل
-        من هالمسار، بغض النظر عن حالة القفل — يعني ملف تبويبه مفتوح بس
-        لسا مقفول (لم يُفتح للتعديل بعد) كان يُعامَل خطأً كـ"شغل جارٍ"
-        بلا أي حماية إضافية بالشريط، رغم إنه فعلياً محمي من التعديل
-        بالضبط زي "شغل منتهي" لحد ما يُفتح صراحة."""
-        try:
-            abs_path = _norm_path(path)
-        except (TypeError, ValueError):
-            return True
+    def _is_case_path_active(self, row_id, path):
+        """"شغل جارٍ" (True) لحالة (row_id) تبويبها مفتوح فعلاً الآن
+        **وقابل للتعديل** (مو بوضع readonly) — والعكس: تبويبها مسكّر، أو
+        مفتوح بس بوضع "عرض فقط"، أو غير معروف إطلاقاً → "شغل منتهي"
+        (False)، فيحصل حماية بالشريط (حاجز صارم قبل تسمية/سحب، وأيقونة 🔒
+        قابلة للنقر). الشجرة صارت تحمل row_id مباشرة (مبنية من قاعدة
+        البيانات) فما نحتاج مطابقة مسار نص — نقارن row_id مباشرة عبر
+        self._tabs. path يبقى بالتوقيع للتوافق/التشخيص بس."""
         for tab in self._tabs:
             loaded_from = tab.get("loaded_from")
-            if not loaded_from:
-                continue
-            for candidate in (loaded_from.get("file_path"), loaded_from.get("pdf_path")):
-                if candidate and _norm_path(candidate) == abs_path:
-                    return not tab.get("readonly", False)
+            if loaded_from and loaded_from.get("row_id") == row_id:
+                return not tab.get("readonly", False)
         return False
 
-    def _toggle_lock_for_path(self, path):
+    def _toggle_lock_for_path(self, row_id, path):
         """تُستدعى من الشريط الجانبي عند دبل كليك على أيقونة 🔒 تحديداً
-        (راجع on_toggle_lock بـFileExplorerPanel) — تفتح/تفك التبويب
-        المرتبط بهذا الملف بضغطة وحدة: لو تبويبه مفتوح أصلاً (بس لسا
-        مقفول)، تفكّه مباشرة (نفس زر "🔓 فتح للتعديل" بالضبط، بلا أي
-        تأكيد إضافي — بطلب صريح). لو "شغل منتهي" حقيقي (بلا تبويب مفتوح
-        أصلاً)، تفتحه أولاً للقراءة فقط (نفس _open_case_readonly) ثم
-        تفكّه مباشرة — فتح وفك بضغطة وحدة. refresh() بالنهاية يحدّث
-        أيقونة الشريط 🔒↔🔓 فوراً (الودجت نفسه ما يعيد تقييم
-        is_path_active إلا عند إعادة بناء الصف)."""
-        try:
-            abs_path = _norm_path(path)
-        except (TypeError, ValueError):
-            return
+        أو "🔓 فتح للتعديل" بقائمة كليك يمين — تفتح/تفك الحالة (row_id)
+        بضغطة وحدة: لو تبويبها مفتوح أصلاً (بس مقفول) تفكّه مباشرة (بلا
+        تأكيد)؛ لو "شغل منتهي" حقيقي تفتحه أولاً للقراءة فقط ثم تفكّه.
+        refresh() بالنهاية يحدّث أيقونة الشريط 🔒↔🔓 فوراً."""
         for tab in self._tabs:
             loaded_from = tab.get("loaded_from")
-            if loaded_from and any(
-                candidate and _norm_path(candidate) == abs_path
-                for candidate in (loaded_from.get("file_path"), loaded_from.get("pdf_path"))
-            ):
+            if loaded_from and loaded_from.get("row_id") == row_id:
                 self._activate_tab(tab["id"])
                 self.set_form_readonly(False)
                 self.explorer_panel.refresh()
                 return
-        if self._open_case_readonly(path):
+        if self._open_case_readonly(row_id, path):
             self.set_form_readonly(False)
             self.explorer_panel.refresh()
 
@@ -2356,12 +2315,12 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         self._reset_undo_history()  # حد "معاملة منتهية" — راجع شرح _reset_undo_history
         # الشريط الجانبي يقفز مباشرة للمستند اللي بس اتولّد ويحدّده — تشوف
         # نتيجة شغلك فوراً بلا أي بحث يدوي بمجلدات الأشهر (بطلب صريح).
-        # refresh() أولاً حتى تنقرأ شجرة المجلد من جديد (الملف/مجلد الشهر
-        # ممكن يكون جديد كلياً، مو موجود بالنسخة المخزَّنة بالشجرة أصلاً).
-        # نحدّد PDF (المنتج النهائي المهم فعلياً، بطلب صريح) لو اتولّد
-        # صح، وإلا نرجع لـWord (لو فشل توليد PDF لأي سبب — نادر).
+        # refresh() أولاً حتى تُبنى الشجرة من قاعدة البيانات من جديد
+        # (الحالة/مجلد الشهر ممكن يكون جديد كلياً)، ثم نقفز للحالة
+        # بـ row_id مباشرة (المسار الحالي يُقرأ منه — يحمي من أي نقل/تسمية).
         self.explorer_panel.refresh()
-        self.explorer_panel.reveal_path(pdf_path or path)
+        if row_id is not None:
+            self.explorer_panel.reveal_row(row_id)
         # نسخة احتياطية فورية بخيط منفصل (بلا تعليق الواجهة) — كل حفظ
         # حقيقي يستاهل حماية فورية، مو بس انتظار النسخة اليومية (راجع
         # backup.py). بلا أثر لو ماكو وجهات معدَّة بعد (قائمة فاضية).

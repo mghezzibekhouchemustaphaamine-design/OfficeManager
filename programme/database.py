@@ -149,6 +149,29 @@ def init_db():
     existing_user_cols = {row[1] for row in cur.execute("PRAGMA table_info(users)")}
     if "recovery_code_hash" not in existing_user_cols:
         cur.execute("ALTER TABLE users ADD COLUMN recovery_code_hash TEXT")
+    # --- الزبائن + الشريط الجانبي المبني على قاعدة البيانات (راجع
+    # docs/cd-clients-architecture.md وdocs/cd-clients-implementation-brief.md).
+    # كلها بنفس نمط full_data_json/pdf_path أعلاه: PRAGMA table_info ثم
+    # ALTER TABLE لو العمود ناقص — قواعد بيانات المستخدمين الموجودة أصلاً
+    # تترقّى بسلاسة بلا فقدان بيانات.
+    #
+    # cd_documents.client_id: ربط الحالة بزبون (جدول clients) — بلا
+    # FOREIGN KEY صريح (SQLite ما يدعم إضافتها بسهولة على جدول موجود؛
+    # الربط منطقي بالكود بس، زي باقي الجدول).
+    if "client_id" not in existing_cols:
+        cur.execute("ALTER TABLE cd_documents ADD COLUMN client_id INTEGER")
+    # cd_documents.updated_at: يتحدّث كل حفظ لاحق عبر update_cd_document
+    # (مصدر "آخر تعديل" بالشريط الجانبي/السجل، بدل وقت الملف الفيزيائي).
+    if "updated_at" not in existing_cols:
+        cur.execute("ALTER TABLE cd_documents ADD COLUMN updated_at TEXT")
+    existing_client_cols = {row[1] for row in cur.execute("PRAGMA table_info(clients)")}
+    # clients.folder_name: اسم مجلد الزبون الفعلي على القرص — يُحسب مرة
+    # وحدة عند إنشاء الزبون (create_client) ويبقى ثابتاً بعدها حتى لو
+    # تغيّر اسم الزبون لاحقاً. تعديل اسم زبون **لا** يغيّر اسم مجلده:
+    # يفادي إعادة نقل كل ملفاته كل مرة يتعدّل فيها اسم، وهو السلوك
+    # المتوقَّع بأي نظام ملفات حقيقي (راجع مستند التصميم بند 3).
+    if "folder_name" not in existing_client_cols:
+        cur.execute("ALTER TABLE clients ADD COLUMN folder_name TEXT")
     conn.commit()
     conn.close()
 
@@ -180,6 +203,88 @@ def deserialize_cd_data(full_data_json):
     return d
 
 
+def _sanitize_folder_name(name):
+    """اسم مجلد آمن مشتق من اسم الزبون — نفس أسلوب _named_path بـ
+    ui/cd/document.py (أحرف/أرقام/مسافة/شرطة سفلية/شرطة فقط). يرجّع
+    "client" لو ما بقي أي حرف صالح (اسم رموز بالكامل — نادر)."""
+    safe = "".join(c for c in (name or "") if c.isalnum() or c in " _-").strip()
+    return safe or "client"
+
+
+def list_clients(query="", limit=50):
+    """بحث بالاسم (LIKE) — يرجّع [{id, name, phone, ...}] مرتّبة أبجدياً
+    (أنسب لمكوّن اختيار). query فاضي يرجّع الكل (بحد limit)."""
+    conn = get_connection()
+    if query:
+        like = f"%{query}%"
+        rows = conn.execute(
+            "SELECT * FROM clients WHERE name LIKE ? ORDER BY name COLLATE NOCASE LIMIT ?",
+            (like, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM clients ORDER BY name COLLATE NOCASE LIMIT ?", (limit,),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_client(client_id):
+    """صف زبون واحد (dict) أو None."""
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+    conn.close()
+    return dict(row) if row is not None else None
+
+
+def create_client(name, phone=None, email=None, address=None, notes=None):
+    """يُنشئ زبوناً جديداً: يحسب folder_name مرة وحدة (sanitize نفس أسلوب
+    _named_path)، يفحص تصادمه مع folder_name موجود أصلاً (يضيف _02، _03...
+    تلقائياً — نفس اصطلاح تصادم اسم ملف CD)، يُدرج الصف ويرجّع id."""
+    base = _sanitize_folder_name(name)
+    conn = get_connection()
+    existing = {
+        (r[0] or "").casefold()
+        for r in conn.execute("SELECT folder_name FROM clients WHERE folder_name IS NOT NULL")
+    }
+    folder_name = base
+    n = 2
+    while folder_name.casefold() in existing:
+        folder_name = f"{base}_{n:02d}"
+        n += 1
+    cur = conn.execute(
+        "INSERT INTO clients (name, phone, email, address, notes, folder_name) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (name, phone, email, address, notes, folder_name),
+    )
+    client_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return client_id
+
+
+def client_has_documents(client_id):
+    """True لو فيه أي سطر cd_documents مرتبط بـclient_id — يكفي سطر واحد."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT 1 FROM cd_documents WHERE client_id=? LIMIT 1", (client_id,),
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
+def delete_client(client_id):
+    """يرفض (يرجّع False، بلا حذف) لو client_has_documents — منع حذف زبون
+    له أي مستند مرتبط (راجع مستند التصميم بند 4-و). غير هيك يحذف ويرجّع True."""
+    if client_has_documents(client_id):
+        return False
+    conn = get_connection()
+    conn.execute("DELETE FROM clients WHERE id=?", (client_id,))
+    conn.commit()
+    conn.close()
+    return True
+
+
 def log_cd_document(record, full_data=None):
     """يسجّل مستند CD مولَّد فعلياً بجدول cd_documents، للبحث/الأرشفة لاحقاً.
 
@@ -198,8 +303,8 @@ def log_cd_document(record, full_data=None):
         """
         INSERT INTO cd_documents
             (dossier_no, passager, passport_no, doc_date, agence, guichet,
-             eur_amount, dzd_amount, file_path, pdf_path, full_data_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             eur_amount, dzd_amount, file_path, pdf_path, full_data_json, client_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.get("dossier_no"), record.get("passager"), record.get("passport_no"),
@@ -207,6 +312,7 @@ def log_cd_document(record, full_data=None):
             record.get("eur_amount"), record.get("dzd_amount"), record["file_path"],
             record.get("pdf_path"),
             serialize_cd_data(full_data) if full_data is not None else None,
+            record.get("client_id"),
         ),
     )
     row_id = cur.lastrowid
@@ -225,7 +331,8 @@ def update_cd_document(row_id, record, full_data=None):
         """
         UPDATE cd_documents SET
             dossier_no=?, passager=?, passport_no=?, doc_date=?, agence=?, guichet=?,
-            eur_amount=?, dzd_amount=?, file_path=?, pdf_path=?, full_data_json=?
+            eur_amount=?, dzd_amount=?, file_path=?, pdf_path=?, full_data_json=?,
+            client_id=?, updated_at=datetime('now','localtime')
         WHERE id=?
         """,
         (
@@ -234,6 +341,7 @@ def update_cd_document(row_id, record, full_data=None):
             record.get("eur_amount"), record.get("dzd_amount"), record["file_path"],
             record.get("pdf_path"),
             serialize_cd_data(full_data) if full_data is not None else None,
+            record.get("client_id"),
             row_id,
         ),
     )
@@ -263,21 +371,51 @@ def find_cd_document_by_path(path):
     return None
 
 
-def search_cd_documents(query="", limit=200):
+def search_cd_documents(query="", limit=200, client_id=None):
     """يرجّع مستندات CD السابقة (الأحدث أولاً)، مع فلترة نصية اختيارية
-    على اسم الراكب أو رقم البوردرو أو رقم الجواز."""
+    على اسم الراكب أو رقم البوردرو أو رقم الجواز، وفلترة اختيارية
+    بـclient_id (تشتغل بالمعرّف لا بمطابقة نص الاسم — حتى ما يلتبس
+    زبونين بنفس الاسم). كل صف يحمل عموداً إضافياً client_name (LEFT
+    JOIN clients) يحتاجه عمود "الزبون" بالسجل."""
     conn = get_connection()
+    sql = [
+        "SELECT cd.*, c.name AS client_name",
+        "FROM cd_documents cd LEFT JOIN clients c ON cd.client_id = c.id",
+    ]
+    where = []
+    params = []
     if query:
         like = f"%{query}%"
-        rows = conn.execute(
-            """
-            SELECT * FROM cd_documents
-            WHERE passager LIKE ? OR dossier_no LIKE ? OR passport_no LIKE ?
-            ORDER BY id DESC LIMIT ?
-            """,
-            (like, like, like, limit),
-        ).fetchall()
-    else:
-        rows = conn.execute("SELECT * FROM cd_documents ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        where.append("(cd.passager LIKE ? OR cd.dossier_no LIKE ? OR cd.passport_no LIKE ?)")
+        params += [like, like, like]
+    if client_id is not None:
+        where.append("cd.client_id = ?")
+        params.append(client_id)
+    if where:
+        sql.append("WHERE " + " AND ".join(where))
+    sql.append("ORDER BY cd.id DESC LIMIT ?")
+    params.append(limit)
+    rows = conn.execute("\n".join(sql), params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def list_cd_documents_for_tree():
+    """كل صفوف cd_documents (id, file_path, pdf_path, client_id, doc_date,
+    created_at, updated_at) + client_name وclient_folder_name (LEFT JOIN
+    clients) — المصدر الوحيد اللي يبني منه الشريط الجانبي شجرته (راجع
+    ui/common/file_explorer.py). بلا أي فلترة نصية: الشريط يبني الشجرة
+    كاملة ثم يفلتر بصرياً وقت البحث."""
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT cd.id, cd.file_path, cd.pdf_path, cd.client_id,
+               cd.doc_date, cd.created_at, cd.updated_at,
+               c.name AS client_name, c.folder_name AS client_folder_name
+        FROM cd_documents cd
+        LEFT JOIN clients c ON cd.client_id = c.id
+        ORDER BY cd.id DESC
+        """
+    ).fetchall()
     conn.close()
     return [dict(r) for r in rows]

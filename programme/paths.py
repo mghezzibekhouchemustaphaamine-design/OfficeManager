@@ -48,3 +48,25 @@ def get_travail_root():
 def get_screen_dir(name):
     """مجلد شاشة معيّنة جوا travail (زي travail/CD)."""
     return os.path.join(get_travail_root(), name)
+
+
+# --- تصميم "قاعدة البيانات كمصدر الحقيقة" (راجع
+# docs/cd-clients-architecture.md بند 3) ---
+# مجلدات الزبائن و"Autre" مباشرة جوّا travail (لا جوّا مجلد خدمة فرعي
+# زي travail/CD) — لأنها مشتركة بين كل الخدمات بطبيعتها: زبون واحد ممكن
+# يكون عنده شغل CD وشغل خدمة ثانية لاحقاً، كلهم بنفس مجلده. التمييز بين
+# الخدمات يكون بكود الخدمة على اسم الملف نفسه (CD_...)، لا بموقع المجلد.
+
+def get_autre_dir():
+    """travail/Autre — مكان الشغل بلا زبون معروف، مشترك بين كل الخدمات.
+    جوّاه يبقى تقسيم الأشهر (Autre/2026-09/...) — نفس اصطلاح الأرشفة
+    اليدوية القديم، بس منقول من travail/<خدمة> لـtravail/Autre مباشرة."""
+    return os.path.join(get_travail_root(), "Autre")
+
+
+def get_client_dir(folder_name):
+    """travail/<folder_name> — مجلد زبون (مسطّح، بلا تقسيم شهور جوّاه)،
+    مشترك بين كل الخدمات. folder_name يجي من clients.folder_name (محسوب
+    مرة وحدة بـcreate_client)، لا من اسم الزبون الحي مباشرة — راجع
+    مستند التصميم بند 3."""
+    return os.path.join(get_travail_root(), folder_name)

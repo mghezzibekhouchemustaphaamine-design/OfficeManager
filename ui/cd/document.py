@@ -24,8 +24,16 @@ from PIL import Image, ImageDraw, ImageFont
 from ui.common.widgets import FRENCH_MONTHS
 from programme.paths import get_screen_dir, get_autre_dir
 
-# مكان حفظ مستندات CD الحقيقية: مجلد travail/CD بسطح المكتب — مو جوا
-# مجلد البرنامج نفسه (راجع paths.py للتفاصيل والسبب).
+# ⚠️ travail/CD ما عاد "مكان حفظ مستندات CD" — بالتصميم الجديد (راجع
+# docs/cd-clients-architecture.md بند 3) المستندات الحقيقية تُحفظ بمجلد
+# الزبون (travail/<اسم>) أو travail/Autre/<الشهر>. OUTPUT_DIR باقي هنا
+# **حصراً للكاش الداخلي** اللي المستخدم ما يشوفه كـ"مستندات": صورة
+# المعاينة (PREVIEW_PNG) وصور الخلفية الفاضية (_blank_bg_*.png، راجع
+# get_blank_background). هذي تبقى بمكانها (لا تنتقل لـAutre — لا يصح خلط
+# ملفات كاش داخلية بمجلد يشوفه المستخدم كشغل حقيقي). travail/CD بمعناه
+# القديم (حاوية كل شغل CD) ما عاد له دور — وبما إن الشجرة الجديدة تُبنى
+# من قاعدة البيانات لا من مسح القرص، مجلد الكاش هذا ما يبان بالشريط
+# الجانبي أصلاً (سلوك صحيح ومقصود، بلا حاجة لأي إخفاء إضافي).
 OUTPUT_DIR = get_screen_dir("CD")
 
 # --- قياسات مستخرجة رقمياً من Model Change Devise.pdf وModel Vierge.pdf عبر PyMuPDF ---
@@ -464,6 +472,8 @@ def field_layout_px(target_width_px):
 # (كان فيه أيضاً PREVIEW_DOCX/PREVIEW_PDF وسيطين لما كان الرسم يمر عبر
 # Word — انشالوا مع render_preview_image نفسها، راجع render_blank_background
 # فوق: رسم مباشر ببايثون/Pillow، بلا حاجة لـWord ولا لملف PDF وسيط إطلاقاً.)
+# كاش داخلي بحت داخل OUTPUT_DIR (travail/CD) — مو مستند يشوفه المستخدم،
+# فيبقى هنا ولا ينتقل لـAutre (راجع الشرح فوق OUTPUT_DIR).
 PREVIEW_PNG = os.path.join(OUTPUT_DIR, "_preview.png")
 
 
@@ -547,6 +557,9 @@ def get_blank_background(target_width_px=750, force=False):
     ويخزّنها بملف خاص بهالدقة — حتى تكون الكتابة حادة دائماً بأي مستوى
     زوم (رسم أصلي بكل دقة، مو تكبير صورة صغيرة فتصير مبكسلة/مضببة).
     كل دقة تتولّد مرة وحدة بس (أول استخدام لها)، وتُعاد استخدامها بعدها.
+
+    الملف كاش داخلي بحت داخل OUTPUT_DIR (travail/CD) — مو مستند، فيبقى
+    هنا ولا ينتقل لمجلد يشوفه المستخدم (راجع الشرح فوق OUTPUT_DIR).
     """
     path = os.path.join(OUTPUT_DIR, f"_blank_bg_{target_width_px}.png")
     if not force and os.path.exists(path):

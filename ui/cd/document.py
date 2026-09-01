@@ -22,7 +22,7 @@ from PIL import Image, ImageDraw, ImageFont
 # الحقيقي — 7 استخدامات مقابل استخدام وحيد هنا) — نفس الأسماء المستخدمة
 # بالنموذج الأصلي (بدون همزات/أكسنت: "Aout" لا "Août").
 from ui.common.widgets import FRENCH_MONTHS
-from programme.paths import get_screen_dir
+from programme.paths import get_screen_dir, get_autre_dir
 
 # مكان حفظ مستندات CD الحقيقية: مجلد travail/CD بسطح المكتب — مو جوا
 # مجلد البرنامج نفسه (راجع paths.py للتفاصيل والسبب).
@@ -323,11 +323,17 @@ def _named_path(dir_path, passager, ext):
     return os.path.join(dir_path, filename)
 
 
-def _month_output_path(passager, ext):
-    """مسار الحفظ التلقائي الافتراضي لأي مستند CD جديد: مجلد فرعي حسب
-    الشهر/السنة الحالي (travail/CD/2026-08/...) — أسهل للأرشفة اليدوية
-    لاحقاً بدل تراكم كل الملفات بمجلد واحد مسطّح."""
-    month_dir = os.path.join(OUTPUT_DIR, datetime.now().strftime("%Y-%m"))
+def _month_output_path(passager, ext, doc_date=None):
+    """مسار الحفظ التلقائي الافتراضي لأي مستند CD جديد **بلا زبون معروف**:
+    travail/Autre/<YYYY-MM> — الشهر من تاريخ المعاملة (doc_date) لا تاريخ
+    اليوم، حتى حالة مؤرَّخة بالماضي تترتب زمنياً صح (راجع البند 2 بمستند
+    التصميم docs/cd-clients-architecture.md). doc_date فاضي (نادر — الحقل
+    مو إجباري تماماً بالاستمارة) → شهر اليوم.
+
+    ملاحظة: travail/CD (OUTPUT_DIR) ما عاد مكان حفظ مستندات — صار للكاش
+    الداخلي بس (راجع OUTPUT_DIR فوق ومرحلة 5 بخطة التنفيذ)."""
+    month = doc_date.strftime("%Y-%m") if doc_date is not None else datetime.now().strftime("%Y-%m")
+    month_dir = os.path.join(get_autre_dir(), month)
     return _named_path(month_dir, passager, ext)
 
 
@@ -338,7 +344,7 @@ def generate_cd_document(data, out_path=None):
     (نفس الاصطلاح دائماً)."""
     doc = _build_docx(data)
     if out_path is None:
-        out_path = _month_output_path(data["passager"], "docx")
+        out_path = _month_output_path(data["passager"], "docx", data.get("date"))
     else:
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     doc.save(out_path)
@@ -364,7 +370,7 @@ def generate_cd_pdf(data, out_path=None):
     from reportlab.pdfgen.canvas import Canvas
 
     if out_path is None:
-        out_path = _month_output_path(data["passager"], "pdf")
+        out_path = _month_output_path(data["passager"], "pdf", data.get("date"))
     else:
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 

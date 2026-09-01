@@ -23,8 +23,11 @@ from tkinter import ttk, simpledialog, filedialog
 from ui.common import alerts
 
 import programme.backup as backup
-from programme.database import log_cd_document, update_cd_document, find_cd_document_by_path, deserialize_cd_data
-from programme.paths import get_travail_root
+from programme.database import (
+    log_cd_document, update_cd_document, find_cd_document_by_path, deserialize_cd_data, get_client,
+)
+from programme.paths import get_travail_root, get_client_dir
+from programme.case_ops import move_case
 from ui.cd.constants import (
     _load_json, _save_json, _safe_float_or_none, _fmt_amount,
     CD_SETTINGS_PATH, CD_DRAFT_PATH, CD_UI_PREFS_PATH,
@@ -50,6 +53,7 @@ from ui.cd.document import (
 from ui.cd.history import CDHistoryWindow
 from ui.common.widgets import MaskedDateEntry, MaskedTimeEntry, SplitDateEntry, _ALLOWED_TIME_WINDOWS
 from ui.common.file_explorer import FileExplorerPanel
+from ui.common.client_picker import ClientPickerEntry
 from programme.utils import open_path
 import random
 
@@ -101,6 +105,7 @@ def _serialize_tab_draft(state):
         "date": state["date"].isoformat() if state["date"] else None,
         "time": state["time"],
         "date_delivrance": state["date_delivrance"].isoformat() if state["date_delivrance"] else None,
+        "client_id": state.get("client_id"),
     }
 
 
@@ -111,6 +116,7 @@ def _deserialize_tab_draft(d):
         "date": date.fromisoformat(d["date"]) if d.get("date") else None,
         "time": d.get("time") or "",
         "date_delivrance": date.fromisoformat(d["date_delivrance"]) if d.get("date_delivrance") else None,
+        "client_id": d.get("client_id"),
     }
 
 
@@ -312,6 +318,19 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         # كل تبويب يفتح على موديل معيّن يعرض اسمه الحقيقي هون.
         ttk.Label(top_bar, text="BORDEREAU D'ACHAT DEVISE", font=("Segoe UI", 14, "bold")).pack(side="left")
 
+        # خانة "الزبون" (بيانات المعاملة، لا حقول المكتب Agence/Guichet/
+        # Caisse — راجع البند 4-أ بمستند التصميم): تتغيّر مع كل تبويب.
+        # ⚠️ قرار تنفيذي: استمارة CD كلها حقول فوق صورة النموذج بلا منطقة
+        # استمارة عادية، فالشريط العلوي أقرب مكان طبيعي لخانة الزبون
+        # (نفس مكوّن ClientPickerEntry المستخدَم بنافذة السجل بالضبط —
+        # ui/common/client_picker.py). اختيارية دائماً (زبون عابر يضلّها
+        # فاضية بلا أي منع من الحفظ). لو مُختارة قبل أول حفظ، الملف يروح
+        # مباشرة لمجلد الزبون (راجع _do_generate).
+        ttk.Separator(top_bar, orient="vertical").pack(side="left", fill="y", padx=10, pady=2)
+        ttk.Label(top_bar, text="الزبون:").pack(side="left", padx=(0, 4))
+        self.client_picker = ClientPickerEntry(top_bar, on_change=self._on_client_picker_change)
+        self.client_picker.pack(side="left")
+
         # أزرار مرتبطة بتبويب/مستند فعلي مفتوح — تتعطّل تلقائياً لما ما
         # يبقى أي تبويب مفتوح (راجع _set_document_controls_enabled).
         # "🕘 السجل" مستثناة عمداً: تبقى شغالة دايماً (تفتح مستند حتى
@@ -434,6 +453,8 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
                     widget.configure(state="readonly" if readonly else "normal")
                 except tk.TclError:
                     pass
+        if hasattr(self, "client_picker"):
+            self.client_picker.set_state("readonly" if readonly else "normal")
         self._readonly_active = readonly
         if self._active_tab_id is not None:
             tab = self._tab_by_id(self._active_tab_id)
@@ -441,6 +462,16 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
                 tab["readonly"] = readonly
         self._update_readonly_banner()
         self._update_readonly_guarded_buttons()
+
+    def _on_client_picker_change(self):
+        """تُنادى من ClientPickerEntry عند اختيار/مسح زبون — نخزّنها فوراً
+        بحالة التبويب النشط حتى ما تنخسر لو تبدّل التبويب قبل أي حفظ
+        (نفس مبدأ باقي حقول التبويب)."""
+        if self._active_tab_id is None:
+            return
+        tab = self._tab_by_id(self._active_tab_id)
+        if tab is not None:
+            tab["client_id"] = self.client_picker.get_client_id()
 
     def _update_readonly_banner(self):
         if self._readonly_active:
@@ -492,7 +523,8 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         if data is None:
             return False  # مستند قديم بلا بيانات كاملة محفوظة — يُفتح عادي بالنظام
         self._open_data_in_new_tab(
-            data, source_row_id=row["id"], source_file_path=row.get("file_path"), source_pdf_path=row.get("pdf_path"),
+            data, source_row_id=row["id"], source_file_path=row.get("file_path"),
+            source_pdf_path=row.get("pdf_path"), source_client_id=row.get("client_id"),
         )
         self.set_form_readonly(True)
         return True
@@ -685,6 +717,12 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
             # بدل تكرارها، بغض النظر حتى لو تغيّر رقم البوردرو نفسه —
             # راجع _do_generate وشرح "حفظ" مقابل "حفظ في مكان آخر".
             "loaded_from": None,
+            # زبون هذا التبويب (client_id من جدول clients) — None لتبويب
+            # فاضٍ أو زبون عابر. يتعبّى من خانة الزبون بالشريط العلوي،
+            # ويُحفظ/يُحمّل مع باقي حالة التبويب (راجع _save_active_tab_state/
+            # _apply_state_to_widgets). أول حفظ وهو معبّى = الملف يروح
+            # مباشرة لمجلد الزبون (راجع _do_generate).
+            "client_id": None,
             # وضع "عرض فقط" (راجع set_form_readonly): True لتبويب فُتح
             # من الشريط الجانبي بنقرة/فتح عادي لحالة "عمل منتهي" (بلا
             # نية تعديل صريحة — راجع _open_case_readonly)، بلا حاجة
@@ -804,6 +842,9 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         self.date_entry.set_date(state["date"])
         self.time_entry.set_time_str(state["time"])
         self.delivrance_entry.set_date(state["date_delivrance"])
+        # خانة الزبون خاصة بكل تبويب — تُعاد تعبئتها كل تبديل تبويب (تعبئة
+        # برمجية: بلا إطلاق بحث حي أو on_change).
+        self.client_picker.set_client_id(state.get("client_id"))
         # وضع "عرض فقط" خاص بكل تبويب لحاله (راجع set_form_readonly) —
         # لازم يُعاد تطبيقه على الودجت الحية كل تبديل تبويب، وإلا تبويب
         # عادي مفتوح جنب تبويب مقفول يورّث قفله بالغلط (أو العكس).
@@ -829,6 +870,7 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         tab["time"] = time_val
         tab["date_delivrance"] = delivrance_val
         tab["no"] = fields.get("no", "")
+        tab["client_id"] = self.client_picker.get_client_id()
         tab["undo_stack"] = list(self._undo_stack)
         tab["redo_stack"] = list(self._redo_stack)
         tab["last_committed"] = self._last_committed_snapshot
@@ -939,7 +981,10 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         # قديمة بصرياً لحد أي refresh() ثاني بسبب فعل مختلف تماماً.
         self.explorer_panel.refresh()
 
-    def _open_data_in_new_tab(self, data, source_row_id=None, source_file_path=None, source_pdf_path=None):
+    def _open_data_in_new_tab(
+        self, data, source_row_id=None, source_file_path=None, source_pdf_path=None,
+        source_client_id=None,
+    ):
         """يفتح بيانات مستند (من السجل مثلاً) بتبويب جديد مستقل — ما يلمس
         أي تبويب مفتوح حالياً، نفس مبدأ فتح رابط بتبويب جديد بالمتصفح
         (بلا حاجة لأي تأكيد "بتفقد شغلك الحالي" — ما يفقد شي أصلاً).
@@ -950,6 +995,10 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         بدل ما يسجّل حالة جديدة مكرّرة (راجع _do_generate)."""
         self._new_tab()
         self._load_data_into_form(data)
+        # زبون الحالة من سطر قاعدة البيانات نفسه (أدقّ من full_data_json —
+        # مستند قديم رُبط بزبون لاحقاً عبر السجل تكون client_id بالسطر بس).
+        if source_client_id is not None:
+            self.client_picker.set_client_id(source_client_id)
         # هذا مستند موجود أصلاً (محمَّل من السجل) — "نظيف" من لحظة تحميله،
         # ✕ يسكّر بصمت طالما ما عدّلت فيه شي بعدها (راجع _tab_is_dirty).
         tab = self._tab_by_id(self._active_tab_id)
@@ -958,8 +1007,10 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
             tab["saved_snapshot"] = self._snapshot_of(fields, date_val, time_val, delivrance_val)
             if source_row_id is not None:
                 tab["loaded_from"] = {
-                    "row_id": source_row_id, "file_path": source_file_path, "pdf_path": source_pdf_path,
+                    "row_id": source_row_id, "file_path": source_file_path,
+                    "pdf_path": source_pdf_path, "client_id": source_client_id,
                 }
+            tab["client_id"] = source_client_id
 
     # ---------- طابور زبائن متتالٍ (⏭️ الزبون التالي / Ctrl+Shift+N) ----------
     def _update_next_button_state(self):
@@ -1745,6 +1796,7 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
             tab["time"] = entry["time"]
             tab["date_delivrance"] = entry["date_delivrance"]
             tab["no"] = entry["fields"].get("no", "")
+            tab["client_id"] = entry.get("client_id")
         self._reset_undo_history()  # حد "مستند مختلف" — نفس مبدأ _load_data_into_form
 
     def _update_active_tab_label(self):
@@ -1797,16 +1849,17 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         for tab in self._tabs:
             if tab["id"] == self._active_tab_id:
                 fields, date_val, time_val, delivrance_val = self._capture_state_from_widgets()
-                result.append(
-                    {"fields": fields, "date": date_val, "time": time_val, "date_delivrance": delivrance_val}
-                )
+                result.append({
+                    "fields": fields, "date": date_val, "time": time_val,
+                    "date_delivrance": delivrance_val,
+                    "client_id": self.client_picker.get_client_id(),
+                })
             else:
-                result.append(
-                    {
-                        "fields": tab["fields"], "date": tab["date"], "time": tab["time"],
-                        "date_delivrance": tab["date_delivrance"],
-                    }
-                )
+                result.append({
+                    "fields": tab["fields"], "date": tab["date"], "time": tab["time"],
+                    "date_delivrance": tab["date_delivrance"],
+                    "client_id": tab.get("client_id"),
+                })
         return result
 
     def _maybe_restore_draft(self):
@@ -1988,6 +2041,8 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         self.date_entry.set_date(data.get("date"))
         self.time_entry.set_time_str(data.get("time"))
         self.delivrance_entry.set_date(data.get("date_delivrance"))
+        # خانة الزبون (من full_data_json المحفوظ — collect_data صار يضمّها).
+        self.client_picker.set_client_id(data.get("client_id"))
         self._reset_undo_history()  # حد "مستند مختلف تماماً" — راجع شرح _reset_undo_history
 
     def _active_tab_has_data(self):
@@ -2098,6 +2153,7 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
             "no": self.no_var.get().strip(),
             "date": entry_date,
             "time": time_str,
+            "client_id": self.client_picker.get_client_id(),
             "agence_no": self.agence_no_var.get().strip(),
             "agence": self.agence_var.get().strip(),
             "devise_code": self.devise_code_var.get().strip(),
@@ -2162,7 +2218,11 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         if dest_dir is None and self._tab_is_dirty(self._active_tab_id) is False:
             active_tab = self._tab_by_id(self._active_tab_id)
             loaded_from = active_tab.get("loaded_from") if active_tab is not None else None
-            if loaded_from:
+            # تغيّر الزبون وحده لا يعلّم التبويب "قذر" (خانة الزبون مو ضمن
+            # لقطة المقارنة عمداً — اختيارية دائماً)، لكنه **يستوجب حفظ
+            # فعلي** لأنه يعني نقل الملفين (move_case، راجع تحت) — فما
+            # نعتبره "بلا أثر" إلا لو الزبون كمان نفسه المخزَّن.
+            if loaded_from and loaded_from.get("client_id") == self.client_picker.get_client_id():
                 return loaded_from.get("file_path")
 
         data = self.collect_data()
@@ -2183,16 +2243,44 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         old_docx = loaded_from.get("file_path") if loaded_from else None
         old_pdf = loaded_from.get("pdf_path") if loaded_from else None
 
+        target_client_id = data.get("client_id")
+        existing_row_id = loaded_from.get("row_id") if loaded_from else None
+        old_client_id = loaded_from.get("client_id") if loaded_from else None
+
         if dest_dir is not None:
             # "حفظ في مكان آخر": مكان جديد صراحة (يستبدل، مو نسخة إضافية
             # جنب القديم — راجع _save_to_other_location).
             docx_target = _named_path(dest_dir, data["passager"], "docx")
             pdf_target = _named_path(dest_dir, data["passager"], "pdf")
         elif old_docx:
-            # تحديث فوق نفس الملفين بالضبط (نفس الاسم والمكان القديم).
-            docx_target, pdf_target = old_docx, old_pdf
+            if target_client_id != old_client_id and existing_row_id is not None:
+                # ⚠️ قرار تنفيذي (مرحلة 4.3): زبون التبويب تغيّر بعد أول
+                # حفظ ناجح — ننقل الملفين فعلياً لمكانهم الجديد (مجلد
+                # الزبون أو Autre/<شهر doc_date>) عبر عملية "نقل الحالة"
+                # الموحّدة، بدل حساب مسار من الصفر يترك نسخة قديمة يتيمة ورا.
+                try:
+                    moved_docx, moved_pdf = move_case(existing_row_id, target_client_id)
+                    docx_target = moved_docx or old_docx
+                    pdf_target = moved_pdf or old_pdf
+                except Exception:  # noqa: BLE001
+                    docx_target, pdf_target = old_docx, old_pdf
+            else:
+                # تحديث فوق نفس الملفين بالضبط (نفس الاسم والمكان القديم).
+                docx_target, pdf_target = old_docx, old_pdf
+        elif target_client_id is not None:
+            # أول حفظ وزبون معروف من البداية — الملف يروح **مباشرة** لمجلد
+            # الزبون بلا مرور بـAutre أصلاً (راجع "الحفظ الفوري" بالبند 2
+            # بمستند التصميم).
+            client = get_client(target_client_id)
+            if client is not None:
+                client_dir = get_client_dir(client["folder_name"])
+                docx_target = _named_path(client_dir, data["passager"], "docx")
+                pdf_target = _named_path(client_dir, data["passager"], "pdf")
+            else:
+                docx_target = pdf_target = None
         else:
-            docx_target = pdf_target = None  # تلقائي (مجلد الشهر الحالي)
+            docx_target = pdf_target = None  # تلقائي: travail/Autre/<شهر doc_date>
+
 
         try:
             path = generate_cd_document(data, out_path=docx_target)
@@ -2230,6 +2318,7 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
             "dzd_amount": data["dzd"],
             "file_path": path,
             "pdf_path": pdf_path,
+            "client_id": target_client_id,
         }
         row_id = loaded_from.get("row_id") if loaded_from else None
         try:
@@ -2245,8 +2334,13 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         else:
             if active_tab is not None and row_id is not None:
                 # من الآن، هذا التبويب "محمَّل" من هذي الحالة بالذات — أي
-                # حفظ تالٍ له (حتى لو غيّرت رقم البوردرو) يحدّث فوقها.
-                active_tab["loaded_from"] = {"row_id": row_id, "file_path": path, "pdf_path": pdf_path}
+                # حفظ تالٍ له (حتى لو غيّرت رقم البوردرو أو الزبون) يحدّث
+                # فوقها. client_id المخزَّن هنا = مرجع المقارنة للحفظة
+                # الجاية (تغيّر الزبون → move_case، راجع فوق).
+                active_tab["loaded_from"] = {
+                    "row_id": row_id, "file_path": path, "pdf_path": pdf_path,
+                    "client_id": target_client_id,
+                }
 
         # المعاملة كملت واتحفظت كمستند حقيقي — نعيد حساب المسودة بدل مسحها
         # بالكامل (self._clear_draft()) حتى ما نمسح بياناتها لو فيه
@@ -2287,7 +2381,11 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         # إنه "رجع نفس المسار"، بينما نفتحه عادي لأي حفظ حقيقي (حتى لو
         # تبويب فاضٍ وافقت على توليده رغم نقص الحقول).
         tab = self._tab_by_id(self._active_tab_id) if self._active_tab_id is not None else None
-        is_noop = bool(tab and tab.get("loaded_from") and not self._tab_is_dirty(self._active_tab_id))
+        is_noop = bool(
+            tab and tab.get("loaded_from")
+            and not self._tab_is_dirty(self._active_tab_id)
+            and tab["loaded_from"].get("client_id") == self.client_picker.get_client_id()
+        )
         path = self._do_generate()
         if path and not is_noop:
             open_path(path)
@@ -2373,6 +2471,7 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
             self._field_var(key).set("")
         self.date_entry.clear()
         self.time_entry.clear()
+        self.client_picker.clear()  # معاملة جديدة = زبون جديد (يُختار من جديد)
         # نعيد حساب المسودة بدل مسحها بالكامل (self._clear_draft()) —
         # هذا التبويب صار فاضياً فعلاً (يُستثنى تلقائياً)، بس تبويبات
         # ثانية مفتوحة بنفس الوقت لازم تبقى محمية (راجع _save_draft_now).

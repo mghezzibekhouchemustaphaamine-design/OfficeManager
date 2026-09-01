@@ -48,7 +48,8 @@ from ui.cd.document import (
     TAUX_MAX_VALUE,
     TAUX_DEC_DIGITS,
     OUTPUT_DIR,
-    _named_path,
+    case_output_paths,
+    _month_output_paths,
 )
 from ui.cd.history import CDHistoryWindow
 from ui.common.widgets import MaskedDateEntry, MaskedTimeEntry, SplitDateEntry, _ALLOWED_TIME_WINDOWS
@@ -2206,11 +2207,13 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         existing_row_id = loaded_from.get("row_id") if loaded_from else None
         old_client_id = loaded_from.get("client_id") if loaded_from else None
 
+        # زوج docx/pdf يُحسب **مرة وحدة** لكل الفروع (اسم أساسي واحد
+        # CD_<رقم البوردرو> + فحص تصادم موحّد للامتدادين — راجع
+        # case_output_paths) حتى ما يصير docx بلاحقة _02 وpdf بدونها.
         if dest_dir is not None:
             # "حفظ في مكان آخر": مكان جديد صراحة (يستبدل، مو نسخة إضافية
             # جنب القديم — راجع _save_to_other_location).
-            docx_target = _named_path(dest_dir, data["passager"], "docx")
-            pdf_target = _named_path(dest_dir, data["passager"], "pdf")
+            docx_target, pdf_target = case_output_paths(dest_dir, data["no"])
         elif old_docx:
             if target_client_id != old_client_id and existing_row_id is not None:
                 # ⚠️ قرار تنفيذي (مرحلة 4.3): زبون التبويب تغيّر بعد أول
@@ -2224,21 +2227,19 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
                 except Exception:  # noqa: BLE001
                     docx_target, pdf_target = old_docx, old_pdf
             else:
-                # تحديث فوق نفس الملفين بالضبط (نفس الاسم والمكان القديم).
+                # تحديث فوق نفس الملفين بالضبط (نفس الاسم والمكان القديم) —
+                # تغيّر رقم البوردرو وحده لا يعيد تسمية الملف (القرار مربوط
+                # بهوية التبويب؛ إعادة التسمية عملية صريحة من الشريط).
                 docx_target, pdf_target = old_docx, old_pdf
-        elif target_client_id is not None:
+        elif target_client_id is not None and get_client(target_client_id) is not None:
             # أول حفظ وزبون معروف من البداية — الملف يروح **مباشرة** لمجلد
             # الزبون بلا مرور بـAutre أصلاً (راجع "الحفظ الفوري" بالبند 2
             # بمستند التصميم).
-            client = get_client(target_client_id)
-            if client is not None:
-                client_dir = get_client_dir(client["folder_name"])
-                docx_target = _named_path(client_dir, data["passager"], "docx")
-                pdf_target = _named_path(client_dir, data["passager"], "pdf")
-            else:
-                docx_target = pdf_target = None
+            client_dir = get_client_dir(get_client(target_client_id)["folder_name"])
+            docx_target, pdf_target = case_output_paths(client_dir, data["no"])
         else:
-            docx_target = pdf_target = None  # تلقائي: travail/Autre/<شهر doc_date>
+            # تلقائي: travail/Autre/<شهر doc_date>
+            docx_target, pdf_target = _month_output_paths(data["no"], data.get("date"))
 
 
         try:

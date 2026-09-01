@@ -38,15 +38,24 @@ def _target_dir_for(client_id, doc_date_iso, created_at_str):
     return os.path.join(get_autre_dir(), month)
 
 
-def _resolve_collision(dest_dir, base_name, ext):
-    """نفس منطق التصادم الموجود أصلاً بـ_named_path/رقم البوردرو
-    (يضيف _02، _03... لحد ما يلقى اسم فاضي بنفس المجلد الهدف بس)."""
-    candidate = f"{base_name}.{ext}"
+def resolve_case_base(dest_dir, base):
+    """أصغر لاحقة (_02، _03...) تخلي **الاثنين** `<base>.docx` و`<base>.pdf`
+    فاضيين بـdest_dir — فحص مزدوج مرة وحدة للحالة كلها، فـdocx وpdf
+    ياخذان نفس اللاحقة أو ولا وحدة (أبداً واحد بلاحقة والثاني بدونها —
+    مبدأ صريح بالبند 3 بمستند التصميم). `base` بلا امتداد. الفحص محصور
+    بـdest_dir بس (نفس رقم البوردرو بمجلدين مختلفين لا يتصادم).
+
+    مصدر واحد لمنطق التصادم يستورده كل من هذا الملف (move_case) و
+    ui/cd/document.py (توليد ملف جديد) — بلا تكرار."""
+    name = base
     n = 2
-    while os.path.exists(os.path.join(dest_dir, candidate)):
-        candidate = f"{base_name}_{n:02d}.{ext}"
+    while (
+        os.path.exists(os.path.join(dest_dir, name + ".docx"))
+        or os.path.exists(os.path.join(dest_dir, name + ".pdf"))
+    ):
+        name = f"{base}_{n:02d}"
         n += 1
-    return candidate
+    return name
 
 
 def move_case(row_id, target_client_id):
@@ -63,21 +72,31 @@ def move_case(row_id, target_client_id):
     dest_dir = _target_dir_for(target_client_id, row.get("doc_date"), row.get("created_at"))
     os.makedirs(dest_dir, exist_ok=True)
 
+    # الاسم الأساسي النهائي (بعد فحص التصادم) يُحسب **مرة وحدة للحالة**
+    # ثم يُطبَّق على docx وpdf معاً — فياخذان نفس اللاحقة أو ولا وحدة.
+    # (نفترض docx وpdf متجاورين بنفس المجلد بنفس الجذر، وهو الحال دائماً.)
+    src_present = [p for p in (row.get("file_path"), row.get("pdf_path")) if p and os.path.exists(p)]
+    needs_move = any(
+        os.path.abspath(os.path.dirname(p)) != os.path.abspath(dest_dir) for p in src_present
+    )
+    resolved_base = None
+    if needs_move and src_present:
+        cur_base = os.path.splitext(os.path.basename(src_present[0]))[0]
+        resolved_base = resolve_case_base(dest_dir, cur_base)
+
     new_paths = {}
-    for _key, path_field in (("file_path", "file_path"), ("pdf_path", "pdf_path")):
+    for path_field in ("file_path", "pdf_path"):
         old_path = row.get(path_field)
         if not old_path or not os.path.exists(old_path):
             new_paths[path_field] = old_path
             continue
-        base_name = os.path.splitext(os.path.basename(old_path))[0]
-        ext = os.path.splitext(old_path)[1].lstrip(".")
         # بنفس مكانه أصلاً؟ ما فيه شي نسويه (نفس منطق _move_path الحالي
         # بالشريط لحالة "أفلت بنفس مكانه").
         if os.path.abspath(os.path.dirname(old_path)) == os.path.abspath(dest_dir):
             new_paths[path_field] = old_path
             continue
-        new_name = _resolve_collision(dest_dir, base_name, ext)
-        new_path = os.path.join(dest_dir, new_name)
+        ext = os.path.splitext(old_path)[1]  # يشمل النقطة
+        new_path = os.path.join(dest_dir, resolved_base + ext)
         shutil.move(old_path, new_path)
         new_paths[path_field] = new_path
 

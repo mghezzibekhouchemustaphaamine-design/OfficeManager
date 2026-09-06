@@ -1320,3 +1320,50 @@ PySide6 مقابل Tkinter قبل أي قرار نقل. **PoC فقط، لا يم
   لم يُعدَّل `repository.py`).
 - `--selftest` (بلا شاشة): بذر → عرض 4 → فلترة «ben» → كتابة 4→5
   مؤكَّدة على القرص. PySide6 6.11.2. ~311 سطراً (256 غير فارغ).
+
+---
+
+## مرجع اثنان وثلاثون — 2026-09-06: ui2/ — مكتبة مكوّنات PySide6 (المرحلة 1)
+
+بداية التحوّل من Tkinter إلى PySide6. حزمة `ui2/` **بجانب** `ui/` القديمة
+(لم يُحذف/يُعدَّل شيء منها). **مكوّنات قابلة لإعادة الاستعمال فقط — لا
+شاشات عمل.** لم يُمَسّ `programme/` ولا `ui/`.
+
+### المكوّنات
+
+| ملف | المحتوى |
+|---|---|
+| `ui2/theme.py` | QSS موحّد، ألوان، خط عربي قابل للضبط من مكان واحد + fallback ويندوز، و**RTL مركزي** (`apply_theme` → `setLayoutDirection` — النقطة الوحيدة) |
+| `ui2/table.py` | `DataTable` على `QTableView + QAbstractTableModel + QSortFilterProxyModel` — فرز، بحث حيّ على كل الأعمدة، تحديد صفوف، تلوين متناوب؛ محاذاة/اتجاه لكل عمود (الاتجاه عبر `QStyledItemDelegate`) |
+| `ui2/form.py` | `Form` من وصف حقول → `QFormLayout`؛ **سلوك المكتبة**: الحقول اللاتينية (`number/amount/date/ssn`) تأخذ LTR تلقائياً حسب النوع؛ تحقّق شكليّ (`errors()`) |
+| `ui2/dialog.py` | `Dialog` عام + `FormDialog` جاهز حول `Form` (تحقّق قبل القبول) |
+| `ui2/toolbar.py` | `ToolBar` + `ToolAction` (نصّ/سلوت/اختصار)، stretch وودجت مخصّص |
+| `ui2/tabs.py` | `TabHost` مُجرَّد مستقل (لا يعرف أي خدمة — بعكس `ui/cd/tab.py`)؛ بروتوكول `on_activate/on_deactivate` لدورة حياة التبويب |
+| `ui2/shortcuts.py` | `ShortcutManager` — `QShortcut` بنطاق `WidgetWithChildrenShortcut` + `unregister_all` (لا `bind_all`، لا تسرّب عند فتح خدمتين) |
+| `ui2/window.py` | `MainWindow` تجمع ToolBar + TabHost + شريط حالة |
+
+### معرض المكوّنات
+
+`demos/ui2_gallery.py` — كل مكوّن في تبويب مستقل ببيانات وهمية.
+`--selftest` (بلا شاشة) يتحقّق: جدول 5 صفوف وفلترة «ben»→1 · `errors()`
+قبل/بعد التعبئة · `num_ss=LTR` و`nom=RTL` · `close_all`→0 ·
+اختصارات `on_activate`→3 و`on_deactivate`→0 · إجراءات شريط الأدوات.
+
+### التحقّق
+
+- `grep -rE "^\s*(from ui[.]|import ui([.]| |$))" ui2/` → **فارغ**
+  (استيرادات: `PySide6.*` + `dataclasses/typing` + `ui2.*` داخلياً فقط).
+- عدد الأسطر: `ui2/` = 750 (theme 124 · table 168 · form 151 · tabs 114 ·
+  dialog 63 · shortcuts 50 · toolbar 43 · window 27 · `__init__` 10) ؛
+  `demos/ui2_gallery.py` = 383.
+- المعرض يعمل بلا شاشة (`QT_QPA_PLATFORM=offscreen … --selftest` → `ALLOK`)؛
+  لقطات تؤكّد انعكاس التخطيط (شريط تبويبات يمين، تسميات النموذج يمين،
+  أسهم القوائم يسار). التشكيل العربي لم يُتحقَّق بصرياً هنا (لا خطّ عربي
+  في البيئة — على ويندوز يُشكَّل بـ Segoe UI).
+- **الاختبارات: `test_golden.py` → 14/14 · `python -m unittest` → Ran 5, OK**
+  (لم يتغيّر شيء في `programme/`).
+
+### الملفات المتأثرة
+
+`ui2/**` (جديد)، `demos/ui2_gallery.py` (جديد). لا شيء في `programme/`
+أو `ui/`.

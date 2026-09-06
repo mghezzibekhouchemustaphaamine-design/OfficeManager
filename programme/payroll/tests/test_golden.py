@@ -177,6 +177,23 @@ class TestSequenceComposite(unittest.TestCase):
         self.assertEqual(r.assiette_irg, R4_ATTENDU["C"], "[C] BRUT IMPOSABLE")
         self.assertEqual(r.irg, R4_ATTENDU["D"], "[D] IRG (إعفاء)")
         self.assertEqual(r.net_a_payer, R4_ATTENDU["E"], "[E] NET")
+        # حدّ SNMG: [A] هبط تحت الأرضية بسبب غيابات ثقيلة → لم يُرفَع
+        # تلقائياً (لا خصم مزدوج على الغياب)، لكن يظهر تحذير V2 للمراجعة.
+        self.assertTrue(any(a.startswith("V2") for a in r.avertissements),
+                        f"تحذير V2 غائب: {r.avertissements}")
+
+    def test_snmg_plancher_contrat_seulement(self):
+        """حدّ SNMG بنسبة العقد فقط (لا الحضور): أجر منخفض فعلاً بلا
+        غياب → يُرفَع الوعاء للأرضية بلا تحذير؛ عقد جزئي 50% → أرضية
+        نصف SNMG. (اختبار سلوك المهمة 8، خارج الجداول الذهبية.)"""
+        plein = calc.compute_sequence(
+            calc.SequenceInput(salaire_base=Decimal("18000")), self.cfg)
+        self.assertEqual(plein.assiette_cnas, Decimal("24000.00"))
+        self.assertEqual(plein.avertissements, [])
+        partiel = calc.compute_sequence(
+            calc.SequenceInput(salaire_base=Decimal("10000"),
+                               prorata_jours=Decimal("0.5")), self.cfg)
+        self.assertEqual(partiel.assiette_cnas, Decimal("12000.00"))
 
 
 def _rapport():

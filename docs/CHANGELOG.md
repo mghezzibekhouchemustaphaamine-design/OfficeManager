@@ -1204,3 +1204,44 @@ CIDTA: «دخول تفوق 30.000 وتقلّ عن 35.000»). `35 000,00` بال�
 `programme/payroll/calc.py` (إعادة بناء)،
 `programme/payroll/tests/test_golden.py`،
 `docs/specs/SPEC_PAIE_DZ.md` (تحرير المستخدم: §5.5 معطيات R4 كاملة).
+
+---
+
+## مرجع تاسع وعشرون — 2026-09-06: حدّ SNMG — نسبة العقد فقط + تحذير V2
+
+تصحيح الخطوة [7] في `programme/payroll/calc.py`: الغياب لم يعد يخفّض
+أرضية SNMG.
+
+### السبب
+
+الغياب مخصوم أصلاً في `[A]`؛ تنسيب الأرضية على نسبة الحضور أيضاً خصمٌ
+مزدوج. وغرض الأرضية حماية تمويل CNAS، لا معاقبة الغياب.
+
+### السلوك الجديد
+
+- الأرضية = `SNMG × prorata_jours` (نسبة العقد فقط — temps partiel).
+- إذا كانت القدرة على الكسب قبل خصم الغياب (`[A]` بلا `−retenue_absence`)
+  دون الأرضية → أجر منخفض فعلاً → **يُرفَع** الوعاء إلى الأرضية.
+- إذا هبط `[A]` تحت الأرضية **بسبب الغياب فقط** → **لا يُرفَع**، ويُضاف
+  تحذير `V2` إلى `SequenceResult.avertissements` (و`PaieResult`) يذكر
+  الوعاء والأرضية والفرق — تحذير لا منع، حتى يراجعه المستخدم.
+
+### params_2026.json
+
+`cnas` أُضيف إليه:
+`"plancher_prorata": "CONTRAT_SEULEMENT"`، `"statut": "A_VERIFIER_CNAS"`،
+و`note` تشير إلى أن تنسيب الأرضية على الغياب غير محسوم بنصّ صريح.
+
+### الاختبار
+
+- `test_golden.py` → **14/14** (R4 يبقى `[A]=16 754,86` · `[C]=18 169,96`
+  · `[E]=18 169,96` كما الكشف الأصلي، بلا رفع؛ + تأكيد وجود تحذير V2).
+- `test_snmg_plancher_contrat_seulement` (جديد): أجر 18 000 بلا غياب
+  ودوام كامل → يُرفَع إلى 24 000 بلا تحذير؛ عقد 50٪ → أرضية 12 000.
+- `python -m unittest …` → `Ran 5 tests, OK`.
+- `grep` الفصل فارغ · الشاشة تفتح/تحسب/تولّد Word + PDF.
+
+### الملفات المتأثرة
+
+`programme/payroll/calc.py`، `programme/payroll/tests/test_golden.py`،
+`programme/data/params_paie/params_2026.json`.

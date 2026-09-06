@@ -20,7 +20,10 @@
     "taux_salarie": 0.09,
     "taux_employeur": 0.25,
     "taux_oeuvres_sociales": 0.005,
-    "appliquer_plancher_snmg": true
+    "appliquer_plancher_snmg": true,
+    "plancher_prorata": "CONTRAT_SEULEMENT",
+    "statut": "A_VERIFIER_CNAS",
+    "note": "Le prorata du plancher sur les absences n'est pas tranché par un texte explicite. Vérifier auprès de la CNAS."
   },
   "irg": {
     "seuil_exoneration": 30000,

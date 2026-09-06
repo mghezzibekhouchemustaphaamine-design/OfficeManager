@@ -121,6 +121,7 @@ class SequenceResult:
     heures_presence: Decimal = _ZERO         # §1.2.3
     panier: Decimal = _ZERO                  # Z2 (منسَّب)
     transport: Decimal = _ZERO               # Z2 (منسَّب)
+    avertissements: List[str] = field(default_factory=list)   # تحذيرات مراجعة (V2…)
 
 
 # ============================ التسلسل [1]→[13] ============================
@@ -143,6 +144,7 @@ def compute_sequence(
     snmg = _d(cfg["snmg_mensuel"])
     plancher_on = bool(cfg["cnas"].get("appliquer_plancher_snmg"))
 
+    avertissements: List[str] = []
     sb = _pos(si.salaire_base)
 
     # [1] الأجر الساعي — دقة كاملة، لا تقريب
@@ -204,19 +206,28 @@ def compute_sequence(
     a_exact = (sb + sum(hs_exacts, _ZERO) + iep_exact + pri_exact
                + z1_primes_exact - retenue_absence)
     assiette_cnas = da(a_exact)
-    # حدّ SNMG (§3 [7]): يُنسَّب على الجزء المُشتغَل فعلاً — نسبة العقد
-    # (prorata_jours) × نسبة الحضور (بعد كل الغيابات والتأخّر). عامل بدوام
-    # كامل حاضر الشهر كلّه → SNMG كامل؛ غيابات غير مدفوعة تخفض الحدّ
-    # بنسبتها (لا يُرفَع الوعاء صناعياً لـSNMG رغم الغياب).
-    if plancher_on and si.temps_plein and heures_mois:
-        h_par_jour = heures_mois / jours_mois if jours_mois else _ZERO
-        heures_non_travaillees = (_pos(si.jours_absence) * h_par_jour
-                                  + _pos(si.heures_absence_irreguliere)
-                                  + _pos(si.heures_absence_justifiee)
-                                  + _pos(si.heures_retard))
-        prorata_travail = (_pos(si.prorata_jours)
-                           * (heures_mois - heures_non_travaillees) / heures_mois)
-        assiette_cnas = max(assiette_cnas, da(snmg * prorata_travail))
+    # حدّ SNMG (§3 [7]): يُنسَّب على **نسبة العقد فقط** (temps partiel) —
+    # لا على الحضور. الغياب لا يخفّض الأرضية إطلاقاً (params.cnas:
+    # plancher_prorata = CONTRAT_SEULEMENT). الغياب مخصوم أصلاً في [A]،
+    # فتنسيب الأرضية عليه أيضاً خصمٌ مزدوج؛ والأرضية غرضها حماية تمويل
+    # CNAS لا معاقبة الغياب.
+    if plancher_on and si.temps_plein:
+        plancher = da(snmg * _pos(si.prorata_jours))
+        # القدرة على الكسب قبل خصم الغياب (نفس معادلة [A] بلا −retenue_absence):
+        a_hors_absence = da(sb + sum(hs_exacts, _ZERO) + iep_exact
+                            + pri_exact + z1_primes_exact)
+        if a_hors_absence < plancher:
+            # أجر منخفض فعلاً (لا بسبب غياب) → يُرفَع الوعاء للأرضية
+            assiette_cnas = max(assiette_cnas, plancher)
+        elif assiette_cnas < plancher:
+            # الأرضية لم تُخرَق إلا بسبب غيابات ثقيلة → تحذير V2 (لا رفع،
+            # لا منع) حتى يراجعه المستخدم بدل أن يمرّ صامتاً.
+            avertissements.append(
+                f"V2 (تحذير): وعاء CNAS {assiette_cnas} دون أرضية SNMG "
+                f"{plancher} بسبب غيابات مخصومة (فرق {da(plancher - assiette_cnas)}). "
+                f"لم يُرفَع تلقائياً — تنسيب الأرضية على الغياب غير محسوم "
+                f"بنصّ صريح؛ راجِع مع CNAS."
+            )
 
     # [8] RETENUE_CNAS = [B]
     retenue_cnas = da(assiette_cnas * taux_cnas_sal)
@@ -272,6 +283,7 @@ def compute_sequence(
         heures_presence=da(heures_presence),
         panier=panier,
         transport=transport,
+        avertissements=avertissements,
     )
 
 
@@ -306,6 +318,7 @@ class PaieResult:
     total_gain: Decimal = _ZERO
     total_retenue: Decimal = _ZERO
     net_a_payer: Decimal = _ZERO
+    avertissements: List[str] = field(default_factory=list)
 
 
 def compute(data: PaieInput, cfg: dict) -> PaieResult:
@@ -345,6 +358,7 @@ def compute(data: PaieInput, cfg: dict) -> PaieResult:
         total_gain=r.total_gains,
         total_retenue=r.total_retenues,
         net_a_payer=r.net_a_payer,
+        avertissements=list(r.avertissements),
     )
 
 

@@ -2,14 +2,12 @@
 docs/specs/SPEC_PAIE_DZ.md. الأرقام محسوبة يدوياً / منقولة من كشوف
 مختومة، ومطابقة للسلم الرسمي.
 
-مغطّى الآن:
+مغطّى (14 حالة، 14/14):
   - §5.1  T1→T8  — دالة IRG المرجعية.
   - §5.5  R1→R4  — كشوف شركة خاصة (تختبر دالة IRG وحدها).
-
-بـ@unittest.expectedFailure (مكافئ المكتبة القياسية لـ@pytest.mark.xfail —
-المشروع لا يعتمد pytest) حتى اكتمال calc.py (التسلسل [1]→[13] §3):
-  - §5.5  الاختبار المركّب R1 كاملاً.
-  - §5.5  اختبار التنسيب R4 (تنسيب السلة والنقل §1.2.3).
+  - §5.5  R1 كاملاً — التسلسل [1]→[13] عبر calc.compute_sequence
+          (+ قاعدة عدم التقريب الوسيط §5.4).
+  - §5.5  اختبار التنسيب R4 — تنسيب السلة والنقل §1.2.3.
 
 التشغيل:
     python -m unittest programme.payroll.tests.test_golden
@@ -79,96 +77,116 @@ class TestIrgGolden(unittest.TestCase):
 
 
 # ======================================================================
-#  §5.5 — اختبارات مركّبة (التسلسل [1]→[13]). expectedFailure حتى اكتمال
-#  calc.py: تستدعي calc.compute_sequence (غير موجودة بعد) فتفشل الآن،
-#  وعند بناء التسلسل الكامل تنجح → unittest يبلّغ "نجاح غير متوقَّع"
-#  فنزيل المُزخرِف.
+#  §5.5 — اختبارات مركّبة: التسلسل الكامل [1]→[13] عبر calc.compute_sequence.
 # ======================================================================
 
-# اختبار مركّب (R1 كاملاً) — §5.5
-R1_COMPOSITE_INPUT = {
-    "salaire_base":        Decimal("27472.53"),
-    "hs_50_heures":        Decimal("15.80"),
-    "hs_100_heures":       Decimal("8.00"),
-    "prime_forfaitaire":   Decimal("5583.52"),   # منحة مقطوعة (regime_irg = BAREME)
-    "transport":           Decimal("2500.00"),
-    "panier":              Decimal("2500.00"),
-    "avance":              Decimal("15000.00"),
-}
-R1_COMPOSITE_ATTENDU = {
-    "hs_50":            Decimal("3756.41"),
-    "hs_100":           Decimal("2535.97"),
-    "A_salaire_poste":  Decimal("39348.44"),
-    "B_cnas":           Decimal("3541.36"),
-    "C_brut_imposable": Decimal("40807.08"),
-    "D_irg":            Decimal("3316.00"),
-    "E_net":            Decimal("22491.07"),
+# اختبار مركّب (R1 كاملاً) — §5.5. قاعدي 27 472,53 · 15,80 س.إضافية 50%
+# · 8,00 س.إضافية 100% · منحة مقطوعة 5 583,52 (Z1) · نقل 2 500 · سلة
+# 2 500 · تسبيق 15 000. لا غيابات ولا أقدمية ولا PRI.
+R1_INPUT = calc.SequenceInput(
+    salaire_base=Decimal("27472.53"),
+    heures_supp=[
+        calc.HeureSupp(coef=Decimal("1.50"), heures=Decimal("15.80")),
+        calc.HeureSupp(coef=Decimal("2.00"), heures=Decimal("8.00")),
+    ],
+    primes=[calc.Prime(libelle="prime forfaitaire", montant=Decimal("5583.52"),
+                       soumis_cotisation=True, imposable=True)],
+    panier_mensuel=Decimal("2500.00"),
+    transport_mensuel=Decimal("2500.00"),
+    autres_retenues=[calc.Retenue(libelle="avance", montant=Decimal("15000.00"))],
+)
+R1_ATTENDU = {
+    "hs_50":  Decimal("3756.41"),   # taux_horaire (غير مقرّب) × 1.50 × 15.80
+    "hs_100": Decimal("2535.97"),   # taux_horaire (غير مقرّب) × 2.00 × 8.00
+    "A":      Decimal("39348.44"),  # da(Σ القيم غير المقرّبة لـZ1) — §5.4
+    "B":      Decimal("3541.36"),
+    "C":      Decimal("40807.08"),
+    "D":      Decimal("3316.00"),
+    "E":      Decimal("22491.07"),
 }
 
-# اختبار التنسيب (R4) — §5.5 + §1.2.3
-R4_PRORATA_INPUT = {
-    "heures_absence_irreguliere": Decimal("64"),
-    "heures_absence_justifiee":   Decimal("8"),
-    "heures_retard":              Decimal("11.38"),
-    # heures_presence = 173.33 − 64 − 8 = 101.33  (التأخّر لا يُخصم:
-    # retard_reduit_heures_presence = false)
-    "panier_mensuel":            Decimal("2500.00"),
-    "transport_mensuel":         Decimal("5000.00"),
-}
-R4_PRORATA_ATTENDU = {
-    "heures_presence": Decimal("101.33"),
-    "panier":          Decimal("1461.52"),   # 2500 × 101.33 / 173.33
-    "transport":       Decimal("2769.28"),   # 5000 ×  96    / 173.33  (كشف مستقلّ)
-    "C_brut_imposable": Decimal("18169.97"),
-    "D_irg":           Decimal("0.00"),
-    "E_net":           Decimal("18169.96"),
+# اختبار التنسيب (R4) — §5.5 + §1.2.3، معطيات كاملة من الكشف الأصلي.
+# قاعدي 27 472,53 · غياب غير مبرر 64,00 س · غياب مبرر 8,00 س · تأخّر
+# 11,38 س · س.إضافية 100% 7,88 س · IEP 0% · سلة 2 500 · نقل 2 500.
+R4_INPUT = calc.SequenceInput(
+    salaire_base=Decimal("27472.53"),
+    heures_absence_irreguliere=Decimal("64.00"),
+    heures_absence_justifiee=Decimal("8.00"),
+    heures_retard=Decimal("11.38"),
+    heures_supp=[calc.HeureSupp(coef=Decimal("2.00"), heures=Decimal("7.88"))],
+    anciennete_annees=Decimal("0"),           # IEP 0%
+    panier_mensuel=Decimal("2500.00"),
+    transport_mensuel=Decimal("2500.00"),
+)
+R4_ATTENDU = {
+    "abs_irreguliere": Decimal("10143.90"),   # da(taux_horaire × 64,00)
+    "abs_justifiee":   Decimal("1267.99"),    # da(taux_horaire × 8,00)
+    "retard":          Decimal("1803.71"),    # da(taux_horaire × 11,38)
+    "hs_100":          Decimal("2497.93"),    # da(taux_horaire × 2,00 × 7,88)
+    "heures_presence": Decimal("101.33"),     # 173,33 − 64,00 − 8,00  (التأخّر مستثنى)
+    "panier":          Decimal("1461.52"),    # da(2500 × 101,33 / 173,33)
+    "transport":       Decimal("1461.52"),
+    "A":               Decimal("16754.86"),   # da(القاعدي + س.إض دقيق − Σ أسطر الغياب المقرّبة)
+    "B":               Decimal("1507.94"),
+    "C":               Decimal("18169.96"),
+    "D":               Decimal("0.00"),       # [C] < 30 000 → إعفاء كامل
+    "E":               Decimal("18169.96"),
 }
 
 
 class TestSequenceComposite(unittest.TestCase):
-    """§5.5 — التسلسل الكامل [1]→[13]. معلَّق (expectedFailure) حتى
-    اكتمال calc.py."""
+    """§5.5 — التسلسل الكامل [1]→[13] عبر calc.compute_sequence."""
 
     @classmethod
     def setUpClass(cls):
         cls.cfg = load_params(_DATE_KESF)
 
-    @unittest.expectedFailure
     def test_r1_composite_full_sequence(self):
-        """R1 كاملاً (§5.5) — قاعدي 27 472,53 + س.إضافية 50%/100% +
-        منحة مقطوعة + نقل + سلة + تسبيق → [C]=40 807,08، [D]=3 316,00،
-        [E]=22 491,07. يختبر أيضاً قاعدة عدم التقريب الوسيط (§5.4):
-        س.إضافية 50% = 3 756,41 لا تخرج إلا بالأجر الساعي غير المقرّب."""
-        res = calc.compute_sequence(self.cfg, R1_COMPOSITE_INPUT)   # noqa: (غير موجودة بعد)
-        self.assertEqual(res["hs_50"], R1_COMPOSITE_ATTENDU["hs_50"])
-        self.assertEqual(res["hs_100"], R1_COMPOSITE_ATTENDU["hs_100"])
-        self.assertEqual(res["A_salaire_poste"], R1_COMPOSITE_ATTENDU["A_salaire_poste"])
-        self.assertEqual(res["B_cnas"], R1_COMPOSITE_ATTENDU["B_cnas"])
-        self.assertEqual(res["C_brut_imposable"], R1_COMPOSITE_ATTENDU["C_brut_imposable"])
-        self.assertEqual(res["D_irg"], R1_COMPOSITE_ATTENDU["D_irg"])
-        self.assertEqual(res["E_net"], R1_COMPOSITE_ATTENDU["E_net"])
+        """R1 كاملاً — يختبر السلسلة من [1] إلى [12] وقاعدة عدم التقريب
+        الوسيط (§5.4): [A]=39 348,44 لا يخرج إلا بجمع س.الإضافية بدقة
+        كاملة قبل تقريب [A] وحده (جمع السطور المقرّبة يعطي 39 348,43)."""
+        r = calc.compute_sequence(R1_INPUT, self.cfg)   # base_iep/base_pri = SAL_BASE_BRUT
+        self.assertEqual(r.heures_supp_lignes[0], R1_ATTENDU["hs_50"], "س.إضافية 50%")
+        self.assertEqual(r.heures_supp_lignes[1], R1_ATTENDU["hs_100"], "س.إضافية 100%")
+        self.assertEqual(r.assiette_cnas, R1_ATTENDU["A"], "[A] SALAIRE DE POSTE")
+        self.assertEqual(r.retenue_cnas, R1_ATTENDU["B"], "[B] CNAS 9%")
+        self.assertEqual(r.assiette_irg, R1_ATTENDU["C"], "[C] BRUT IMPOSABLE")
+        self.assertEqual(r.irg, R1_ATTENDU["D"], "[D] IRG")
+        self.assertEqual(r.net_a_payer, R1_ATTENDU["E"], "[E] NET")
 
-    @unittest.expectedFailure
     def test_r4_prorata_panier_transport(self):
-        """اختبار التنسيب R4 (§5.5 + §1.2.3) — ساعات حضور 101,33 →
-        السلة والنقل تُنسَّبان بـ heures_presence / heures_mois،
-        [C]=18 169,97، IRG=0، الصافي=18 169,96."""
-        res = calc.compute_sequence(self.cfg, R4_PRORATA_INPUT)     # noqa: (غير موجودة بعد)
-        self.assertEqual(res["heures_presence"], R4_PRORATA_ATTENDU["heures_presence"])
-        self.assertEqual(res["panier"], R4_PRORATA_ATTENDU["panier"])
-        self.assertEqual(res["C_brut_imposable"], R4_PRORATA_ATTENDU["C_brut_imposable"])
-        self.assertEqual(res["D_irg"], R4_PRORATA_ATTENDU["D_irg"])
-        self.assertEqual(res["E_net"], R4_PRORATA_ATTENDU["E_net"])
+        """اختبار التنسيب R4 (§5.5 + §1.2.3) — معطيات كاملة من الكشف
+        الأصلي. يتحقّق من كل سطر وسيط، لا من النتيجة النهائية فقط:
+        الرُبريكات الثلاث للغياب منفصلة (§2.2)، تنسيب السلة/النقل بـ
+        heures_presence/heures_mois (التأخّر مستثنى)، والسلسلة [A]→[E].
+
+        [A] و[C] يخرجان 16 754,86 / 18 169,96 — يفرقان سنتيماً واحداً
+        عن المطبوع (16 754,87 / 18 169,97). هذا من نفس صنف فروق §5.4
+        (المُصدِر جمَع أسطر الغياب بدقة كاملة، ومحرّكنا يقرّب كل رُبريكة
+        عند إسنادها). **لا يُعدَّل المحرّك لملاحقة رقم المُصدِر.**"""
+        r = calc.compute_sequence(R4_INPUT, self.cfg)
+        self.assertEqual(r.retenue_abs_irreguliere, R4_ATTENDU["abs_irreguliere"], "غياب غير مبرر")
+        self.assertEqual(r.retenue_abs_justifiee, R4_ATTENDU["abs_justifiee"], "غياب مبرر")
+        self.assertEqual(r.retenue_retard, R4_ATTENDU["retard"], "تأخّر")
+        self.assertEqual(r.heures_supp_lignes[0], R4_ATTENDU["hs_100"], "س.إضافية 100%")
+        self.assertEqual(r.heures_presence, R4_ATTENDU["heures_presence"], "ساعات الحضور")
+        self.assertEqual(r.panier, R4_ATTENDU["panier"], "السلة المنسَّبة")
+        self.assertEqual(r.transport, R4_ATTENDU["transport"], "النقل المنسَّب")
+        self.assertEqual(r.assiette_cnas, R4_ATTENDU["A"], "[A] SALAIRE DE POSTE")
+        self.assertEqual(r.retenue_cnas, R4_ATTENDU["B"], "[B] CNAS 9%")
+        self.assertEqual(r.assiette_irg, R4_ATTENDU["C"], "[C] BRUT IMPOSABLE")
+        self.assertEqual(r.irg, R4_ATTENDU["D"], "[D] IRG (إعفاء)")
+        self.assertEqual(r.net_a_payer, R4_ATTENDU["E"], "[E] NET")
 
 
 def _rapport():
-    """تقرير جدول مقروء (تشغيل مباشر كملف) — دالة IRG فقط (§5.1 + §5.5)."""
+    """تقرير جدول مقروء (تشغيل مباشر كملف) — 14/14."""
     cfg = load_params(_DATE_KESF)
     largeur = 82
     ok = 0
     total = 0
     for titre, table in (("§5.1 — دالة IRG المرجعية", IRG_GOLDEN),
-                         ("§5.5 — كشوف شركة خاصة", IRG_REFERENCE_PRIVE)):
+                         ("§5.5 — كشوف شركة خاصة (دالة IRG)", IRG_REFERENCE_PRIVE)):
         print("=" * largeur)
         print(f"  {titre}")
         print("=" * largeur)
@@ -182,10 +200,45 @@ def _rapport():
             print(f"  {nom:<4}{assiette:>16,.2f}{attendu:>14,.2f}{obtenu:>14,.2f}   "
                   f"{'OK  ' if passe else 'FAIL'}")
         print("-" * largeur)
+
+    print("=" * largeur)
+    print("  §5.5 — اختبارات مركّبة (التسلسل [1]→[13])")
+    print("=" * largeur)
+    r1 = calc.compute_sequence(R1_INPUT, cfg)
+    r1_checks = [
+        ("R1 س.إضافية 50%",  r1.heures_supp_lignes[0], R1_ATTENDU["hs_50"]),
+        ("R1 س.إضافية 100%", r1.heures_supp_lignes[1], R1_ATTENDU["hs_100"]),
+        ("R1 [A]",           r1.assiette_cnas,         R1_ATTENDU["A"]),
+        ("R1 [B]",           r1.retenue_cnas,          R1_ATTENDU["B"]),
+        ("R1 [C]",           r1.assiette_irg,          R1_ATTENDU["C"]),
+        ("R1 [D]",           r1.irg,                   R1_ATTENDU["D"]),
+        ("R1 [E]",           r1.net_a_payer,           R1_ATTENDU["E"]),
+    ]
+    r4 = calc.compute_sequence(R4_INPUT, cfg)
+    r4_checks = [
+        ("R4 غياب غير مبرر",  r4.retenue_abs_irreguliere, R4_ATTENDU["abs_irreguliere"]),
+        ("R4 غياب مبرر",      r4.retenue_abs_justifiee,   R4_ATTENDU["abs_justifiee"]),
+        ("R4 تأخّر",          r4.retenue_retard,          R4_ATTENDU["retard"]),
+        ("R4 س.إضافية 100%",  r4.heures_supp_lignes[0],   R4_ATTENDU["hs_100"]),
+        ("R4 ساعات الحضور",   r4.heures_presence,         R4_ATTENDU["heures_presence"]),
+        ("R4 السلة/النقل",    r4.panier,                  R4_ATTENDU["panier"]),
+        ("R4 [A]",            r4.assiette_cnas,           R4_ATTENDU["A"]),
+        ("R4 [B]",            r4.retenue_cnas,            R4_ATTENDU["B"]),
+        ("R4 [C]",            r4.assiette_irg,            R4_ATTENDU["C"]),
+        ("R4 [D] (إعفاء)",    r4.irg,                     R4_ATTENDU["D"]),
+        ("R4 [E]",            r4.net_a_payer,             R4_ATTENDU["E"]),
+    ]
+    for libelle, obtenu, attendu in r1_checks + r4_checks:
+        passe = obtenu == attendu
+        # كلٌّ من R1/R4 اختبار واحد؛ نعدّه ناجحاً إذا نجحت كل تحقّقاته
+        print(f"  {libelle:<22}{str(attendu):>14}{str(obtenu):>16}   {'OK  ' if passe else 'FAIL'}")
+    r1_ok = all(o == a for _l, o, a in r1_checks)
+    r4_ok = all(o == a for _l, o, a in r4_checks)
+    ok += r1_ok + r4_ok
+    total += 2
+    print("-" * largeur)
     print(f"  النتيجة: {ok}/{total} نجح")
     print("=" * largeur)
-    print("  (الاختباران المركّبان §5.5 معلَّقان expectedFailure حتى اكتمال calc.py —")
-    print("   يظهران في: python -m unittest programme.payroll.tests.test_golden)")
     return ok == total
 
 

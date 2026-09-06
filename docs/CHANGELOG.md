@@ -1299,3 +1299,24 @@ CIDTA: «دخول تفوق 30.000 وتقلّ عن 35.000»). `35 000,00` بال�
 (استدعاء `run_migrations` من بداية `init_db`)،
 `docs/specs/SCHEMA_PAIE.md`، `docs/AUDIT_DB.md` (تدقيق طبقة القاعدة —
 كان غير مكتوم منذ إنشائه).
+
+---
+
+## مرجع واحد وثلاثون — 2026-09-06: نموذج تحقّق PySide6 (المرحلة صفر)
+
+`demos/pyside6_demo/employes_screen.py` — شاشة «قائمة عمّال شركة» لقياس
+PySide6 مقابل Tkinter قبل أي قرار نقل. **PoC فقط، لا يمسّ `programme/`
+ولا `ui/`.**
+
+- `QTableView` + `QAbstractTableModel` (نمط model/view، لا `QTableWidget`)
+  + `QSortFilterProxyModel` لبحث حيّ على كل الأعمدة + فرز بالترويسات.
+- «إضافة عامل» → `QDialog` → `INSERT` فعلي في جدول `employe`.
+- RTL كامل بنداء واحد (`setLayoutDirection(Qt.RightToLeft)`): انعكاس
+  التخطيط، ترتيب الأعمدة، محاذاة؛ الحقول اللاتينية (`num_ss`/تاريخ/أجر)
+  تُجبَر على LTR فردياً.
+- قاعدة اختبار منفصلة: `%TEMP%/om_poc_employes.db` — مخطّطها يُنشأ عبر
+  `programme.payroll.repository.run_migrations()` (الاستعمال الوحيد
+  لـ`repository.py`؛ قراءة/كتابة العمّال SQL خام لعدم وجود CRUD فيه —
+  لم يُعدَّل `repository.py`).
+- `--selftest` (بلا شاشة): بذر → عرض 4 → فلترة «ben» → كتابة 4→5
+  مؤكَّدة على القرص. PySide6 6.11.2. ~311 سطراً (256 غير فارغ).

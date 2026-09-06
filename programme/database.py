@@ -22,6 +22,12 @@ def get_connection():
 
 def init_db():
     conn = get_connection()
+    # هجرات وحدة الأجور (لائحة _MIGRATIONS + جدول schema_migrations) —
+    # تُشغَّل **قبل** إنشاء الجداول المشتركة حتى يميّز الـrunner «قاعدة
+    # موجودة» (فيها cd_documents) عن «جديدة». استيراد محلّي: تفادي دور
+    # استيراد دائري (repository يستورد get_connection من هنا عند الحاجة).
+    from programme.payroll import repository as _payroll_repo
+    _payroll_repo.run_migrations(conn)
     cur = conn.cursor()
     cur.executescript(
         """

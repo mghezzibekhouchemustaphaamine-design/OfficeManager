@@ -1245,3 +1245,57 @@ CIDTA: «دخول تفوق 30.000 وتقلّ عن 35.000»). `35 000,00` بال�
 
 `programme/payroll/calc.py`، `programme/payroll/tests/test_golden.py`،
 `programme/data/params_paie/params_2026.json`.
+
+---
+
+## مرجع ثلاثون — 2026-09-06: مخطّط قاعدة الأجور + نظام هجرات مرقّم
+
+`docs/specs/SCHEMA_PAIE.md` نهائي (القرارات السبعة مطبَّقة)، والمخطّط
+مُنفَّذ كهجرة رقم 2 في `programme/payroll/repository.py`.
+
+### 1) `SCHEMA_PAIE.md` — القرارات السبعة
+
+- `nif` فريد جزئي (`ux_entreprise_nif … WHERE nif IS NOT NULL`).
+- `employe.date_sortie` مضاف.
+- لا `convention_id` (لا في `employe` ولا في `bulletin`): علاقة
+  `bulletin → convention` لقطة `convention_version` فقط، بلا FK.
+- لا `triggers` لـ`updated_at` — يُضبط بالكود.
+- لا تخزين لـ`[6]`/`[11]`/`[13]` — `bulletin` يحمل `[A]…[E]` فقط.
+- مؤجَّل: ربط `entreprise↔clients`، مواءمة `taux_hs_*`، بذرة الكتالوج،
+  الواجهة.
+
+### 2) `programme/payroll/repository.py` (جديد) — نظام الهجرات
+
+- `_MIGRATIONS = [(1, _m1_baseline), (2, _m2_payroll)]` + جدول
+  `schema_migrations`.
+- **الهجرة 1**: علامة نسخة فقط (بلا DDL — الجداول المشتركة يُنشئها
+  `init_db`).
+- **الهجرة 2**: الجداول الست (`entreprise`, `convention`,
+  `rubrique_catalogue`, `employe`, `bulletin`, `bulletin_ligne`) +
+  6 فهارس + فهرسان فريدان جزئيان + `TRIGGER convention_no_update`.
+- `run_migrations(conn=None)`: يميّز «قاعدة موجودة» (فيها `cd_documents`)
+  فيسجّل الهجرة 1 كحالة أساسية بلا تنفيذ. يُستدعى من **بداية**
+  `init_db()` عبر استيراد محلّي (لا دور دائري، لا تغيير في `main.py`).
+- الوحدة لا تستورد `tkinter`/`ui/`/`programme.database` على مستوى
+  الوحدة (استيراد `get_connection` محلّي عند الحاجة فقط).
+
+### الاختبار
+
+- قاعدة موجودة (فيها بيانات CD): `run_migrations` → `done == [2]` ·
+  `schema_migrations == [1, 2]` · صفوف `cd_documents`/`clients` سليمة ·
+  إعادة التشغيل = لا شيء.
+- قاعدة جديدة: `done == [1, 2]` بالترتيب · `init_db()` كامل يُنتج
+  `schema_migrations == [1, 2]` + الجداول المشتركة + الست.
+- تحقّقات القاعدة: `TRIGGER` يمنع `UPDATE convention` · رُبريكة بلا
+  `cotisable/imposable` مرفوضة (V7) · كشف `NORMAL` مكرَّر مرفوض والفهرس
+  الجزئي يسمح بعدّة `CORRECTIF`.
+- `grep "repository" programme/payroll/{calc,irg}.py` → فارغ.
+- `test_golden.py` → **14/14** · `python -m unittest` → `Ran 5 tests, OK`.
+- `import main` / `ui.home.*` سليمة · سيناريوهات حقول كشف الراتب تمرّ.
+
+### الملفات المتأثرة
+
+`programme/payroll/repository.py` (جديد)، `programme/database.py`
+(استدعاء `run_migrations` من بداية `init_db`)،
+`docs/specs/SCHEMA_PAIE.md`، `docs/AUDIT_DB.md` (تدقيق طبقة القاعدة —
+كان غير مكتوم منذ إنشائه).

@@ -47,7 +47,8 @@
       "borne_sup": 35000,
       "coef_a": 2.6862745098039216,
       "coef_b": 3490.625,
-      "note": "IRG = IRG1 * (137/51) - (27925/8) — art. 31 LF 2022. Résultat plancher à 0."
+      "bornes_exclusives": true,
+      "note": "IRG = IRG1 * (137/51) - (27925/8) — art. 31 LF 2022. Bornes STRICTES : 30000 < R < 35000. Résultat plancher à 0."
     }
   },
 

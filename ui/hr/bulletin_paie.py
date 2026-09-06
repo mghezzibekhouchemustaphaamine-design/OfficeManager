@@ -22,13 +22,15 @@ import tkinter.font as tkfont
 from tkinter import messagebox, ttk
 
 from programme import database, paths
+from programme.payroll.config_loader import PayrollConfigError, load_params
 from ui.common import alerts
 from ui.common.client_picker import ClientPickerEntry
 from ui.common.widgets import (
     EMPTY_BG_COLOR, FILLED_BG_COLOR, bind_triple_click_select_all,
 )
+from programme.payroll import calc, registry
 from ui.hr.constants import MOIS_FR
-from ui.hr.paie import calc, registry, template_simple
+from ui.hr.paie import template_simple
 from ui.hr.render import TemplateNotReady
 
 _HOVER_IDLE = "white"
@@ -170,8 +172,8 @@ class BulletinPaieScreen(ttk.Frame):
         self._suspend = set()  # مفاتيح حقول تُعاد كتابتها برمجياً الآن (تمنع رجع الحدث)
 
         self._prime_soumis = [tk.BooleanVar(value=True) for _ in range(template_simple.N_PRIME_SLOTS)]
-        self._hr_var = tk.BooleanVar(value=False)
         self._mode_var = tk.StringVar(value="walkin")
+        self._cfg = None   # ملف معاملات الأجور الساري (يُحمَّل حسب شهر/سنة الكشف)
 
         # تراجع / إعادة على مستوى الاستمارة (tk.Entry بلا Ctrl+Z مدمج)
         self._undo_stack = []
@@ -181,7 +183,7 @@ class BulletinPaieScreen(ttk.Frame):
         self._last_committed = {}
 
         self._calc_input = calc.PaieInput()
-        self._calc_result = calc.compute(self._calc_input)
+        self._calc_result = calc.compute(self._calc_input, self._load_cfg())
 
         self._build_layout()
         self._build_fields()
@@ -231,7 +233,7 @@ class BulletinPaieScreen(ttk.Frame):
 
         mf = ttk.LabelFrame(sb, text="الموديل", padding=8)
         mf.pack(fill="x", pady=(0, 8))
-        ttk.Label(mf, text=registry.get_template(self._template_key).LABEL).pack(anchor="w")
+        ttk.Label(mf, text=registry.get_template(self._template_key).label).pack(anchor="w")
 
         cf = ttk.LabelFrame(sb, text="الزبون", padding=8)
         cf.pack(fill="x", pady=(0, 8))
@@ -242,11 +244,6 @@ class BulletinPaieScreen(ttk.Frame):
         self._picker = ClientPickerEntry(cf, on_change=lambda *_a: None)
         self._picker.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self._picker.grid_remove()
-
-        irgf = ttk.LabelFrame(sb, text="IRG", padding=8)
-        irgf.pack(fill="x", pady=(0, 8))
-        ttk.Checkbutton(irgf, text="Handicapé / Retraité", variable=self._hr_var,
-                        command=self._recompute).pack(anchor="w")
 
         pf = ttk.LabelFrame(sb, text="منح خاضعة للاشتراك (CNAS)", padding=8)
         pf.pack(fill="x", pady=(0, 8))
@@ -784,13 +781,37 @@ class BulletinPaieScreen(ttk.Frame):
             # دائماً بالصيغة المنسَّقة «XX XXXX XXXX XX» مهما كانت حالة التركيز
             "num_ss": _format_grouped(v["id_num_ss"].get(), _GROUPED_SPECS["num_ss"]),
             "date_embauche": v["id_date_embauche"].get(),
-            "handicape_retraite": bool(self._hr_var.get()),
         }
 
     def _employee_fullname(self):
         v = self._slot_vars
         return " ".join(x for x in (v["id_nom"].get().strip(),
                                     v["id_prenom"].get().strip()) if x)
+
+    def _bulletin_date(self):
+        """تاريخ الكشف (اليوم الأول من شهره) لاختيار ملف المعاملات —
+        من حقلَي الشهر/السنة، وإلا تاريخ اليوم (وكذلك قبل بناء الحقول)."""
+        v = self._slot_vars
+        if "annee" not in v or "mois" not in v:
+            return date.today()
+        try:
+            month = _MOIS_UP.index(v["mois"].get().strip().upper()) + 1
+            return date(int(v["annee"].get().strip()), month, 1)
+        except (ValueError, KeyError):
+            return date.today()
+
+    def _load_cfg(self):
+        """ملف معاملات الأجور الساري بتاريخ الكشف (مخزَّن مؤقتاً). يجرّب
+        تاريخ الكشف ثم تاريخ اليوم كاحتياط."""
+        if self._cfg is not None:
+            return self._cfg
+        for d in (self._bulletin_date(), date.today()):
+            try:
+                self._cfg = load_params(d)
+                return self._cfg
+            except PayrollConfigError:
+                continue
+        raise PayrollConfigError("لا يوجد ملف معاملات أجور متاح لأي تاريخ.")
 
     def _build_input(self):
         v = self._slot_vars
@@ -816,13 +837,14 @@ class BulletinPaieScreen(ttk.Frame):
             jours=_num(v["jours"].get()) or 30.0,
             salaire_base=_num(v["salaire_base"].get()),
             panier=_num(v["panier"].get()), transport=_num(v["transport"].get()),
-            handicape_retraite=bool(self._hr_var.get()),
             primes=primes, autres_retenues=autres,
         )
 
     def _on_slot_write(self, key):
         if key in self._suspend:
             return
+        if key in ("mois", "annee"):
+            self._cfg = None   # قد يتغيّر ملف المعاملات مع تغيّر سنة/شهر الكشف
         if key in self._masked:
             mde = self._masked[key]
             col = EMPTY_BG_COLOR if not self._slot_vars[key].get().strip() else FILLED_BG_COLOR
@@ -899,7 +921,7 @@ class BulletinPaieScreen(ttk.Frame):
         if not self._built:
             return
         self._calc_input = self._build_input()
-        self._calc_result = calc.compute(self._calc_input)
+        self._calc_result = calc.compute(self._calc_input, self._load_cfg())
         page_box, scale, _cw, _ch = self._page_box()
         self._paint_all(page_box, scale)
 
@@ -922,7 +944,7 @@ class BulletinPaieScreen(ttk.Frame):
             messagebox.showwarning(self.SCREEN_TITLE, "أدخل اسم الأجير أولاً.", parent=self)
             return
         self._recompute()
-        tpl = registry.get_template(self._template_key)
+        tpl = template_simple.get_renderer(self._template_key)
         ext = ".docx" if kind == "docx" else ".pdf"
         path = self._resolve_out_path(ext)
         try:
@@ -1020,7 +1042,6 @@ class BulletinPaieScreen(ttk.Frame):
         self._restoring = False
         for pv in self._prime_soumis:
             pv.set(True)
-        self._hr_var.set(False)
         self._picker.clear()
         self._last_committed = self._snapshot()
         self._recompute()
@@ -1039,11 +1060,12 @@ class BulletinPaieScreen(ttk.Frame):
             "paie": {
                 "mois": pin.mois, "annee": pin.annee, "jours": pin.jours,
                 "salaire_base": pin.salaire_base, "panier": pin.panier,
-                "transport": pin.transport, "handicape_retraite": pin.handicape_retraite,
+                "transport": pin.transport,
                 "primes": [dataclasses.asdict(p) for p in pin.primes],
                 "autres_retenues": [dataclasses.asdict(r) for r in pin.autres_retenues],
             },
-            "result": dataclasses.asdict(self._calc_result),
+            # نتائج الحساب Decimal — نخزّنها نصّاً (بلا خسارة، وصالح JSON)
+            "result": {k: str(v) for k, v in dataclasses.asdict(self._calc_result).items()},
         }
 
     # ---------------- توافق النافذة الرئيسية ----------------

@@ -56,9 +56,11 @@ def calcul_irg(assiette: Decimal, cfg: dict) -> Decimal:
              Decimal(p["abattement"]["max_mensuel"]))
     irg1 = irg_brut - ab
 
-    # (e) 2e abattement (lissage) — tranche 30 001 à 35 000
+    # (e) 2e abattement (lissage) — bornes STRICTES des deux côtés.
+    #     Art. 104 CIDTA : « revenus SUPÉRIEURS à 30.000 et INFÉRIEURS à 35.000 ».
+    #     35 000,00 exactement est HORS lissage → calcul normal.
     liss = p["lissage_standard"]
-    if Decimal(liss["borne_inf"]) < R <= Decimal(liss["borne_sup"]):
+    if Decimal(liss["borne_inf"]) < R < Decimal(liss["borne_sup"]):
         irg = irg1 * Decimal(str(liss["coef_a"])) - Decimal(str(liss["coef_b"]))
         return max(Decimal("0.00"), da(irg))
 

@@ -9,8 +9,9 @@ CODE/LIBELLÉ/N-BASE/TAUX/GAIN/RETENUE، سطر TOTAL، خانة NET À PAYER
 import os
 import tkinter.font as tkfont
 
+from programme.payroll import registry
+from programme.payroll.calc import fmt_montant
 from ui.hr.constants import MOIS_FR, PAIE_DEFAULT_CODES
-from ui.hr.paie.calc import fmt_montant
 from ui.hr.render import TemplateNotReady
 
 # خط الاستمارة الموحّد — نفس عائلة الخط للجزء الثابت المرسوم وخانات
@@ -434,8 +435,9 @@ def _ident_pairs(employee):
 
 
 class SimpleBulletinTemplate:
+    # المفتاح والتسمية مصدرهما سجلّ الموديلات في طبقة الحساب (لا تكرار)
     KEY = "simple"
-    LABEL = "Bulletin simple (CNAS)"
+    LABEL = registry.get_template("simple").label
 
     # ================= المعاينة الحيّة (tkinter canvas) =================
     @staticmethod
@@ -757,3 +759,17 @@ class SimpleBulletinTemplate:
         story.append(rt)
         doc.build(story)
         return path
+
+
+# --- ربط مفتاح الموديل بمُصيّره (طبقة الواجهة فقط) ---
+# طبقة الحساب (programme.payroll.registry) تعرف الموديلات المتاحة
+# (مفتاح + تسمية) بلا أي اعتماد على tkinter؛ هنا نربط كل مفتاح بالصنف
+# الذي يرسمه ويولّد Word/PDF منه.
+RENDERERS = {
+    SimpleBulletinTemplate.KEY: SimpleBulletinTemplate,
+}
+
+
+def get_renderer(key=None):
+    """صنف المُصيّر للمفتاح المطلوب (أو الافتراضي)."""
+    return RENDERERS.get(key or SimpleBulletinTemplate.KEY, SimpleBulletinTemplate)

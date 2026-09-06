@@ -103,7 +103,12 @@ class CapaDemo(tk.Tk):
 
         self._canvas.bind("<Configure>", self._on_canvas_configure)
         self._sheet.bind("<Configure>", self._on_sheet_configure)
-        self._canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        # ربط عجلة الفأرة *موضعياً* على اللوحة ومحتواها فقط — لا
+        # bind_all (نمط الاختصارات العامة الذي يتسرّب لبقية التطبيق،
+        # نفس ما رصدناه في شاشة CD). أحداث العجلة تذهب للودجت تحت
+        # المؤشر، فنربطها على اللوحة والورقة والجدول.
+        for w in (self._canvas, self._sheet, self._table):
+            w.bind("<MouseWheel>", self._on_mousewheel)
 
     def _build_header_row(self):
         for col_idx, (title, width_px) in enumerate(COLUMNS):
@@ -133,6 +138,7 @@ class CapaDemo(tk.Tk):
             var.trace_add("write", lambda *_, e=entry, v=var: self._on_cell_changed(e, v))
             entry.bind("<FocusIn>", lambda ev, e=entry: e.configure(highlightbackground=HOVER_ON_COLOR))
             entry.bind("<FocusOut>", lambda ev, e=entry: e.configure(highlightbackground=BORDER_COLOR))
+            entry.bind("<MouseWheel>", self._on_mousewheel)  # ربط موضعي (لا bind_all)
             row_entries.append(entry)
         self._entries.append(row_entries)
         self._table.after_idle(self._sync_scrollregion)

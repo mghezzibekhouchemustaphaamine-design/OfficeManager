@@ -980,3 +980,89 @@ docx تاخذ `_02` وpdf تضل بدونها (أو العكس) — يكسر م�
 ### الملفات المتأثرة
 `ui/common/client_picker.py`، `programme/case_ops.py`،
 `ui/common/file_explorer.py`.
+
+---
+
+## مرجع سادس وعشرون — 2026-09-06: محرّك حساب الأجور — نواة مستقلّة عن الواجهة
+
+فصل منطق حساب الأجور بالكامل خارج طبقة الواجهة إلى `programme/payroll/`،
+وتوحيد مصدر حساب IRG على الدالة المرجعية، وحسم نقطة استمرارية في السلّم،
+وتنظيف جذر المشروع، وإعادة كتابة README ليطابق الشجرة الفعلية.
+المرجع الإلزامي: `docs/specs/SPEC_PAIE_DZ.md`.
+
+### 1) حسم T5 — الحدّ الأعلى لشريحة التنعيم مفتوح
+
+`programme/payroll/irg.py`: شرط التنعيم صار `borne_inf < R < borne_sup`
+(كان `<=` على الحدّ الأعلى). المادة 104 CIDTA: «دخول تفوق 30.000 وتقلّ
+عن 35.000» — الحدّان مفتوحان، فـ`35 000,00` بالضبط تُحسب بالمسار العادي
+وتُعطي `2 070,00`. معاملات القانون (`137/51`، `27925/8`) **لم تُلمَس** —
+هي غير متّصلة تماماً عند 35 000 بفارق 4 سنتيمات، وهذا تقريب المشرّع لا
+خطأ في الكود. `params_2026.json` أضاف `"bornes_exclusives": true` توثيقاً.
+اختبارات T1→T8 تمرّ 8/8 (كانت 7/8).
+
+### 2) توحيد مصدر حساب IRG
+
+حُذف `ui/hr/irg.py` نهائياً (كان نقلاً لخوارزمية حاسبة DGI المسنونة،
+API مختلف: `compute_irg` سنوي + معامل `handicape_retraite`). المستدعي
+الوحيد `calc.py` صار يستدعي `programme.payroll.irg.calcul_irg(assiette,
+cfg)` — نفس الدالة التي تختبرها الجداول الذهبية. نتيجة IRG في شاشة كشف
+الراتب تغيّرت لتطابق سلّم المواصفة الشهري.
+
+خيار «Handicapé / Retraité» أُزيل من الشاشة ومن `PaieInput` — خارج نطاق
+المواصفة (الحالة العادية فقط)، و`calcul_irg` بلا معامل `statut`.
+
+### 3) نقل منطق الحساب خارج الواجهة
+
+`git mv ui/hr/paie/calc.py → programme/payroll/calc.py` وإنشاء
+`programme/payroll/registry.py` (بيانات وصفية فقط: مفتاح + تسمية، بلا
+`SimpleBulletinTemplate`). `ui/hr/paie/registry.py` حُذف.
+
+- **`calc.py`**: أعيدت كتابته بـ`Decimal` حصراً (كان `float` + `round`).
+  نسبة CNAS تُقرأ من `cfg["cnas"]["taux_salarie"]` لا من ثابت في الكود
+  (`TAUX_CNAS = 0.09` حُذف من `ui/hr/constants.py`). `compute(data, cfg)`
+  — `cfg` إلزامي (ملف المعاملات كما يرجعه `config_loader`).
+- **`ui/hr/bulletin_paie.py`**: يحمّل ملف المعاملات عبر
+  `config_loader.load_params` حسب شهر/سنة الكشف (`_load_cfg` / `_bulletin_date`،
+  مع كاش يُبطَل عند تغيّر الشهر/السنة). نتائج `Decimal` تُخزَّن نصّاً في
+  `collect_data` (صالح JSON، بلا خسارة).
+- **`ui/hr/paie/template_simple.py`**: يستورد `fmt_montant` من
+  `programme.payroll.calc`، ويعرّف `RENDERERS` / `get_renderer` لربط
+  المفتاح بصنف المُصيّر (طبقة الواجهة).
+
+**شرط القبول متحقّق:** بحث نصّي — لا `import tkinter` ولا `from ui …`
+في أي ملف تحت `programme/payroll/`.
+
+### 4) تنظيف الجذر
+
+`capa_screen_demo.py` و`pyside6_demo/` نُقلا إلى `demos/`. جذر المشروع
+صار `main.py` فقط. في `demos/capa_screen_demo.py` استُبدل
+`bind_all("<MouseWheel>")` بربط موضعي على اللوحة/الورقة/الجدول/الخانات —
+تفادياً لتسرّب الاختصارات العامة (نفس نمط CD).
+
+### 5) README
+
+أُعيدت كتابته من الصفر: كان يصف بنية مهجورة (`ui/dashboard_tab.py`،
+`clients_tab.py`، «لا حاجة لأي مكتبة خارجية»). الجديد يطابق الشجرة
+الفعلية (`programme/` نواة، `ui/` واجهة، `demos/`، `docs/specs/`)، ويشير
+إلى `docs/specs/SPEC_PAIE_DZ.md` كمرجع إلزامي لوحدة الأجور، مع أمر تشغيل
+الاختبارات الذهبية.
+
+### الاختبار
+
+- `python programme/payroll/tests/test_golden.py` → 8/8.
+- شاشة كشف الراتب: تُفتح، تحسب (CNAS + IRG من الدالة المرجعية)، تولّد
+  Word و PDF، و`collect_data` قابل للتسلسل JSON — مؤكَّد بسكربت.
+- `import main` / `ui.home.*` سليمة.
+- سيناريوهات الحقول السابقة (تجميع N° SS، `fit_maxlen`، الحالة العائلية،
+  السنة تبدأ بـ1/2…) تمرّ بلا تغيّر.
+
+### الملفات المتأثرة
+
+`programme/payroll/{irg,calc,registry,config_loader}.py` (calc/registry
+جديدة بالنقل)، `programme/payroll/tests/test_golden.py`،
+`programme/paths.py` (`get_params_paie_dir`)، `ui/hr/irg.py` (محذوف)،
+`ui/hr/paie/{registry.py محذوف, __init__.py, template_simple.py}`،
+`ui/hr/{bulletin_paie.py, constants.py}`، `demos/` (نقل + إصلاح)،
+`README.md`، `docs/specs/SPEC_PAIE_DZ.md` + `programme/data/params_paie/params_2026.json`
+(تحديث يدوي من المستخدم: بنية المناطق Z1–Z4، الأسطر [A]–[E]،
+V11–V14، الحدود الصارمة للتنعيم).

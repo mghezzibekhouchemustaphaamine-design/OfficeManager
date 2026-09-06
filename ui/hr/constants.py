@@ -87,8 +87,9 @@ PAIE_DEFAULT_CODES = {
     "transport":    "533",
 }
 
-# نسبة اشتراك الضمان الاجتماعي (حصة الأجير)
-TAUX_CNAS = 0.09
+# نسبة اشتراك CNAS (حصة الأجير) والسلّم الضريبي وكل رقم قانوني آخر
+# تُقرأ من programme/data/params_paie/params_<سنة>.json عبر
+# programme.payroll.config_loader — لا تُكتب حرفياً هنا (SPEC_PAIE_DZ.md §1).
 
 # عدد أسطر المنح / الاقتطاعات الحرّة المتاحة في شاشة الكشف
 PAIE_MAX_PRIMES = 6

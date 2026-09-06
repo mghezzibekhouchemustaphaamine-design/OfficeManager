@@ -125,6 +125,24 @@ def init_db():
             key TEXT PRIMARY KEY,
             value TEXT
         );
+
+        -- سجل كل مستند موارد بشرية / أجور يُنشأ فعلياً (شهادة عمل، شهادة
+        -- عطلة، كشف راتب شهري/سنوي) — نفس فكرة cd_documents: بحث/أرشفة
+        -- لاحقاً. screen_key يميّز نوع الوثيقة (HRDocScreen.SCREEN_KEY).
+        -- بلا FOREIGN KEY صريح (الربط منطقي بالكود، زي باقي الجداول).
+        CREATE TABLE IF NOT EXISTS hr_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            screen_key TEXT NOT NULL,
+            doc_label TEXT,
+            employer_name TEXT,
+            employee_name TEXT,
+            doc_date TEXT,
+            client_id INTEGER,
+            file_path TEXT NOT NULL,
+            pdf_path TEXT,
+            full_data_json TEXT,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        );
         """
     )
     # full_data_json: أضيف بعد ما كان الجدول موجود أصلاً بقواعد بيانات
@@ -405,5 +423,61 @@ def list_cd_documents_for_tree():
         ORDER BY cd.id DESC
         """
     ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# --- مستندات الموارد البشرية / الأجور (hr_documents) ---
+# نفس نمط cd_documents بالضبط: تسجيل مستند مولَّد فعلياً + استعلام لاحق
+# للسجل. يُستعملان لمّا يُربط محرّك إخراج كل وثيقة (راجع ui/hr/).
+
+def log_hr_document(record, full_data=None):
+    """يسجّل مستند موارد بشرية مولَّد فعلياً بجدول hr_documents.
+
+    record: dict فيه screen_key (إلزامي) وfile_path (إلزامي)، وبقيّتها
+    اختيارية: doc_label, employer_name, employee_name, doc_date,
+    client_id, pdf_path. full_data (اختياري): قاموس بيانات الاستمارة
+    الكامل (HRDocScreen.collect_data()) يُخزَّن JSON لإعادة الفتح لاحقاً.
+    يرجّع id السطر الجديد."""
+    conn = get_connection()
+    cur = conn.execute(
+        """
+        INSERT INTO hr_documents
+            (screen_key, doc_label, employer_name, employee_name, doc_date,
+             client_id, file_path, pdf_path, full_data_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            record["screen_key"], record.get("doc_label"),
+            record.get("employer_name"), record.get("employee_name"),
+            record.get("doc_date"), record.get("client_id"),
+            record["file_path"], record.get("pdf_path"),
+            json.dumps(full_data, ensure_ascii=False) if full_data is not None else None,
+        ),
+    )
+    row_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def list_hr_documents(screen_key=None, query="", limit=100):
+    """صفوف hr_documents الأحدث أولاً، مع فلترة اختيارية بنوع الوثيقة
+    (screen_key) وبنص (اسم الأجير / صاحب العمل)."""
+    conn = get_connection()
+    sql = ["SELECT * FROM hr_documents"]
+    where, params = [], []
+    if screen_key:
+        where.append("screen_key = ?")
+        params.append(screen_key)
+    if query:
+        like = f"%{query}%"
+        where.append("(employee_name LIKE ? OR employer_name LIKE ?)")
+        params += [like, like]
+    if where:
+        sql.append("WHERE " + " AND ".join(where))
+    sql.append("ORDER BY id DESC LIMIT ?")
+    params.append(limit)
+    rows = conn.execute("\n".join(sql), params).fetchall()
     conn.close()
     return [dict(r) for r in rows]

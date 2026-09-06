@@ -1,0 +1,99 @@
+{
+  "version": "2026.1",
+  "en_vigueur_du": "2026-01-01",
+  "en_vigueur_au": null,
+  "portee": "Salarié régime général (STANDARD) uniquement — régimes retraités et travailleurs handicapés hors périmètre.",
+  "references": [
+    "Décret présidentiel n° 26-01 du 07/01/2026 (SNMG)",
+    "Art. 104 CIDTA modifié par art. 31 LF 2022 (barème IRG)",
+    "Loi n° 83-14 (taux de cotisations)",
+    "Ordonnance n° 95-01 + Décret exécutif n° 96-208 (assiette de cotisation)",
+    "Loi n° 90-11 art. 31/32 (heures supplémentaires)",
+    "Décret présidentiel n° 07-304 modifié (point indiciaire fonction publique)"
+  ],
+
+  "snmg_mensuel": 24000,
+  "taux_horaire_snmg": 138.46,
+  "heures_mois": 173.33,
+  "duree_hebdo_legale": 40,
+  "point_indiciaire": 45,
+
+  "cnas": {
+    "taux_salarie": 0.09,
+    "taux_employeur": 0.25,
+    "taux_oeuvres_sociales": 0.005,
+    "appliquer_plancher_snmg": true
+  },
+
+  "irg": {
+    "seuil_exoneration": 30000,
+    "arrondi_assiette_dizaine_inferieure": true,
+    "tranches_mensuelles": [
+      { "plafond": 20000,  "taux": 0.00 },
+      { "plafond": 40000,  "taux": 0.23 },
+      { "plafond": 80000,  "taux": 0.27 },
+      { "plafond": 160000, "taux": 0.30 },
+      { "plafond": 320000, "taux": 0.33 },
+      { "plafond": null,   "taux": 0.35 }
+    ],
+    "abattement": {
+      "taux": 0.40,
+      "min_mensuel": 1000,
+      "max_mensuel": 1500,
+      "note": "Abattement de 40% SUR L'IMPÔT calculé, jamais sur le salaire."
+    },
+    "lissage_standard": {
+      "borne_inf": 30000,
+      "borne_sup": 35000,
+      "coef_a": 2.6862745098039216,
+      "coef_b": 3490.625,
+      "note": "IRG = IRG1 * (137/51) - (27925/8) — art. 31 LF 2022. Résultat plancher à 0."
+    }
+  },
+
+  "heures_supplementaires": {
+    "majoration_min_legale": 0.50,
+    "taux_jour": 1.50,
+    "taux_nuit": 2.00,
+    "taux_repos_ferie": 2.00,
+    "plafond_hebdo_heures": 8,
+    "note": "Seul 50% est légal (art. 32 loi 90-11). Les taux 1.75 / 2.00 relèvent de la convention collective — à surcharger par entreprise."
+  },
+
+  "iep": {
+    "taux_par_annee": 0.01,
+    "plafond_taux": null,
+    "note": "Aucun taux fixé par la loi. 1%/an = usage courant, modifiable par convention collective."
+  },
+
+  "prime_rendement": {
+    "base_calcul": ["SAL_BASE", "IEP"],
+    "taux_defaut": 0.00,
+    "note": "base_calcul paramétrable par entreprise : certaines conventions retiennent SAL_BASE seul."
+  },
+
+  "conge_annuel": {
+    "jours_par_mois": 2.5,
+    "plafond_jours_an": 30,
+    "methode_indemnite": "1/12 de la rémunération totale de l'année de référence"
+  },
+
+  "allocations_familiales": {
+    "montant_par_enfant": 300,
+    "montant_majore": 600,
+    "seuil_salaire_post": 15000,
+    "statut": "A_VERIFIER_CNAS",
+    "note": "N'entre ni dans l'assiette CNAS ni dans l'assiette IRG. Ajouté au net à payer uniquement."
+  },
+
+  "arrondis": {
+    "monetaire_decimales": 2,
+    "mode": "ROUND_HALF_UP",
+    "note": "Utiliser Decimal exclusivement. Jamais de float."
+  },
+
+  "echeances_declaratives": {
+    "g50_dgi": "avant le 20 du mois suivant",
+    "dac_cnas": "selon effectif (mensuelle ou trimestrielle)"
+  }
+}

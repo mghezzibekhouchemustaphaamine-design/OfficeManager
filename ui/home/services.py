@@ -31,4 +31,32 @@ def build_services(app):
             open_handler=lambda owner: owner.open_cd(),
             icon="💱",
         ),
+        ServiceDefinition(
+            key="hr_attestation_travail",
+            title="شهادة عمل",
+            description="توليد شهادة عمل لأجير (Attestation de travail)",
+            open_handler=lambda owner: owner.open_hr("hr_attestation_travail"),
+            icon="📄",
+        ),
+        ServiceDefinition(
+            key="hr_titre_conge",
+            title="شهادة عطلة",
+            description="توليد شهادة عطلة (Titre de congé)",
+            open_handler=lambda owner: owner.open_hr("hr_titre_conge"),
+            icon="🏖️",
+        ),
+        ServiceDefinition(
+            key="hr_bulletin_paie",
+            title="كشف راتب شهري",
+            description="توليد كشف الراتب الشهري مع حساب IRG (Bulletin de paie)",
+            open_handler=lambda owner: owner.open_hr("hr_bulletin_paie"),
+            icon="💵",
+        ),
+        ServiceDefinition(
+            key="hr_releve_annuel",
+            title="كشف راتب سنوي",
+            description="توليد كشف الراتب السنوي (Relevé annuel des émoluments)",
+            open_handler=lambda owner: owner.open_hr("hr_releve_annuel"),
+            icon="📊",
+        ),
     ]

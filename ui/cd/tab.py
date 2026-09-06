@@ -211,6 +211,9 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         self.bind_all("<Control-T>", self._shortcut(self._new_tab))
         self.bind_all("<Control-w>", self._shortcut(lambda: self._close_tab(self._active_tab_id)))
         self.bind_all("<Control-W>", self._shortcut(lambda: self._close_tab(self._active_tab_id)))
+        # Ctrl+Shift+W: إغلاق كل التبويبات دفعة وحدة (نفس زر ⊗ بالشريط) —
+        # بدل إغلاقها وحدة وحدة بـ✕.
+        self.bind_all("<Control-Shift-W>", self._shortcut(self._close_all_tabs))
         # Ctrl+Tab / Ctrl+Shift+Tab: التبويب التالي/السابق (زي كروم).
         # اكتشفنا تجريبياً إن bind_all("<Control-Tab>") لوحده ما يشتغل
         # أبداً من داخل أي خانة كتابة حقيقية (tk.Entry) — Tk نفسه عنده
@@ -545,6 +548,11 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         self._tabs_dropdown_btn = ttk.Button(
             self.tab_strip, text="▾", width=3, command=self._show_tabs_dropdown,
         )
+        # ⊗: إغلاق كل التبويبات دفعة وحدة — يظهر (زي زر ▾) فقط لما فيه
+        # أكثر من تبويب. راجع _update_tab_scroll_arrows و_close_all_tabs.
+        self._close_all_btn = ttk.Button(
+            self.tab_strip, text="⊗", width=3, command=self._close_all_tabs,
+        )
         self._tab_right_arrow = ttk.Button(self.tab_strip, text="▶", width=2, command=self._scroll_tabs_right)
         self._tab_left_arrow = ttk.Button(self.tab_strip, text="◀", width=2, command=self._scroll_tabs_left)
         # الثلاثة أعلاه يُظهَرون/يُخفَون ديناميكياً حسب الحاجة الفعلية —
@@ -591,8 +599,11 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         if len(self._tabs) > 1:
             if not self._tabs_dropdown_btn.winfo_ismapped():
                 self._tabs_dropdown_btn.pack(side="right", before=self._plus_button)
+            if not self._close_all_btn.winfo_ismapped():
+                self._close_all_btn.pack(side="right", before=self._tabs_dropdown_btn)
         else:
             self._tabs_dropdown_btn.pack_forget()
+            self._close_all_btn.pack_forget()
 
         if self._tab_scroll_x < max_scroll:
             if not self._tab_right_arrow.winfo_ismapped():
@@ -965,6 +976,43 @@ class CDTab(ttk.Frame, CDEntryFactoryMixin):
         # إغلاق تبويب "محمَّل" من حالة CD يغيّر حالة القفل بالشريط الجانبي
         # (الملف يرجع "شغل منتهي") — بدون هذا الاستدعاء، أيقونة 🔒 تبقى
         # قديمة بصرياً لحد أي refresh() ثاني بسبب فعل مختلف تماماً.
+        self.explorer_panel.refresh()
+
+    def _close_all_tabs(self):
+        """يغلق كل التبويبات المفتوحة دفعة وحدة (Ctrl+Shift+W أو زر ⊗
+        بشريط التبويبات، الظاهر فقط لما فيه أكثر من تبويب) — بدل إغلاقها
+        وحدة وحدة بـ✕. سؤال تأكيد *واحد* فقط لو فيه أي تبويب فيه تعديل ما
+        تولّد منه مستند (نفس معيار ✕ التبويب عبر has_unsaved_changes، بس
+        مرة وحدة للكل بدل سؤال لكل تبويب). البيانات المكتوبة تُحفظ كمسودة
+        وترجع أوتوماتيكياً عند فتح البرنامج (نفس حماية إغلاق البرنامج
+        بالكامل). النتيجة: ولا تبويب نشط، يبقى زر "+" فقط — نفس حالة
+        إغلاق آخر تبويب بـ✕ بالضبط."""
+        if not self._tabs:
+            return
+        self._save_active_tab_state()
+        if self.has_unsaved_changes() and not confirm_always(
+            "إغلاق كل التبويبات",
+            "فيه تبويبات فيها تعديلات ما تولّد منها مستند بعد.\n"
+            "تغلقها كلها على أي حال؟\n"
+            "(المعلومات المكتوبة تُحفظ وترجع أوتوماتيكياً لما تفتح البرنامج تاني،"
+            " بس تحتاج تعيد توليد المستند منها).",
+        ):
+            return
+        # نحفظ حالة كل التبويبات المفتوحة كمسودة (نفس _close_tab بالضبط)
+        # قبل ما نشيلها — حماية بمستوى إغلاق البرنامج بالكامل.
+        self.flush_draft_save()
+        self._active_tab_id = None  # حتى ما يحاول أي كود يحفظ حالة بتبويب متمسوح
+        for _tab_id, (frame, _label_var) in list(self._tab_buttons.items()):
+            frame.destroy()
+        self._tab_buttons.clear()
+        self._tabs = []
+        # نصفّي تاريخ التراجع/الإعادة المشترك — Ctrl+Z ما لازم يشتغل بلا
+        # أي تبويب نشط (نفس فرع "آخر تبويب" بـ_close_tab).
+        self._reset_undo_history()
+        self._refresh_tab_styles()
+        self._update_no_tab_state()
+        self._update_tab_scroll_arrows()
+        self._update_next_button_state()
         self.explorer_panel.refresh()
 
     def _open_data_in_new_tab(

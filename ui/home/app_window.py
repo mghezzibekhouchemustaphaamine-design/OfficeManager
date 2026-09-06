@@ -21,7 +21,23 @@ import programme.settings as settings
 from ui.backup_tab import BackupTab
 from ui.cd.tab import CDTab
 from ui.common.alerts import confirm as _confirm
+from ui.hr.attestation_travail import AttestationTravailScreen
+from ui.hr.titre_conge import TitreCongeScreen
+from ui.hr.bulletin_paie import BulletinPaieScreen
+from ui.hr.releve_annuel import ReleveAnnuelScreen
 from ui.home.services import build_services
+
+# شاشات خدمات الموارد البشرية / الأجور — كلها ترث نفس الأرضية
+# (ui/hr/base.py) وتُفتح بنفس الآلية العامة (OfficeApp.open_hr).
+_HR_SCREENS = {
+    cls.SCREEN_KEY: cls
+    for cls in (
+        AttestationTravailScreen,
+        TitreCongeScreen,
+        BulletinPaieScreen,
+        ReleveAnnuelScreen,
+    )
+}
 from ui.lock_overlay import LockOverlay
 from ui.settings_screen import SettingsScreen
 
@@ -36,12 +52,24 @@ _UNSAVED_CD_MESSAGE = (
 
 # نص/رمز زر كل تبويب خدمة حي بشريط التبويبات — "cd" هو المفتاح الوحيد
 # الممكن حالياً (راجع self._service_tabs).
-_SERVICE_TAB_LABELS = {"cd": "💱 CD"}
+_SERVICE_TAB_LABELS = {
+    "cd": "💱 CD",
+    "hr_attestation_travail": "📄 شهادة عمل",
+    "hr_titre_conge": "🏖️ شهادة عطلة",
+    "hr_bulletin_paie": "💵 كشف شهري",
+    "hr_releve_annuel": "📊 كشف سنوي",
+}
 
 # نص شريط الحالة السفلي لكل تبويب خدمة حي — تُقرأ من _activate_service_tab
 # بس (مصدر وحيد للحقيقة)، بغض النظر هل التفعيل جاء من open_cd() أو من
 # ضغطة مباشرة على زر التبويب بالشريط.
-_SERVICE_TAB_STATUS = {"cd": "CD — العمل على مستندات Change Devise"}
+_SERVICE_TAB_STATUS = {
+    "cd": "CD — العمل على مستندات Change Devise",
+    "hr_attestation_travail": "شهادة عمل — Attestation de travail",
+    "hr_titre_conge": "شهادة عطلة — Titre de congé",
+    "hr_bulletin_paie": "كشف راتب شهري — Bulletin de paie",
+    "hr_releve_annuel": "كشف راتب سنوي — Relevé annuel des émoluments",
+}
 
 
 class OfficeApp(tk.Tk):
@@ -318,6 +346,19 @@ class OfficeApp(tk.Tk):
             self._service_tabs["cd"] = cd_tab
             self._refresh_tab_strip()
         self._activate_service_tab("cd")
+
+    def open_hr(self, key):
+        """فتح شاشة خدمة موارد بشرية/أجور — نفس آلية open_cd بالضبط، بس
+        عامة لكل المفاتيح المسجّلة بـ_HR_SCREENS."""
+        screen_cls = _HR_SCREENS.get(key)
+        if screen_cls is None:
+            return
+        if key not in self._service_tabs:
+            tab = screen_cls(self.view_area, self)
+            tab.grid(row=0, column=0, sticky="nsew")
+            self._service_tabs[key] = tab
+            self._refresh_tab_strip()
+        self._activate_service_tab(key)
 
     def open_backup(self):
         self._current_service = "backup"

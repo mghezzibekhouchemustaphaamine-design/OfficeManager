@@ -15,6 +15,10 @@ import os
 
 _TRAVAIL_ENV_OVERRIDE = "OFFICEMANAGER_TRAVAIL_ROOT"
 
+# جذر حزمة "المحرّك" (programme/) — يُشتق منه مسار البيانات المشحونة مع
+# الكود (data/)، لا يُكتب حرفياً في أي وحدة أخرى.
+_PROGRAMME_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def get_real_desktop_dir():
     """يرجّع مسار سطح المكتب الحقيقي — يتعامل صح مع حالة كون سطح المكتب
@@ -70,3 +74,20 @@ def get_client_dir(folder_name):
     مرة وحدة بـcreate_client)، لا من اسم الزبون الحي مباشرة — راجع
     مستند التصميم بند 3."""
     return os.path.join(get_travail_root(), folder_name)
+
+
+# --- معاملات حساب الأجور المؤرَّخة (programme/payroll) ---
+
+def get_params_paie_dir():
+    """مجلد ملفات معاملات الأجور المؤرَّخة: params_paie/params_<سنة>.json
+    (SNMG، شرائح IRG، النسب، معاملات التنعيم...). داخل حزمة البرنامج
+    نفسها (programme/data/params_paie/) لأنها **مرجع قانوني يُشحن مع
+    الكود**، لا "شغل مستخدم" (فما تروح جوا travail بسطح المكتب).
+
+    يرجّع المسار فقط (بلا os.makedirs) — نفس اصطلاح باقي دوال هذا الملف.
+
+    TODO (مرحلة التحزيم بـPyInstaller): عند أول تشغيل بعد تثبيت مُحزَّم،
+    تُنسخ هذه الملفات إلى %APPDATA%\\OfficeManager\\params_paie\\ ويُقرأ
+    منها هناك، حتى تبقى قابلة للتحيين بعد كل قانون مالية بلا إعادة تثبيت.
+    """
+    return os.path.join(_PROGRAMME_DIR, "data", "params_paie")

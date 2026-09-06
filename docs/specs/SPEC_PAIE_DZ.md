@@ -1,0 +1,336 @@
+# مواصفة حساب كشف الراتب — الجزائر (نسخة 2026)
+### وثيقة مرجعية موجّهة للمبرمج (Claude Code)
+
+> **نطاق التغطية:** العامل الأجير في الحالة العادية (`STANDARD`) فقط. الأنظمة الخاصة بالمتقاعدين وذوي الإعاقة **خارج نطاق هذه المواصفة** ولا تُبرمَج.
+
+> **قاعدة ذهبية:** كل رقم قانوني في هذه الوثيقة يجب أن يكون في **ملف إعدادات خارجي مؤرَّخ** (`config/params_2026.json`)، ولا يُكتب أبداً داخل الكود (no hardcoded values). قوانين المالية تتغيّر كل سنة، والبرنامج يجب أن يحسب كشوف سنوات سابقة بمعاملات تلك السنة.
+
+---
+
+## 1. الثوابت القانونية — `config/params_2026.json`
+
+```json
+{
+  "version": "2026.1",
+  "en_vigueur_du": "2026-01-01",
+  "en_vigueur_au": null,
+  "references": [
+    "Décret présidentiel n° 26-01 du 07/01/2026 (SNMG)",
+    "Art. 104 CIDTA modifié par art. 31 LF 2022 (barème IRG)",
+    "Loi n° 83-14 (taux cotisations)",
+    "Ordonnance n° 95-01 + Décret exécutif n° 96-208 (assiette cotisation)",
+    "Loi n° 90-11 art. 31/32 (heures supplémentaires)",
+    "Décret présidentiel n° 07-304 modifié (point indiciaire fonction publique)"
+  ],
+
+  "snmg_mensuel": 24000,
+  "taux_horaire_snmg": 138.46,
+  "heures_mois": 173.33,
+  "duree_hebdo_legale": 40,
+  "point_indiciaire": 45,
+
+  "cnas": {
+    "taux_salarie": 0.09,
+    "taux_employeur": 0.25,
+    "taux_oeuvres_sociales": 0.005,
+    "appliquer_plancher_snmg": true
+  },
+
+  "irg": {
+    "seuil_exoneration": 30000,
+    "arrondi_assiette_dizaine_inferieure": true,
+    "tranches_mensuelles": [
+      { "plafond": 20000,  "taux": 0.00 },
+      { "plafond": 40000,  "taux": 0.23 },
+      { "plafond": 80000,  "taux": 0.27 },
+      { "plafond": 160000, "taux": 0.30 },
+      { "plafond": 320000, "taux": 0.33 },
+      { "plafond": null,   "taux": 0.35 }
+    ],
+    "abattement": { "taux": 0.40, "min_mensuel": 1000, "max_mensuel": 1500 },
+    "lissage_standard": {
+      "borne_inf": 30000,
+      "borne_sup": 35000,
+      "coef_a": 2.6862745098039216,
+      "coef_b": 3490.625,
+      "note": "IRG = IRG1 * (137/51) - (27925/8) — art. 31 LF 2022"
+    }
+  },
+
+  "heures_supplementaires": {
+    "majoration_min_legale": 0.50,
+    "taux_jour": 1.50,
+    "taux_nuit": 2.00,
+    "taux_repos_ferie": 2.00,
+    "plafond_hebdo_heures": 8,
+    "note": "Seul 50% est légal (art.32 loi 90-11). Les taux 1.75/2.00 proviennent de la convention collective → paramétrable PAR ENTREPRISE."
+  },
+
+  "iep": { "taux_par_annee": 0.01, "plafond_taux": null },
+
+  "conge_annuel": { "jours_par_mois": 2.5, "plafond_jours_an": 30 },
+
+  "allocations_familiales": {
+    "montant_par_enfant": 300,
+    "montant_majore": 600,
+    "seuil_salaire_post": 15000,
+    "statut": "A_VERIFIER_CNAS"
+  }
+}
+```
+
+⚠️ كل حقل عليه `"statut": "A_VERIFIER_*"` يجب أن يظهر في الواجهة بشارة صفراء «غير مؤكد» حتى يتم التحقق منه من المصدر الرسمي.
+
+---
+
+## 2. نموذج البيانات (Data Model)
+
+### 2.1 الرُبريكة `Rubrique` — قلب النظام
+
+كل سطر في كشف الراتب هو رُبريكة، ولها **خاصيتان إلزاميتان** لا يجوز أن تكونا فارغتين:
+
+```python
+@dataclass
+class Rubrique:
+    code: str              # ترميزك الداخلي (مثلاً "1010")
+    libelle_fr: str
+    libelle_ar: str
+    sens: str              # "GAIN" | "RETENUE"
+    mode: str              # "MONTANT" | "TAUX_SUR_BASE" | "QUANTITE_X_PU" | "FORMULE"
+    base_calcul: list[str] # ex: ["SAL_BASE"] أو ["SAL_BASE","IEP"]
+    cotisable: bool        # يدخل في وعاء CNAS ؟   ← إلزامي
+    imposable: bool        # يدخل في وعاء IRG ؟    ← إلزامي
+    proratisable: bool     # يُقسَّم على أيام الحضور ؟
+    ordre: int             # ترتيب الظهور والحساب
+```
+
+**قاعدة برمجية صارمة:** أي رُبريكة تُنشأ بدون تحديد `cotisable` و `imposable` صراحةً → ترفع `ValidationError` ولا تُحفظ. هنا يقع 90% من أخطاء الأجور والتقويمات الجبائية.
+
+### 2.2 الجدول المرجعي الافتراضي (يُحمَّل عند إنشاء شركة جديدة)
+
+| الرُبريكة | sens | cotisable | imposable | proratisable |
+|---|---|---|---|---|
+| الأجر القاعدي | GAIN | ✅ | ✅ | ✅ |
+| الساعات الإضافية | GAIN | ✅ | ✅ | ❌ |
+| منحة الأقدمية IEP | GAIN | ✅ | ✅ | ✅ |
+| منحة المردودية PRI/PRC | GAIN | ✅ | ✅ | ✅ |
+| منحة العمل بالتناوب (poste) | GAIN | ✅ | ✅ | ✅ |
+| منحة الضرر/الخطر (nuisance) | GAIN | ✅ | ✅ | ✅ |
+| تعويض العطلة المدفوعة | GAIN | ✅ | ✅ | ❌ |
+| **منحة السلة (panier)** | GAIN | ❌ | **✅** | ✅ |
+| **منحة النقل** | GAIN | ❌ | **✅** | ✅ |
+| منحة السيارة | GAIN | ❌ | ✅ | ❌ |
+| منحة المنطقة (zone) | GAIN | ❌ | ❌ | ✅ |
+| المنح العائلية | GAIN | ❌ | ❌ | ❌ |
+| المنحة المدرسية / الأجر الوحيد | GAIN | ❌ | ❌ | ❌ |
+| مصاريف المهمة (بوثائق) | GAIN | ❌ | ❌ | ❌ |
+| اقتطاع الغيابات | RETENUE | ✅ (سالب على الوعاء) | ✅ | — |
+| اقتطاع CNAS 9% | RETENUE | — | — | — |
+| اقتطاع IRG | RETENUE | — | — | — |
+| تسبيق على الراتب | RETENUE | ❌ | ❌ | — |
+| اقتطاع بحكم قضائي (opposition) | RETENUE | ❌ | ❌ | — |
+| الاشتراك النقابي | RETENUE | ❌ | ❌ | — |
+
+> السلة والنقل: معفاتان من CNAS (تعويضات ممثلة لمصاريف — الأمر 95-01) لكنهما **خاضعتان لـ IRG**. هذا الخطأ هو الأكثر شيوعاً في برامج الأجور الجزائرية.
+
+---
+
+## 3. تسلسل الحساب — لا يجوز تغيير الترتيب
+
+```
+[1]  taux_horaire      = salaire_base / heures_mois
+[2]  retenue_absence   = taux_horaire × heures_absence
+[3]  heures_supp       = Σ (taux_horaire × coef_type × nb_heures)
+[4]  IEP               = salaire_base × (annees_anciennete × taux_par_annee)
+[5]  prime_rendement   = base_PRI × taux_PRI          # base_PRI paramétrable
+[6]  TOTAL_GAINS       = Σ (toutes les rubriques GAIN)
+
+[7]  ASSIETTE_CNAS     = Σ (GAIN où cotisable=true) − retenue_absence
+     si plancher activé et contrat temps plein :
+         ASSIETTE_CNAS = max(ASSIETTE_CNAS, SNMG × prorata_jours)
+
+[8]  RETENUE_CNAS      = ASSIETTE_CNAS × 0.09
+
+[9]  ASSIETTE_IRG      = (ASSIETTE_CNAS − RETENUE_CNAS)
+                       + Σ (GAIN où cotisable=false ET imposable=true)
+
+[10] IRG               = calcul_irg(ASSIETTE_IRG)
+
+[11] TOTAL_RETENUES    = RETENUE_CNAS + IRG + avances + oppositions + syndicat + ...
+
+[12] NET_A_PAYER       = TOTAL_GAINS − TOTAL_RETENUES
+
+[13] COUT_EMPLOYEUR    = TOTAL_GAINS
+                       + ASSIETTE_CNAS × 0.25
+                       + ASSIETTE_CNAS × 0.005
+```
+
+---
+
+## 4. دالة IRG المرجعية
+
+```python
+from decimal import Decimal, ROUND_HALF_UP, ROUND_FLOOR
+
+def arrondi_dizaine_inf(x: Decimal) -> Decimal:
+    return (x / 10).to_integral_value(rounding=ROUND_FLOOR) * 10
+
+def da(x) -> Decimal:                      # arrondi monétaire
+    return Decimal(x).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+def bareme_mensuel(assiette: Decimal, tranches: list) -> Decimal:
+    """Barème progressif PAR TRANCHES — jamais un taux unique sur le total."""
+    impot = Decimal(0)
+    plancher = Decimal(0)
+    for t in tranches:
+        plafond = Decimal(t["plafond"]) if t["plafond"] is not None else None
+        if plafond is None or assiette <= plafond:
+            impot += (assiette - plancher) * Decimal(str(t["taux"]))
+            break
+        impot += (plafond - plancher) * Decimal(str(t["taux"]))
+        plancher = plafond
+    return impot
+
+def calcul_irg(assiette: Decimal, cfg: dict) -> Decimal:
+    p = cfg["irg"]
+
+    # (a) arrondi de l'assiette à la dizaine inférieure
+    R = arrondi_dizaine_inf(assiette) if p["arrondi_assiette_dizaine_inferieure"] else assiette
+
+    # (b) exonération totale
+    if R <= Decimal(p["seuil_exoneration"]):
+        return Decimal("0.00")
+
+    # (c) barème progressif → IRG brut
+    irg_brut = bareme_mensuel(R, p["tranches_mensuelles"])
+
+    # (d) 1er abattement : 40% DE L'IMPÔT (pas du salaire), borné 1000–1500 DA/mois
+    ab = irg_brut * Decimal(str(p["abattement"]["taux"]))
+    ab = min(max(ab, Decimal(p["abattement"]["min_mensuel"])),
+             Decimal(p["abattement"]["max_mensuel"]))
+    irg1 = irg_brut - ab
+
+    # (e) 2e abattement (lissage) — tranche 30 001 à 35 000
+    liss = p["lissage_standard"]
+    if Decimal(liss["borne_inf"]) < R <= Decimal(liss["borne_sup"]):
+        irg = irg1 * Decimal(str(liss["coef_a"])) - Decimal(str(liss["coef_b"]))
+        return max(Decimal("0.00"), da(irg))
+
+    return da(irg1)
+```
+
+### نقاط تنبيه للمبرمج
+
+1. **`abattement` يُطبَّق على الضريبة، لا على الأجر.** كثير من المواقع والمنتديات تشرحها خطأً كـ «خصم 40% من الأجر» — النتيجة تكون خاطئة تماماً.
+2. **الصيغة القديمة `IRG1 × (8/3) − (20000/3)` مهجورة**: كانت مُعايَرة على السلم السابق لقانون المالية 2022. لو استعملتها مع السلم الحالي تعطي نتائج سالبة على كامل الشريحة 30.001–35.000.
+3. `max(0, ...)` إلزامي بعد التنعيم — الضريبة لا تكون سالبة أبداً.
+4. استعمل `Decimal` وليس `float`. حساب النقود بـ float يولّد فروقات دينار في التصريح G50.
+
+---
+
+## 5. الاختبارات الذهبية (Golden Tests) — إلزامية
+
+يجب أن يمرّ البرنامج هذه الاختبارات قبل أي إصدار. الأرقام محسوبة يدوياً ومطابقة للسلم الرسمي.
+
+### 5.1 اختبارات دالة IRG
+
+| # | الوعاء الخاضع للضريبة | IRG المتوقع | ما يختبره |
+|---|---|---|---|
+| T1 | 25 000,00 | **0,00** | الإعفاء الكامل |
+| T2 | 30 000,00 | **0,00** | حدّ الإعفاء بالضبط |
+| T3 | 30 010,00 | **7,71** | بداية التنعيم (اقتطاع رمزي) |
+| T4 | 33 000,00 | **1 328,55** | وسط شريحة التنعيم |
+| T5 | 35 000,00 | **2 070,00** | نهاية التنعيم = الحساب العادي (اختبار الاستمرارية) |
+| T6 | 40 000,00 | **3 100,00** | مطابق للمثال المنشور من طرف DGI |
+| T7 | 62 900,00 | **9 283,00** | شريحة 27% + سقف التخفيض 1 500 |
+| T8 | 200 000,00 | **51 100,00** | شرائح متعددة حتى 33% |
+
+**تفصيل T8 للتحقق:** 20 000×0% + 20 000×23% (=4 600) + 40 000×27% (=10 800) + 80 000×30% (=24 000) + 40 000×33% (=13 200) → إجمالي الضريبة قبل التخفيض 52 600، والتخفيض مسقوف عند 1 500 → **51 100,00**.
+
+### 5.2 اختبار كشف كامل (End-to-End)
+
+**المعطيات:** أجر قاعدي 45 000 · أقدمية 8 سنوات · مردودية 15% على (قاعدي+IEP) · 10 ساعات إضافية نهارية · سلة 250 دج × 22 يوم · نقل 3 000 · طفلان · لا تسبيقات.
+
+| العنصر | القيمة المتوقعة |
+|---|---|
+| الأجر الساعي | 259,62 |
+| IEP (8%) | 3 600,00 |
+| المردودية 15% × 48 600 | 7 290,00 |
+| ساعات إضافية (259,62 × 1,5 × 10) | 3 894,31 |
+| **وعاء CNAS** | **59 784,31** |
+| اقتطاع CNAS 9% | 5 380,59 |
+| السلة 5 500 + النقل 3 000 | 8 500,00 |
+| **الوعاء الخاضع للضريبة** | **62 903,72** → مقرّب: 62 900 |
+| IRG | 9 283,00 |
+| إجمالي المكاسب (مع المنح العائلية 600) | 68 884,31 |
+| **الصافي للدفع** | **54 220,72** |
+| تكلفة المستخدم | 68 884,31 + 14 946,08 + 298,92 |
+
+---
+
+## 6. قواعد التحقق (Validations / Garde-fous)
+
+يجب أن يمنع البرنامج الحفظ أو يعرض تحذيراً في هذه الحالات:
+
+| # | القاعدة | مستوى |
+|---|---|---|
+| V1 | إجمالي الأجر (عمل كامل، شهر كامل) < SNMG 24 000 | 🔴 منع |
+| V2 | وعاء CNAS < SNMG مع عقد بدوام كامل | 🔴 منع |
+| V3 | الصافي للدفع سالب | 🔴 منع |
+| V4 | الساعات الإضافية > 8 ساعات/أسبوع (20% من المدة القانونية) | 🟠 تحذير |
+| V5 | معامل الساعات الإضافية < 1,50 | 🔴 منع (مخالفة للمادة 32) |
+| V6 | رصيد العطلة المستهلك > 30 يوماً في السنة | 🟠 تحذير |
+| V7 | رُبريكة بدون `cotisable`/`imposable` | 🔴 منع |
+| V8 | مجموع الاقتطاعات (تسبيقات + أحكام) يتجاوز الحصة القابلة للحجز | 🟠 تحذير — النسبة القانونية تحتاج تأكيداً من نص تنظيمي |
+| V9 | تاريخ الكشف خارج نطاق صلاحية ملف الإعدادات المحمّل | 🔴 منع |
+| V10 | تغيير في `params_*.json` دون تغيير رقم النسخة | 🔴 منع |
+
+---
+
+## 7. الحقول والأزرار المطلوبة في الواجهة
+
+### شاشة «العامل»
+`الاسم` · `رقم الضمان الاجتماعي` · `تاريخ التوظيف` (يحسب الأقدمية آلياً) · `الصنف/الرقم الاستدلالي` (للقطاع العمومي) · `الأجر القاعدي` · `نوع العقد` (كامل/جزئي) · `عدد الأولاد المكفولين` · `RIB`
+
+### شاشة «متغيرات الشهر»
+`أيام/ساعات الحضور` · `ساعات الغياب` · `ساعات إضافية (نهار/ليل/عطلة)` · `أيام السلة` · `نسبة المردودية` · `تسبيقات` · `اقتطاعات أخرى`
+
+### الأزرار
+- 🔵 **[حساب الكشف]** — ينفّذ التسلسل [1]→[13] ويعرض تفصيل كل خطوة (مهم للمراجعة الجبائية).
+- 🟢 **[تثبيت الكشف]** — يجعله للقراءة فقط ويولّد رقماً متسلسلاً. لا يُعدَّل بعدها إلا بكشف تصحيحي.
+- ⚪ **[محاكاة إجمالي ← صافي]** و **[صافي ← إجمالي]** — العكسي يحتاج بحثاً تكرارياً (binary search) لأن IRG غير خطّي.
+- 🖨️ **[طباعة PDF]** — مع البيانات الإجبارية للمادة 34 من القانون 90-11.
+- 📤 **[تصدير DAC/DAS للـ CNAS]** و **[تصدير G50 للضرائب]** (الدفع قبل 20 من الشهر الموالي).
+- 📚 **[سجل التدقيق]** — تخزين نسخة ملف الإعدادات المستعملة مع كل كشف، وإلا لن تستطيع إعادة إنتاج كشف قديم.
+
+---
+
+## 8. أخطاء شائعة يجب أن يرفضها البرنامج صراحةً
+
+1. تطبيق نسبة 23% على كامل الأجر بدل الحساب بالشرائح.
+2. اعتبار السلة والنقل معفاتين من IRG.
+3. تطبيق التخفيض 40% على الأجر بدل الضريبة.
+4. استعمال 20 000 دج كـ SNMG (قديم — أُلغي في 01/01/2026).
+5. اعتبار «أول 4 ساعات إضافية بـ 50% والباقي 100%» — قاعدة فرنسية لا وجود لها في القانون الجزائري.
+6. حساب IRG قبل خصم CNAS.
+7. استعمال 26% كحصة المستخدم (الصحيح 25% + 0,5% خدمات اجتماعية = 34,5% إجمالي مع حصة العامل).
+8. تخزين معاملات القانون داخل الكود بدل ملف إعدادات مؤرَّخ.
+
+---
+
+## 9. إخلاء مسؤولية يجب إدراجه في المنتج
+
+> «هذا البرنامج أداة مساعدة على الحساب. المستخدم مسؤول عن مطابقة النتائج للتشريع الساري ولاتفاقيته الجماعية. تُراجَع المعاملات عند صدور كل قانون مالية.»
+
+وأضف في الواجهة **تاريخ آخر تحديث لملف المعاملات** ظاهراً بشكل دائم.
+
+---
+
+## 10. صياغة مقترحة للطلب الموجَّه لكلود كود
+
+> اقرأ الملف `SPEC_PAIE_DZ.md`. أنشئ وحدة `payroll/` تحتوي:
+> `config_loader.py` (تحميل المعاملات حسب تاريخ الكشف)، `rubriques.py`،
+> `calcul.py` (التسلسل [1]→[13])، `irg.py` (الدالة المرجعية)،
+> `validations.py` (V1→V10)، و `tests/test_golden.py` يطبّق حرفياً جداول القسم 5.
+> استعمل `Decimal` حصراً. لا تكتب أي رقم قانوني داخل الكود.
+> ابدأ بـ `irg.py` واجعل اختبارات T1→T8 تمرّ قبل الانتقال لبقية الوحدات.

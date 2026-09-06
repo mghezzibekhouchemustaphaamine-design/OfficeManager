@@ -176,6 +176,11 @@ class MaskedDateEntry(tk.Frame):
         # (أول رقم يمسح القديم بدل ما يضيف له).
         self._active = None
         self._active_fresh = False
+        # علم "ابدأ من جديد": يُضبط True عند رجوع حقيقي للخانة (Tab/نقرة)
+        # وهي معبّأة — أول رقم بعده يمسح التاريخ كله ويبدأ من اليوم، بدل
+        # ما يُرفض بصمت لأن قطعة "السنة" ممتلئة أصلاً (نفس مبدأ _day_fresh
+        # بـSplitDateEntry و_fresh بـMaskedTimeEntry).
+        self._fresh = False
         # عرض 10 بالضبط — "DD/MM/YYYY" أقصى محتوى ممكن، بلا أي فراغ زايد.
         self.entry = tk.Entry(self, textvariable=self.var, width=10, **_ENTRY_STYLE)
         self.entry.pack(side="left")
@@ -268,6 +273,7 @@ class MaskedDateEntry(tk.Frame):
                 self.entry.icursor(end)
                 self._active = seg
                 self._active_fresh = True
+                self._fresh = False  # تعديل قطعة وحيدة، مو إعادة كتابة الكل
                 return
 
     def _on_triple_click(self, _event):
@@ -275,6 +281,7 @@ class MaskedDateEntry(tk.Frame):
         self.entry.icursor(tk.END)
         self._active = None
         self._active_fresh = False
+        self._fresh = True  # تحديد الكل: أول رقم يبدأ تاريخاً جديداً
         return "break"
 
     def _on_focus_in(self, _event):
@@ -286,12 +293,22 @@ class MaskedDateEntry(tk.Frame):
         if select_all_on_real_focus(self.entry):
             self._active = None
             self._active_fresh = False
+            self._fresh = True
 
     # ---------- لوحة المفاتيح ----------
     def _on_key_press(self, event):
         self._resync_from_var()
 
         if event.keysym == "BackSpace":
+            if self._fresh:
+                # رجوع حقيقي لخانة معبّأة ثم Backspace: يمسح الكل ويبدأ من
+                # جديد (نفس مبدأ MaskedTimeEntry._fresh).
+                self._digits = {"day": "", "month": "", "year": ""}
+                self._active = None
+                self._active_fresh = False
+                self._fresh = False
+                self._refresh()
+                return "break"
             if self._active:
                 if self._active_fresh:
                     self._digits[self._active] = ""
@@ -307,6 +324,7 @@ class MaskedDateEntry(tk.Frame):
             return "break"
 
         if event.keysym == "Delete":
+            self._fresh = False
             if self._active:
                 self._digits[self._active] = ""
                 self._active_fresh = True
@@ -316,6 +334,7 @@ class MaskedDateEntry(tk.Frame):
             return "break"
 
         if event.char in (".", "/", "-"):
+            self._fresh = False
             seg = self._active or self._current_segment()
             digits = self._digits[seg]
             if seg != "year" and len(digits) == 1:
@@ -326,10 +345,20 @@ class MaskedDateEntry(tk.Frame):
             return "break"  # نتجاهلها بصمت لو ماكو قطعة ناقصة رقم وحيد حالياً
 
         if event.char and event.char.isdigit():
+            if self._fresh:
+                # أول رقم بعد رجوع حقيقي لخانة معبّأة: يبدأ تاريخاً جديداً
+                # من اليوم (بدل ما يُرفض لأن "السنة" ممتلئة 4 أرقام).
+                if not self._active:
+                    self._digits = {"day": "", "month": "", "year": ""}
+                self._fresh = False
             seg = self._active or self._current_segment()
             base = "" if (self._active == seg and self._active_fresh) else self._digits[seg]
             candidate = base + event.char
             if len(candidate) > self._max_len(seg):
+                return "break"
+            # السنة تبدأ بـ1 أو 2 فقط — أي سنة صالحة بمستنداتنا ضمن
+            # 1000‑2999 (ألفية/ألفينية)، فأول رقم غيرهما مرفوض حياً.
+            if seg == "year" and len(candidate) == 1 and candidate not in "12":
                 return "break"
             if seg in ("day", "month") and len(candidate) == 2:
                 lo, hi = (1, 31) if seg == "day" else (1, 12)
@@ -391,6 +420,7 @@ class MaskedDateEntry(tk.Frame):
         self._digits = {"day": f"{d.day:02d}", "month": f"{d.month:02d}", "year": f"{d.year:04d}"}
         self._active = None
         self._active_fresh = False
+        self._fresh = False
         self._refresh()
 
     def clear(self):
@@ -398,6 +428,7 @@ class MaskedDateEntry(tk.Frame):
         self._digits = {"day": "", "month": "", "year": ""}
         self._active = None
         self._active_fresh = False
+        self._fresh = False
         self._refresh()
 
     def set_readonly(self, readonly):
@@ -676,7 +707,11 @@ class SplitDateEntry(tk.Frame):
         bind_triple_click_select_all(self.month_entry)
 
         self.year_var = tk.StringVar()
-        year_vcmd = (self.register(lambda P: P == "" or (P.isdigit() and len(P) <= 4)), "%P")
+        # السنة: 4 أرقام كحد أقصى، وتبدأ بـ1 أو 2 فقط (1000‑2999) — نفس
+        # قيد MaskedDateEntry، موحّد لكل حقول التاريخ بالبرنامج.
+        year_vcmd = (self.register(
+            lambda P: P == "" or (P.isdigit() and len(P) <= 4 and P[0] in "12")
+        ), "%P")
         self.year_entry = tk.Entry(
             self, textvariable=self.year_var, width=4, validate="key", validatecommand=year_vcmd,
             **_ENTRY_STYLE,

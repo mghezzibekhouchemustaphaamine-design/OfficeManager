@@ -11,33 +11,48 @@
     "Loi n° 90-11 art. 31/32 (heures supplémentaires)",
     "Décret présidentiel n° 07-304 modifié (point indiciaire fonction publique)"
   ],
-
   "snmg_mensuel": 24000,
   "taux_horaire_snmg": 138.46,
   "heures_mois": 173.33,
   "duree_hebdo_legale": 40,
   "point_indiciaire": 45,
-
   "cnas": {
     "taux_salarie": 0.09,
     "taux_employeur": 0.25,
     "taux_oeuvres_sociales": 0.005,
     "appliquer_plancher_snmg": true
   },
-
   "irg": {
     "seuil_exoneration": 30000,
     "arrondi_assiette_dizaine_inferieure": true,
     "tranches_mensuelles": [
-      { "plafond": 20000,  "taux": 0.00 },
-      { "plafond": 40000,  "taux": 0.23 },
-      { "plafond": 80000,  "taux": 0.27 },
-      { "plafond": 160000, "taux": 0.30 },
-      { "plafond": 320000, "taux": 0.33 },
-      { "plafond": null,   "taux": 0.35 }
+      {
+        "plafond": 20000,
+        "taux": 0.0
+      },
+      {
+        "plafond": 40000,
+        "taux": 0.23
+      },
+      {
+        "plafond": 80000,
+        "taux": 0.27
+      },
+      {
+        "plafond": 160000,
+        "taux": 0.3
+      },
+      {
+        "plafond": 320000,
+        "taux": 0.33
+      },
+      {
+        "plafond": null,
+        "taux": 0.35
+      }
     ],
     "abattement": {
-      "taux": 0.40,
+      "taux": 0.4,
       "min_mensuel": 1000,
       "max_mensuel": 1500,
       "note": "Abattement de 40% SUR L'IMPÔT calculé, jamais sur le salaire."
@@ -45,40 +60,34 @@
     "lissage_standard": {
       "borne_inf": 30000,
       "borne_sup": 35000,
-      "coef_a": 2.6862745098039216,
+      "coef_a": 2.686274509803922,
       "coef_b": 3490.625,
       "bornes_exclusives": true,
       "note": "IRG = IRG1 * (137/51) - (27925/8) — art. 31 LF 2022. Bornes STRICTES : 30000 < R < 35000. Résultat plancher à 0."
     }
   },
-
   "heures_supplementaires": {
-    "majoration_min_legale": 0.50,
-    "taux_jour": 1.50,
-    "taux_nuit": 2.00,
-    "taux_repos_ferie": 2.00,
+    "majoration_min_legale": 0.5,
+    "taux_jour": 1.5,
+    "taux_nuit": 2.0,
+    "taux_repos_ferie": 2.0,
     "plafond_hebdo_heures": 8,
-    "note": "Seul 50% est légal (art. 32 loi 90-11). Les taux 1.75 / 2.00 relèvent de la convention collective — à surcharger par entreprise."
+    "note": "Seul 50% est légal (art. 32 loi 90-11) : c'est un MINIMUM opposable. Les taux effectifs (1.50/2.00) sont des paramètres de CONVENTION — voir §1.2."
   },
-
   "iep": {
     "taux_par_annee": 0.01,
     "plafond_taux": null,
-    "note": "Aucun taux fixé par la loi. 1%/an = usage courant, modifiable par convention collective."
+    "note": "Aucun taux ni base fixés par la loi. La base (brute ou après absences) est un paramètre de CONVENTION, stocké par entreprise — voir §1.2 de la spec."
   },
-
   "prime_rendement": {
-    "base_calcul": ["SAL_BASE", "IEP"],
-    "taux_defaut": 0.00,
-    "note": "base_calcul paramétrable par entreprise : certaines conventions retiennent SAL_BASE seul."
+    "taux_defaut": 0.0,
+    "note": "Base et taux relèvent de la CONVENTION de l'entreprise, pas de la loi — voir §1.2."
   },
-
   "conge_annuel": {
     "jours_par_mois": 2.5,
     "plafond_jours_an": 30,
     "methode_indemnite": "1/12 de la rémunération totale de l'année de référence"
   },
-
   "allocations_familiales": {
     "montant_par_enfant": 300,
     "montant_majore": 600,
@@ -86,15 +95,29 @@
     "statut": "A_VERIFIER_CNAS",
     "note": "N'entre ni dans l'assiette CNAS ni dans l'assiette IRG. Ajouté au net à payer uniquement."
   },
-
   "arrondis": {
     "monetaire_decimales": 2,
     "mode": "ROUND_HALF_UP",
-    "note": "Utiliser Decimal exclusivement. Jamais de float."
+    "note": "Utiliser Decimal exclusivement. Jamais de float. Aucun arrondi intermédiaire : seuls les montants de ligne sont arrondis (voir §5.4).",
+    "pas_de_tour_intermediaire": true
   },
-
   "echeances_declaratives": {
     "g50_dgi": "avant le 20 du mois suivant",
     "dac_cnas": "selon effectif (mensuelle ou trimestrielle)"
-  }
+  },
+  "jours_mois": 30,
+  "absences": {
+    "methode": "les deux",
+    "note": "Retenue jour = salaire_base/jours_mois ; retenue heure = salaire_base/heures_mois. Les deux rubriques coexistent, l'employeur utilise celle qui convient."
+  },
+  "regime_irg": {
+    "valeurs_supportees": [
+      "BAREME"
+    ],
+    "valeurs_reservees": [
+      "TAUX_10"
+    ],
+    "note": "TAUX_10 (retenue libératoire 10% sur primes à périodicité non mensuelle) réservé, non supporté : doit être refusé explicitement."
+  },
+  "couche": "LEGALE — ce fichier ne contient que ce qui est identique pour toute l'Algérie. Les règles propres à chaque entreprise vivent dans la table convention (voir §1.2 de la spec)."
 }

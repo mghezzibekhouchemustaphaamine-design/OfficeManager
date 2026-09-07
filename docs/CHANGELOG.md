@@ -1363,6 +1363,66 @@ PySide6 مقابل Tkinter قبل أي قرار نقل. **PoC فقط، لا يم
 - **الاختبارات: `test_golden.py` → 14/14 · `python -m unittest` → Ran 5, OK**
   (لم يتغيّر شيء في `programme/`).
 
+---
+
+## مرجع ثلاثة وثلاثون — 2026-09-07: طبقة تخزين وحدة الأجور (المرحلة 2 — الجزء أ)
+
+توسيع `programme/payroll/repository.py` (كان يحوي نظام الهجرات فقط) بطبقة
+قراءة/كتابة كاملة للجداول الست، تمهيداً لواجهة الأجور. **لا مساس بمحرّك
+الحساب** (`calc.py` / `irg.py`) ولا بـ`programme/database.py`.
+
+### `transaction()` — معاملة ذرّية
+
+سياق (`contextmanager`): `commit` عند النجاح، `rollback` عند أي استثناء،
+ثم إعادة رفعه. `conn=None` → يفتح اتصالاً خاصاً (يُفعِّل
+`PRAGMA foreign_keys`) ويغلقه؛ `conn` مُمرَّر → يُستعمل بلا إغلاق. **كل
+كتابة في الوحدة تمرّ من هنا**؛ ودمج «كشف + كل أسطره» في `create_bulletin`
+معاملة واحدة — فشل أي سطر يتراجع بالكشف كلّه.
+
+### دوال CRUD (كلّها تقبل `conn=None`)
+
+| الجدول | الدوال |
+|---|---|
+| `entreprise` | `create_entreprise` · `get_entreprise` · `list_entreprises` · `update_entreprise` |
+| `convention` | `create_convention` (نسخة جديدة `version+1` دائماً) · `get_active_convention` · `list_conventions` · `confirm_convention` |
+| `rubrique_catalogue` | `create_rubrique` · `get_rubrique` · `list_rubriques` · `update_rubrique` |
+| `employe` | `create_employe` · `get_employe` · `list_employes` · `update_employe` |
+| `bulletin` (+`bulletin_ligne`) | `create_bulletin` (كشف + أسطره في معاملة) · `get_bulletin` (مع `lignes`) · `list_bulletins` · `fige_bulletin` |
+
+### قواعد التخزين المطبَّقة
+
+- **المال والنسب نصّاً TEXT**: الكتابة عبر `str(Decimal(str(v)))`،
+  القراءة `Decimal(value)`. `float` مرفوض صراحةً على الكتابة
+  (`TypeError`). تحقّق: القيمة المخزَّنة `"30000.33"` نصّاً بلا انزياح
+  ثنائي، والمقروءة `Decimal` (لا `float`).
+- **`convention` غير قابلة للتعديل** (trigger `convention_no_update`):
+  حتى التأكيد — `confirm_convention` يُدرج نسخة جديدة `version+1` بنفس
+  المعاملات و`confirme=1` (لا `UPDATE`). V15 (منع كشف لاتفاقية غير
+  مؤكَّدة) يبقى منطق واجهة؛ الطبقة توفّر `confirme` مقروءاً صحيحاً.
+- **`cotisable`/`imposable` إلزاميان بلا افتراض** (SPEC §2.1 / V7):
+  `create_rubrique` ترفع `ValueError` إن غاب أحدهما — قبل أي كتابة.
+- **`seed_catalogue(entreprise_id)`**: يُحمّل الجدول المرجعي الافتراضي
+  (SPEC §2.2) لشركة جديدة — **25 رُبريكة** (27 صفّاً في المواصفة ناقص
+  CNAS و IRG: هما السطران النظاميّان [B]/[D] يولّدهما المحرّك، ولا
+  ينطبق عليهما سؤالا cotisable/imposable). كل رُبريكة بـ`regime_irg =
+  'BAREME'`، ومنحتا السلة/النقل `cotisable=0, imposable=1`. لا يُكرِّر
+  إن كان للشركة كتالوج (يرجّع 0). كل الإدراج في معاملة واحدة.
+
+### التحقّق
+
+- `grep -rn "import tkinter\|from tkinter\|import ui2\|from ui2\|^\s*import ui[0-9]*\.\|^\s*from ui[0-9]*[. ]" programme/payroll/`
+  → **فارغ**. `calc.py`/`irg.py` لا يستوردان `repository`.
+- **اختبارات جديدة**: `programme/payroll/tests/test_repository.py` — 8
+  اختبارات على قاعدة `:memory:` مستقلّة لكلٍّ:
+  دورة كاملة (شركة → بذرة → عامل → كشف بأسطره → تثبيت يولّد
+  `numero_serie`) · كل المبالغ ترجع `Decimal` لا `float` · `float` مرفوض
+  على الكتابة · `transaction` تتراجع كلّياً عند خرق `CHECK` في سطر (لا
+  كشف يتيم) · مسار `conn=None` يعمل `commit`/`rollback`/`close` ·
+  `convention` يرفض `UPDATE` · V7 يرفض رُبريكة بلا `cotisable`/`imposable`.
+  → `python -m unittest programme.payroll.tests.test_repository` = Ran 8, OK.
+- **اختبارات المحرّك خضراء**: `test_golden.py` → 14/14 ·
+  `python -m unittest programme.payroll.tests.test_golden` → Ran 5, OK.
+
 ### الملفات المتأثرة
 
 `ui2/**` (جديد)، `demos/ui2_gallery.py` (جديد). لا شيء في `programme/`

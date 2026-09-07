@@ -257,8 +257,10 @@ class Rubrique:
 
 ```python
 def zone_de(r: Rubrique) -> str:
-    if r.sens == "RETENUE" and r.code not in ("CNAS", "IRG"):
-        return "Z4"
+    if r.sens == "RETENUE":
+        # اقتطاع خاضع للاشتراك (غياب/تأخّر) → Z1 بإشارة سالبة،
+        # لأنه يُطرح داخل [A] = ΣZ1 قبل حساب CNAS.
+        return "Z1" if r.cotisable else "Z4"
     if r.cotisable:
         return "Z1"
     return "Z2" if r.imposable else "Z3"

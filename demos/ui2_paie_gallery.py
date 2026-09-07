@@ -143,21 +143,49 @@ def _selftest() -> int:
     assert repository.get_bulletin(bid, conn=conn)["etat"] == "FIGE"
     print(f"[selftest] تثبيت → رقم السلسلة {numero}")
 
-    # V15: زبون عابر بلا اتفاقية مؤكَّدة يُمنع حفظه
+    # V15: زبون مسجَّل باتفاقية غير مؤكَّدة يُمنع حفظه — بلا أثر جانبي
+    reg_id = repository.create_entreprise(
+        {"raison_sociale": "SARL غير مؤكَّدة", "transient": 0}, conn=conn)
+    repository.seed_catalogue(reg_id, conn=conn)
+    repository.create_convention(reg_id, {}, conn=conn)     # confirme=0
     scr2 = BulletinScreen(conn=conn)
-    scr2._client_id = None
-    scr2._header.set_values({"client_transient": "زبون عابر س",
-                             "employe_nom": "ع. فلان", "periode": "2026-09"})
+    scr2._client_id = reg_id
+    scr2._header.set_values({"employe_nom": "ع. فلان", "periode": "2026-09"})
     scr2._rows[0].form.set_values({"montant": "40000"})
     scr2.recompute()
+    n_ent = len(repository.list_entreprises(actif_only=False, conn=conn))
+    n_emp = len(repository.list_employes(reg_id, conn=conn))
     _captured.clear()
-    assert scr2.save() is None, "V15 لم تمنع الحفظ لزبون عابر غير مؤكَّد"
+    assert scr2.save() is None, "V15 لم تمنع الحفظ"
     assert any("V15" in t for t, _ in _captured), _captured
     assert not scr2._warnbar.isHidden()
-    print("[selftest] V15: حفظ كشف لزبون عابر غير مؤكَّد → مُنِع برسالة صريحة")
+    # لا أثر جانبي: لا صفّ entreprise/employe جديد بعد رفض V15
+    assert len(repository.list_entreprises(actif_only=False, conn=conn)) == n_ent
+    assert len(repository.list_employes(reg_id, conn=conn)) == n_emp
+    print("[selftest] V15: حفظ ممنوع + لا صفّ entreprise/employe يتيم")
+
+    # V16: فترة بلا ملف معاملات → الحفظ مرفوض، لا أثر جانبي
+    scr2b = BulletinScreen(conn=conn)
+    scr2b._header.set_values({"employe_nom": "ع. فلان", "periode": "1990-01"})
+    scr2b._rows[0].form.set_values({"montant": "40000"})
+    scr2b.recompute()
+    n_ent = len(repository.list_entreprises(actif_only=False, conn=conn))
+    _captured.clear()
+    assert scr2b.save() is None
+    assert any("V16" in t for t, _ in _captured), _captured
+    assert len(repository.list_entreprises(actif_only=False, conn=conn)) == n_ent
+    print("[selftest] V16: فترة بلا معاملات → حفظ مرفوض، لا أثر جانبي")
 
     # سطر الأقدمية §1.2.4: اقتراح تلقائي · تمييز «معدَّلة يدوياً» · العودة
     scr3 = BulletinScreen(conn=conn)
+    # الترويسة الآن بلا تاريخ دخول افتراضي → لا اقتراح حتى يُدخَل
+    assert scr3._header.values()["employe_date_entree"] == ""
+    scr3.add_line("iep")
+    iep_row0 = scr3._rows[-1]
+    assert iep_row0.form.values()["taux"] == ""
+    assert "حدّد تاريخ الدخول" in iep_row0._iep_hint.text()
+    scr3._remove_line(iep_row0)
+
     scr3._header.set_values({"employe_nom": "IEP ت", "periode": "2026-09",
                              "employe_date_entree": "2016-06-14"})
     scr3._rows[0].form.set_values({"montant": "40000"})

@@ -99,11 +99,13 @@ def _annees_mois(debut: date, fin: date) -> Tuple[int, int]:
 
 def suggest_iep_taux(*, date_entree: str, periode: str, cfg: Dict,
                      employe_taux_iep=None) -> IepSuggestion:
-    """يقترح نسبة الأقدمية (§1.2.4). ثلاث طبقات:
+    """يقترح نسبة الأقدمية (§1.2.4). الطبقات **بالترتيب**:
 
-      1) ``employe.taux_iep`` إن ضُبطت → تُستعمل مباشرةً،
-      2) وإلا: عدد السنوات الكاملة × ``cfg.iep.taux_par_annee``،
-      3) إن كانت الأقدمية < ``cfg.iep.anciennete_minimale_annees`` → 0%.
+      أ) ``employe.taux_iep`` مضبوطة → تُستعمل مباشرةً، وتعلو على كلّ
+         شيء (قرار صريح في بطاقة العامل، حتى تحت الحدّ الأدنى)،
+      ب) وإلا والأقدمية < ``cfg.iep.anciennete_minimale_annees`` → 0%
+         مع السبب،
+      ج) وإلا → السنوات الكاملة × ``cfg.iep.taux_par_annee``.
 
     النسبة **مقترَحة لا مفروضة** — الشاشة تعرضها والمستخدم حرّ يعدّلها."""
     debut = _period_end(str(date_entree)) if date_entree else None
@@ -117,16 +119,19 @@ def suggest_iep_taux(*, date_entree: str, periode: str, cfg: Dict,
     min_an = int(_d(cfg["iep"]["anciennete_minimale_annees"]))
     par_an = _d(cfg["iep"]["taux_par_annee"])
 
+    # أ) بطاقة العامل تعلو على كلّ شيء
+    if employe_taux_iep not in (None, ""):
+        return IepSuggestion(
+            taux=_d(employe_taux_iep), annees=annees, mois=mois, depuis=depuis,
+            source="employe", raison="من بطاقة العامل (employe.taux_iep)")
+    # ب) تحت الحدّ الأدنى → 0%
     if annees < min_an:
         return IepSuggestion(
             taux=_ZERO, annees=annees, mois=mois, depuis=depuis,
             source="sous_minimum",
             raison=(f"الأقدمية ({annees} سنة و{mois} شهر) دون الحدّ الأدنى "
                     f"({min_an} سنة) — المقترَح 0%"))
-    if employe_taux_iep not in (None, ""):
-        return IepSuggestion(
-            taux=_d(employe_taux_iep), annees=annees, mois=mois, depuis=depuis,
-            source="employe", raison="من بطاقة العامل (employe.taux_iep)")
+    # ج) البارِم
     return IepSuggestion(
         taux=annees * par_an, annees=annees, mois=mois, depuis=depuis,
         source="bareme",

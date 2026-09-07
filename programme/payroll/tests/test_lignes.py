@@ -83,6 +83,16 @@ class TestIepSuggestion(unittest.TestCase):
         self.assertEqual(s.source, "sous_minimum")
         self.assertIn("الحدّ الأدنى", s.raison)
 
+    def test_taux_employe_precede_le_minimum(self):
+        """ترتيب الطبقات: بطاقة العامل تعلو على الحدّ الأدنى — عامل
+        بـtaux_iep=0.0708 وأقدمية 8 أشهر → 0.0708 لا 0."""
+        s = lignes.suggest_iep_taux(
+            date_entree="2025-01-01", periode="2025-09", cfg=CFG,
+            employe_taux_iep="0.0708")
+        self.assertEqual(s.taux, D("0.0708"))
+        self.assertEqual(s.source, "employe")
+        self.assertEqual((s.annees, s.mois), (0, 8))
+
     def test_sans_date_pas_de_suggestion(self):
         s = lignes.suggest_iep_taux(date_entree="", periode="2025-07", cfg=CFG)
         self.assertIsNone(s.taux)

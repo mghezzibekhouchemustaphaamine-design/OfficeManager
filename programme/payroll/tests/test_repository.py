@@ -224,6 +224,38 @@ class TestRepositoryCycle(unittest.TestCase):
             c.execute("SELECT COUNT(*) FROM bulletin_ligne").fetchone()[0], 0)
         self.assertEqual(repo.list_bulletins(emp_id, conn=c), [])
 
+    def test_systeme_lignes_doivent_matcher_les_totaux(self):
+        """حارس التباعد (§2.3.1): سطر نظامي [A]..[E] لا يطابق
+        total_a..net_e → ``ValueError`` قبل أي كتابة."""
+        c = self.conn
+        ent_id = repo.create_entreprise({"raison_sociale": "SG"}, conn=c)
+        emp_id = repo.create_employe(ent_id, {"nom": "SG"}, conn=c)
+        bull = {"employe_id": emp_id, "periode": "2026-04",
+                "params_version": "2026.1", "convention_version": 1,
+                "total_a": Decimal("50000.00"), "total_b": Decimal("4500.00"),
+                "total_c": Decimal("45500.00"), "total_d": Decimal("6000.00"),
+                "net_e": Decimal("39500.00")}
+        good = [{"ordre_affichage": i, "zone": "SYSTEME", "ligne_systeme": code,
+                 "code_snapshot": f"[{code}]", "libelle_snapshot": code,
+                 "sens_snapshot": "GAIN", "montant": m}
+                for i, (code, m) in enumerate(
+                    [("A", Decimal("50000.00")), ("B", Decimal("4500.00")),
+                     ("C", Decimal("45500.00")), ("D", Decimal("6000.00")),
+                     ("E", Decimal("39500.00"))])]
+        # مطابق → ينجح
+        bid = repo.create_bulletin(bull, good, conn=c)
+        self.assertIsInstance(bid, int)
+
+        # [C] مُتباعد بسنتيم → يُرفَض، ولا صفّ جديد
+        bad = [dict(g) for g in good]
+        bad[2]["montant"] = Decimal("45500.01")
+        n_before = c.execute("SELECT COUNT(*) FROM bulletin").fetchone()[0]
+        with self.assertRaises(ValueError):
+            repo.create_bulletin(
+                dict(bull, periode="2026-05"), bad, conn=c)
+        self.assertEqual(
+            c.execute("SELECT COUNT(*) FROM bulletin").fetchone()[0], n_before)
+
     def test_transaction_own_connection_commits_then_closes(self):
         """مسار ``conn=None``: :func:`transaction` تفتح اتصالاً عبر
         ``programme.database.get_connection``، ثم ``commit`` عند النجاح و

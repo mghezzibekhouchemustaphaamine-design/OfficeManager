@@ -685,11 +685,20 @@ _LIGNE_COLS = (
 )
 _LIGNE_MONEY = ("base", "taux", "montant")
 
+#  الأسطر النظامية ↔ مجاميع الكشف (§2.3.1). كلاهما يُخزَّن: الأسطر
+#  لإعادة الطباعة الحرفية، والمجاميع للاستعلام — ويجب ألّا يتباعدا.
+_SYS_LIGNE_TO_TOTAL = {"A": "total_a", "B": "total_b", "C": "total_c",
+                       "D": "total_d", "E": "net_e"}
+
 
 def create_bulletin(bulletin: Dict, lignes: Iterable[Dict],
                     conn: Optional[sqlite3.Connection] = None) -> int:
     """يُدرج الكشف وكلّ أسطره في **معاملة واحدة**. فشل أي سطر (خرق
-    ``CHECK`` مثلاً) يتراجع بالكشف كلّه — لا كشف بلا أسطره ولا العكس."""
+    ``CHECK`` مثلاً) يتراجع بالكشف كلّه — لا كشف بلا أسطره ولا العكس.
+
+    حارس اتّساق: كل سطر نظامي ``ligne_systeme`` في ``A..E`` يجب أن
+    يطابق مبلغُه ``total_a..net_e`` المقابل — يُرفَع ``ValueError`` عند
+    الاختلاف قبل أي كتابة."""
     b = dict(bulletin)
     for f in _BULLETIN_MONEY:
         if f in b and b[f] is not None:
@@ -697,6 +706,22 @@ def create_bulletin(bulletin: Dict, lignes: Iterable[Dict],
     av = b.get("avertissements_json")
     if av is not None and not isinstance(av, str):
         b["avertissements_json"] = json.dumps(av, ensure_ascii=False)
+
+    lignes = [dict(ln) for ln in lignes]
+
+    # --- حارس التباعد بين bulletin_ligne و bulletin.total_* ---
+    for ln in lignes:
+        code = ln.get("ligne_systeme")
+        tkey = _SYS_LIGNE_TO_TOTAL.get(code)
+        if tkey is None:
+            continue
+        ligne_m = _money(ln.get("montant", "0"))
+        total_m = b.get(tkey)
+        if total_m is None or ligne_m != total_m:
+            raise ValueError(
+                f"عدم اتّساق الكشف: السطر النظامي [{code}] = {ligne_m} "
+                f"≠ {tkey} = {total_m}. الأسطر والمجاميع يجب أن تتطابق.")
+
     with transaction(conn) as c:
         cur = c.cursor()
         bid = _insert(cur, "bulletin", _BULLETIN_COLS, b)

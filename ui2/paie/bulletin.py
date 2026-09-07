@@ -10,6 +10,7 @@
 ``lignes``، ويقفز السطر تلقائياً إلى منطقته (§2.3.2). الأسطر النظامية
 ‎[A]…[E]‎ مقفلة. الأجر القاعدي يُضاف آلياً ولا يُحذف.
 """
+from datetime import date
 from decimal import Decimal
 from typing import Dict, List, Optional
 
@@ -32,7 +33,7 @@ _MENU_BASE = ["salaire_base", "abs_jours", "abs_heures", "retard",
               "hs_50", "hs_100", "iep", "pri", "panier", "transport", "avance"]
 _MENU_AUTRES = ["nuit", "zone", "interim", "mutuelle", "opposition",
                 "syndicat", "conge_paye", "alloc_fam"]
-_MENU_LIBRE = ["libre"]     # يظهر فقط بعد lignes.register_free_line()
+_MENU_LIBRE = ["libre"]
 
 
 class _LineRow(QWidget):
@@ -142,13 +143,16 @@ class BulletinScreen(QWidget):
         self._act_pdf = self.toolbar.add(ToolAction("طباعة PDF", self._print_pdf))
 
         # ---------- الترويسة: الزبون / العامل / الفترة ----------
+        #  لا قيم افتراضية موحِية: تاريخ الدخول فارغ (فيبقى اقتراح
+        #  الأقدمية «حدّد تاريخ الدخول»)، والفترة = الشهر الحالي المحسوب.
         self._header = Form([
             Field("client_registered", "زبون مسجَّل", kind="choice", choices=[]),
             Field("client_transient", "زبون عابر (اسم حرّ)"),
             Field("employe_nom", "العامل — اللقب والاسم", required=True),
-            Field("employe_date_entree", "تاريخ الدخول", kind="date",
-                  default="2016-06-14"),
-            Field("periode", "الفترة (YYYY-MM)", required=True, default="2026-09"),
+            Field("employe_date_entree", "تاريخ الدخول (YYYY-MM-DD)",
+                  placeholder="YYYY-MM-DD"),
+            Field("periode", "الفترة (YYYY-MM)", required=True,
+                  default=date.today().strftime("%Y-%m")),
         ], self)
         self._header.widget("client_registered").currentTextChanged.connect(
             self._on_client_changed)
@@ -233,17 +237,6 @@ class BulletinScreen(QWidget):
     def _active_client_row(self) -> Optional[dict]:
         return next((c for c in self._clients
                      if c["id"] == self._client_id), None)
-
-    def _resolve_client_id(self) -> int:
-        """يرجّع id زبون صالح للحفظ: المسجَّل المختار، أو يُنشئ زبوناً
-        عابراً من الاسم الحرّ، أو يضمن الزبون الافتراضي."""
-        if self._client_id is not None:
-            return self._client_id
-        free = self._header.values().get("client_transient", "").strip()
-        if free:
-            return repository.create_entreprise(
-                {"raison_sociale": free, "transient": 1}, conn=self._conn)
-        return repository.ensure_default_client(conn=self._conn)
 
     def _promote(self):
         row = self._active_client_row()
@@ -452,23 +445,16 @@ class BulletinScreen(QWidget):
             self._warnbar.hide()
 
     # =============================== الحفظ / التثبيت ===============================
-    def _persist_payload(self, employe_id: int):
+    def _persist_payload(self, employe_id: int, params_version: str,
+                         conv: dict):
         v = self._header.values()
         view = self._view
-        cfg_version = ""
-        try:
-            cfg_version = str(config_loader.load_params(
-                f"{v['periode']}-01").get("version", ""))
-        except Exception:                              # noqa: BLE001
-            pass
-        conv = (repository.get_active_convention(self._client_id,
-                                                 conn=self._conn) or {})
         bulletin = {
             "employe_id": employe_id,
             "periode": v["periode"],
             "type": "NORMAL",
             "etat": "CALCULE",
-            "params_version": cfg_version or "?",
+            "params_version": params_version,
             "convention_version": int(conv.get("version", 1)),
             "total_a": view.a, "total_b": view.b, "total_c": view.c,
             "total_d": view.d, "net_e": view.e,
@@ -503,6 +489,7 @@ class BulletinScreen(QWidget):
         return bulletin, out_lignes
 
     def save(self) -> Optional[int]:
+        # ===== مرحلة التحقّق — لا كتابة واحدة قبل اجتيازها كلّها =====
         if self._readonly:
             warn(self, "حفظ", ["الكشف مثبَّت — للقراءة فقط."])
             return None
@@ -510,11 +497,25 @@ class BulletinScreen(QWidget):
         if errs:
             warn(self, "حفظ الكشف", errs)
             return None
+
+        v = self._header.values()
+
+        # V16: نسخة المعاملات إلزامية وحقيقية — لا قيمة بديلة («?»).
+        #  يُفحَص قبل «لا نتيجة حساب» لأنّ فشل تحميل المعاملات هو سببها.
+        try:
+            params_version = str(
+                config_loader.load_params(f"{v['periode']}-01")["version"])
+        except Exception as exc:                        # noqa: BLE001
+            warn(self, "نسخة المعاملات غير محدَّدة (V16)", [
+                f"تعذّر تحميل معاملات الفترة «{v['periode']}»: {exc}",
+                "لا يُحفَظ كشف بلا نسخة معاملات حقيقية — صحّح الفترة."])
+            return None
+
         if self._view is None:
             warn(self, "حفظ الكشف", ["لا نتيجة حساب — أضف أسطراً صحيحة."])
             return None
 
-        # V7: يُمنع حفظ كشف فيه سطر حرّ غير مصنَّف صراحةً
+        # V7: سطر حرّ غير مصنَّف صراحةً
         unclassified = self._libre_unclassified()
         if unclassified:
             try:
@@ -526,16 +527,34 @@ class BulletinScreen(QWidget):
                     f"عدد الأسطر الحرّة بلا تصنيف: {len(unclassified)}."])
             return None
 
-        client_id = self._resolve_client_id()
-        # V15: يُمنع توليد كشف لشركة اتفاقيتها غير مؤكَّدة
-        conv = repository.get_active_convention(client_id, conn=self._conn)
-        if not conv or not conv.get("confirme"):
+        # الزبون + اتفاقيته — بلا إنشاء زبون عابر في هذه المرحلة
+        free = v.get("client_transient", "").strip()
+        if self._client_id is not None:
+            client_id, is_new = self._client_id, False
+            conv = repository.get_active_convention(client_id, conn=self._conn)
+        elif not free:
+            client_id = repository.ensure_default_client(conn=self._conn)
+            is_new = False
+            conv = repository.get_active_convention(client_id, conn=self._conn)
+        else:
+            client_id, is_new, conv = None, True, None
+
+        # V15 قبل أي كتابة — للزبون المسجَّل/الافتراضي
+        if not is_new and (not conv or not conv.get("confirme")):
             warn(self, "الاتفاقية غير مؤكَّدة (V15)", [
                 "لا يمكن حفظ كشف لهذا الزبون قبل تأكيد معاملات اتفاقيته.",
                 "أكِّد الاتفاقية من إعداداتها ثم أعد المحاولة."])
             return None
 
-        v = self._header.values()
+        # ===== كل التحقّقات مرّت — من هنا فقط تبدأ الكتابة =====
+        if is_new:
+            client_id = repository.create_entreprise(
+                {"raison_sociale": free, "transient": 1}, conn=self._conn)
+            repository.seed_catalogue(client_id, conn=self._conn)
+            repository.create_convention(
+                client_id, {"confirme": 1}, conn=self._conn)
+            conv = repository.get_active_convention(client_id, conn=self._conn)
+
         employes = repository.list_employes(client_id, conn=self._conn)
         match = next((e for e in employes
                       if e["nom"] == v["employe_nom"]), None)
@@ -544,10 +563,11 @@ class BulletinScreen(QWidget):
         else:
             employe_id = repository.create_employe(client_id, {
                 "nom": v["employe_nom"],
-                "date_entree": v["employe_date_entree"],
+                "date_entree": v["employe_date_entree"] or None,
             }, conn=self._conn)
 
-        bulletin, out_lignes = self._persist_payload(employe_id)
+        bulletin, out_lignes = self._persist_payload(
+            employe_id, params_version, conv or {})
         self._bulletin_id = repository.create_bulletin(
             bulletin, out_lignes, conn=self._conn)
         self._client_id = client_id

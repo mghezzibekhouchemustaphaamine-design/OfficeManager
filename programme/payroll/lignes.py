@@ -177,6 +177,12 @@ class LineType:
     resolve: ResolveFn
     code: str = ""
     system: bool = False            # الأجر القاعدي: يُضاف آلياً، لا يُحذف
+    unique: bool = True             # نوع لا يُضاف مرّتين (الاستثناء: التسبيق والسطر الحرّ)
+    value_key: str = ""             # الحقل الذي يُعدّ السطر «فارغاً» إن خلا (افتراضاً fields[0])
+
+    # ------- الحقل الحامل للقيمة -------
+    def primary_key(self) -> str:
+        return self.value_key or (self.fields[0].key if self.fields else "")
 
     # ------- المنطقة تُشتقّ، لا تُختار -------
     def zone(self, values: Dict) -> str:
@@ -296,6 +302,24 @@ def _r_hs(res, v, m):
     return lignes[i] if i is not None and 0 <= i < len(lignes) else _ZERO
 
 
+#  أسطر الغياب: كل سطر يعرض **حصّته هو** — لا مجموع رُبريكته. يُحسَب من
+#  قيمة السطر بنفس معادلة المحرّك ([2b]/[2c]) وبنفس قاعدة عدم التقريب
+#  الوسيط (§5.4): معدّل بدقّة كاملة × كمّية السطر، ثم ``da`` مرّة واحدة.
+#  (أنواع الغياب فريدة — سطر واحد لكل نوع — فحصّة السطر = مجموع الرُبريكة،
+#  لكن الصيغة الصحيحة هي حصّة السطر لا قراءة المجموع.)
+
+def _r_abs_jours(res, v, m):
+    return da(res.taux_journalier * _v(v, "jours"))
+
+
+def _r_abs_heures(res, v, m):
+    return da(res.taux_horaire * _v(v, "heures"))
+
+
+def _r_retard(res, v, m):
+    return da(res.taux_horaire * _v(v, "heures"))
+
+
 LINE_TYPES: Dict[str, LineType] = {
     "salaire_base": LineType(
         "salaire_base", "الأجر القاعدي", "GAIN", 1, 1, True, "base",
@@ -305,18 +329,17 @@ LINE_TYPES: Dict[str, LineType] = {
     "abs_jours": LineType(
         "abs_jours", "اقتطاع أيام غياب", "RETENUE", 1, 1, False, "base",
         (LineField("jours", "عدد الأيام", "amount"),),
-        _fold_abs_jours, lambda res, v, m: res.retenue_jours_abs, code="4000"),
+        _fold_abs_jours, _r_abs_jours, code="4000"),
 
     "abs_heures": LineType(
         "abs_heures", "اقتطاع ساعات غياب", "RETENUE", 1, 1, False, "base",
         (LineField("heures", "عدد الساعات", "amount"),),
-        _fold_abs_heures, lambda res, v, m: res.retenue_abs_irreguliere,
-        code="4010"),
+        _fold_abs_heures, _r_abs_heures, code="4010"),
 
     "retard": LineType(
         "retard", "اقتطاع ساعات تأخّر", "RETENUE", 1, 1, False, "base",
         (LineField("heures", "عدد الساعات", "amount"),),
-        _fold_retard, lambda res, v, m: res.retenue_retard, code="4020"),
+        _fold_retard, _r_retard, code="4020"),
 
     "hs_50": LineType(
         "hs_50", "ساعات إضافية 50%", "GAIN", 1, 1, False, "base",
@@ -354,38 +377,16 @@ LINE_TYPES: Dict[str, LineType] = {
         "avance", "تسبيق على الراتب", "RETENUE", 0, 0, False, "base",
         (LineField("montant", "المبلغ", "amount"),),
         _fold_retenue("AVANCE", "تسبيق على الراتب"),
-        _r_input_round("montant"), code="5010"),
+        _r_input_round("montant"), code="5010", unique=False),
 
     # ---------------- أخرى ----------------
+    #  حُذفت نهائياً (المراجعة الميدانية): منحة المنطقة · منحة إنابة/معلّم
+    #  تمهين · اقتطاع تعاضدية · اقتطاع بحكم قضائي — يغطّيها السطر الحرّ.
     "nuit": LineType(
         "nuit", "منحة ليلية", "GAIN", 1, 1, True, "autres",
         (LineField("montant", "المبلغ", "amount"),),
         _fold_prime("NUIT", "منحة ليلية", 1, 1),
         _r_input_round("montant"), code="1070"),
-
-    "zone": LineType(
-        "zone", "منحة المنطقة", "GAIN", 0, 0, True, "autres",
-        (LineField("montant", "المبلغ", "amount"),),
-        _fold_prime("ZONE", "منحة المنطقة", 0, 0),
-        _r_input_round("montant"), code="3000"),
-
-    "interim": LineType(
-        "interim", "منحة إنابة / معلّم تمهين", "GAIN", 1, 1, True, "autres",
-        (LineField("montant", "المبلغ", "amount"),),
-        _fold_prime("INTERIM", "منحة إنابة", 1, 1),
-        _r_input_round("montant"), code="1080"),
-
-    "mutuelle": LineType(
-        "mutuelle", "اقتطاع تعاضدية", "RETENUE", 0, 0, False, "autres",
-        (LineField("montant", "المبلغ", "amount"),),
-        _fold_retenue("MUT", "اقتطاع تعاضدية"),
-        _r_input_round("montant"), code="5000"),
-
-    "opposition": LineType(
-        "opposition", "اقتطاع بحكم قضائي", "RETENUE", 0, 0, False, "autres",
-        (LineField("montant", "المبلغ", "amount"),),
-        _fold_retenue("OPP", "اقتطاع بحكم قضائي"),
-        _r_input_round("montant"), code="5020"),
 
     "syndicat": LineType(
         "syndicat", "الاشتراك النقابي", "RETENUE", 0, 0, False, "autres",
@@ -421,7 +422,8 @@ LINE_TYPES: Dict[str, LineType] = {
             LineField("imposable", "خاضع للضريبة؟ (إلزامي)", "choice",
                       choices=("—", "نعم", "لا")),
         ),
-        _fold_libre, _r_input_round("montant"), code="LIBRE"),
+        _fold_libre, _r_input_round("montant"), code="LIBRE",
+        unique=False, value_key="montant"),
 }
 
 
@@ -505,6 +507,11 @@ def compute_bulletin(entries: List[Dict], cfg: Dict,
         if lt is None:
             continue
         v = e.get("values", {})
+        # سطر بحقل القيمة فارغاً → لا يُطوى ولا يُعرَض (لا احتساب صامت
+        # بـ0,00)؛ الشاشة تُنبّه «أدخل القيمة» في منطقة الأسطر.
+        pk = lt.primary_key()
+        if pk and str(v.get(pk, "")).strip() == "":
+            continue
         # سطر حرّ غير مصنَّف (V7) → لا يُطوى ولا يُعرَض؛ الشاشة تمنع الحفظ
         if lt.key == "libre" and not free_line_classified(v):
             continue

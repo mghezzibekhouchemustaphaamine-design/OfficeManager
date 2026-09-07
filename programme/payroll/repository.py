@@ -809,8 +809,6 @@ _DEFAULT_CATALOGUE: Tuple[Tuple, ...] = (
      "GAIN", "MONTANT", 1, 1, 0),
     ("1070", "Prime de travail de nuit", "منحة ليلية",
      "GAIN", "MONTANT", 1, 1, 1),
-    ("1080", "Prime d'intérim / tuteur d'apprentissage",
-     "منحة إنابة / معلّم تمهين", "GAIN", "MONTANT", 1, 1, 1),
     # --- Z2 : GAIN غير خاضع للاشتراك، خاضع للضريبة ---
     ("2000", "Prime de panier", "منحة السلة (panier)",
      "GAIN", "QUANTITE_X_PU", 0, 1, 1),
@@ -819,8 +817,6 @@ _DEFAULT_CATALOGUE: Tuple[Tuple, ...] = (
     ("2020", "Indemnité de véhicule", "منحة السيارة",
      "GAIN", "MONTANT", 0, 1, 0),
     # --- Z3 : GAIN غير خاضع لا للاشتراك ولا للضريبة ---
-    ("3000", "Prime de zone", "منحة المنطقة (zone)",
-     "GAIN", "MONTANT", 0, 0, 1),
     ("3010", "Allocations familiales", "المنح العائلية",
      "GAIN", "MONTANT", 0, 0, 0),
     ("3020", "Prime de scolarité / salaire unique",
@@ -839,15 +835,13 @@ _DEFAULT_CATALOGUE: Tuple[Tuple, ...] = (
     ("4020", "Retenue heures de retard", "اقتطاع ساعات تأخّر",
      "RETENUE", "QUANTITE_X_PU", 1, 1, 0),
     # --- Z4 : اقتطاعات غير CNAS/IRG ---
-    ("5000", "Retenue mutuelle", "اقتطاع تعاضدية (mutuelle)",
-     "RETENUE", "MONTANT", 0, 0, 0),
     ("5010", "Avance sur salaire", "تسبيق على الراتب",
-     "RETENUE", "MONTANT", 0, 0, 0),
-    ("5020", "Opposition sur salaire", "اقتطاع بحكم قضائي (opposition)",
      "RETENUE", "MONTANT", 0, 0, 0),
     ("5030", "Cotisation syndicale", "الاشتراك النقابي",
      "RETENUE", "MONTANT", 0, 0, 0),
 )
+#  حُذفت (المراجعة الميدانية — يغطّيها السطر الحرّ): 3000 منحة المنطقة ·
+#  1080 منحة إنابة/معلّم تمهين · 5000 اقتطاع تعاضدية · 5020 اقتطاع قضائي.
 
 
 def seed_catalogue(entreprise_id: int,

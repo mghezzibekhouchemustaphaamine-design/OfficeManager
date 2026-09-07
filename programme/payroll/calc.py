@@ -211,7 +211,11 @@ def compute_sequence(
     # plancher_prorata = CONTRAT_SEULEMENT). الغياب مخصوم أصلاً في [A]،
     # فتنسيب الأرضية عليه أيضاً خصمٌ مزدوج؛ والأرضية غرضها حماية تمويل
     # CNAS لا معاقبة الغياب.
-    if plancher_on and si.temps_plein:
+    #
+    # استمارة بلا أجر قاعدي (sb = 0): الأرضية لا تُطبَّق إطلاقاً. الأرضية
+    # تحمي أجراً منخفضاً *موجوداً*، ولا تخترع وعاءً من العدم — وإلا لخرج
+    # كشفٌ فارغ بصافٍ سالب (‎[A]=24 000 → [B]=2 160 → [E]=−2 160‎).
+    if plancher_on and si.temps_plein and sb > _ZERO:
         plancher = da(snmg * _pos(si.prorata_jours))
         # القدرة على الكسب قبل خصم الغياب (نفس معادلة [A] بلا −retenue_absence):
         a_hors_absence = da(sb + sum(hs_exacts, _ZERO) + iep_exact

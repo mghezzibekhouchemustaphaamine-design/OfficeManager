@@ -111,17 +111,20 @@ class TestIepSuggestion(unittest.TestCase):
 
 
 class TestZones(unittest.TestCase):
-    def test_zone_et_alloc_familiales_en_z3(self):
-        """منحة المنطقة والمنح العائلية → Z3 (تحت [D])، لا Z2."""
+    def test_alloc_familiales_et_libre_neutre_en_z3(self):
+        """المنح العائلية وسطر حرّ غير خاضع لا للاشتراك ولا للضريبة →
+        Z3 (تحت [D])، لا Z2."""
         v = _view([
             {"type": "salaire_base", "values": {"montant": "40000"}},
-            {"type": "zone", "values": {"montant": "1500"}},
             {"type": "alloc_fam", "values": {"montant": "600"}},
+            {"type": "libre", "values": {
+                "libelle": "منحة معفاة", "montant": "1500",
+                "est_retenue": "لا", "cotisable": "لا", "imposable": "لا"}},
         ])
         zmap = {l.key: l.zone for l in v.lignes}
-        self.assertEqual(zmap["zone"], "Z3")
         self.assertEqual(zmap["alloc_fam"], "Z3")
-        self.assertNotIn("Z2", (zmap["zone"], zmap["alloc_fam"]))
+        self.assertEqual(zmap["libre"], "Z3")
+        self.assertNotIn("Z2", (zmap["alloc_fam"], zmap["libre"]))
 
     def test_zones_des_types_courants(self):
         v = _view([
@@ -147,7 +150,7 @@ class TestZones(unittest.TestCase):
             {"type": "salaire_base", "values": {"montant": "40000"}},
             {"type": "syndicat", "values": {"montant": "200"}},
             {"type": "panier", "values": {"montant_mensuel": "2000"}},
-            {"type": "zone", "values": {"montant": "1000"}},
+            {"type": "alloc_fam", "values": {"montant": "1000"}},
         ])
         zones = [l.zone for l in v.lignes]
         self.assertEqual(zones, sorted(zones, key=lignes.ZONE_ORDER.get))
@@ -214,6 +217,55 @@ class TestHeuresSupp(unittest.TestCase):
         hs = {l.key: l.montant for l in v.lignes}
         self.assertEqual(hs["hs_50"], D("15000.00"))          # 1000 × 1,5 × 10
         self.assertEqual(hs["hs_100"], D("10000.00"))         # 1000 × 2,0 × 5
+
+
+class TestFieldReview(unittest.TestCase):
+    """المراجعة الميدانية لشاشة الكشف — إصلاحات #3 · #4 · #5 · #6."""
+
+    def test_ligne_absence_montre_sa_part_pas_le_total(self):
+        """#3 — كل سطر غياب يعرض حصّته هو، ومجموع أسطر Z1 المعروضة =
+        [A] بالضبط في وجود عدّة أسطر غياب مختلفة."""
+        v = _view([
+            {"type": "salaire_base", "values": {"montant": "30000"}},
+            {"type": "abs_jours", "values": {"jours": "2"}},
+            {"type": "abs_heures", "values": {"heures": "16"}},
+            {"type": "retard", "values": {"heures": "5"}},
+        ])
+        lmap = {l.key: l for l in v.lignes}
+        # حصّة السطر = معدّل المحرّك (دقّة كاملة) × كمّية السطر ثم da
+        th = v.result.taux_horaire
+        tj = v.result.taux_journalier
+        from programme.payroll.calc import da
+        self.assertEqual(lmap["abs_jours"].montant, da(tj * D("2")))
+        self.assertEqual(lmap["abs_jours"].montant, D("2000.00"))    # 30000/30 × 2
+        self.assertEqual(lmap["abs_heures"].montant, da(th * D("16")))
+        self.assertEqual(lmap["retard"].montant, da(th * D("5")))
+        self.assertNotEqual(lmap["abs_heures"].montant, lmap["retard"].montant)
+        # المجموع المعروض لـZ1 = [A] بالضبط
+        z1 = sum((l.montant if l.sens == "GAIN" else -l.montant)
+                 for l in v.lignes if l.zone == "Z1")
+        self.assertEqual(z1, v.a)
+
+    def test_ligne_sans_valeur_ignoree(self):
+        """#4 — سطر بحقل القيمة فارغاً لا يُحتسَب ولا يظهر (لا 0,00 صامت)."""
+        base = {"type": "salaire_base", "values": {"montant": "40000"}}
+        for vals in ({}, {"montant": ""}, {"montant": "   "}):
+            v = _view([base, {"type": "nuit", "values": vals}])
+            self.assertNotIn("nuit", [l.key for l in v.lignes], vals)
+        # بقيمة → يظهر
+        v = _view([base, {"type": "nuit", "values": {"montant": "1200"}}])
+        self.assertIn("nuit", [l.key for l in v.lignes])
+
+    def test_types_uniques_et_repetables(self):
+        """#5 — كل الأنواع فريدة عدا التسبيق والسطر الحرّ."""
+        repetables = {"avance", "libre"}
+        for key, lt in lignes.LINE_TYPES.items():
+            self.assertEqual(lt.unique, key not in repetables, key)
+
+    def test_types_supprimes_absents(self):
+        """#6 — أُزيلت من السجلّ نهائياً (يغطّيها السطر الحرّ)."""
+        for key in ("zone", "interim", "mutuelle", "opposition"):
+            self.assertNotIn(key, lignes.LINE_TYPES)
 
 
 if __name__ == "__main__":

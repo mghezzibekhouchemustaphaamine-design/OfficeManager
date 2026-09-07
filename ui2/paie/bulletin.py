@@ -31,8 +31,7 @@ _RECOMPUTE_MS = 400
 # ترتيب القائمة المنسدلة: مجموعة أساسية ثم فاصل «أخرى»
 _MENU_BASE = ["salaire_base", "abs_jours", "abs_heures", "retard",
               "hs_50", "hs_100", "iep", "pri", "panier", "transport", "avance"]
-_MENU_AUTRES = ["nuit", "zone", "interim", "mutuelle", "opposition",
-                "syndicat", "conge_paye", "alloc_fam"]
+_MENU_AUTRES = ["nuit", "syndicat", "conge_paye", "alloc_fam"]
 _MENU_LIBRE = ["libre"]
 
 
@@ -67,6 +66,11 @@ class _LineRow(QWidget):
                 w.activated.connect(lambda _i, k=f.key: self.fieldEdited.emit(k))
 
         self._aux = QVBoxLayout()
+        self._warn = QLabel("")                       # «أدخل القيمة» — سطر بلا قيمة
+        self._warn.setWordWrap(True)
+        self._warn.setStyleSheet(f"color:{theme.WARNING};")
+        self._warn.hide()
+        self._aux.addWidget(self._warn)
         self._btn_del = QPushButton("حذف السطر")
         self._btn_del.setEnabled(not lt.system)      # الأجر القاعدي لا يُحذف
         self._btn_del.clicked.connect(lambda: self.removeRequested.emit(self))
@@ -85,6 +89,20 @@ class _LineRow(QWidget):
     def add_aux(self, widget: QWidget):
         self._aux.addWidget(widget)
 
+    def primary_key(self) -> str:
+        return lignes.LINE_TYPES[self.type_key].primary_key()
+
+    def is_filled(self) -> bool:
+        pk = self.primary_key()
+        if not pk:
+            return True
+        return bool(str(self.form.values().get(pk, "")).strip())
+
+    def set_missing_value(self, missing: bool):
+        self._warn.setVisible(missing)
+        if missing:
+            self._warn.setText("أدخل القيمة — لا يُحتسَب هذا السطر حتى تملأه.")
+
     def entry(self) -> Dict:
         return {"type": self.type_key, "values": self.form.values()}
 
@@ -95,13 +113,18 @@ class BulletinScreen(QWidget):
     bulletinSaved = Signal(int)
 
     def _build_menu(self):
+        """يُعاد بناؤها عند كل إضافة/حذف سطر: نوع فريد مُضاف مسبقاً يظهر
+        معطَّلاً (المراجعة الميدانية #5)."""
         self._menu.clear()
+        present = {r.type_key for r in getattr(self, "_rows", [])}
 
         def add_group(keys):
             for key in keys:
-                if key not in lignes.LINE_TYPES:
+                lt = lignes.LINE_TYPES.get(key)
+                if lt is None:
                     continue
-                act = self._menu.addAction(lignes.LINE_TYPES[key].libelle)
+                act = self._menu.addAction(lt.libelle)
+                act.setEnabled(not (lt.unique and key in present))
                 act.triggered.connect(
                     lambda _c=False, k=key: self.add_line(k))
 
@@ -253,6 +276,12 @@ class BulletinScreen(QWidget):
 
     # =============================== الأسطر ===============================
     def add_line(self, type_key: str):
+        lt = lignes.LINE_TYPES.get(type_key)
+        if lt is None:
+            return
+        # نوع فريد مُضاف مسبقاً → تجاهل بصمت (القائمة تعطّله أصلاً)
+        if lt.unique and any(r.type_key == type_key for r in self._rows):
+            return
         row = _LineRow(type_key, self._lines_host)
         row.changed.connect(self._schedule)
         row.fieldEdited.connect(
@@ -264,6 +293,7 @@ class BulletinScreen(QWidget):
             self._attach_iep_aux(row)
         elif type_key == "libre":
             self._attach_libre_aux(row)
+        self._build_menu()        # نوع فريد صار مُضافاً → عطّله في القائمة
         self.recompute()          # فوري عند الإضافة
 
     # ------- سطر حرّ: تصنيف صريح إلزامي (V7) -------
@@ -345,6 +375,7 @@ class BulletinScreen(QWidget):
         self._rows.remove(row)
         row.setParent(None)
         row.deleteLater()
+        self._build_menu()        # النوع صار متاحاً من جديد
         self.recompute()          # فوري عند الحذف
 
     def _clear_lines(self):
@@ -375,6 +406,9 @@ class BulletinScreen(QWidget):
 
         # تحديث اقتراح الأقدمية للأسطر غير المعدَّلة يدوياً (بلا حلقة)
         for row in self._rows:
+            # تنبيه «أدخل القيمة» — الأقدمية والسطر الحرّ لهما تلميحهما
+            row.set_missing_value(
+                not row.is_filled() and row.type_key not in ("iep", "libre"))
             if row.type_key == "iep" and not getattr(row, "_iep_manual", False):
                 self._apply_iep_suggestion(row, force=False)
             elif row.type_key == "libre" and hasattr(row, "_libre_hint"):
@@ -432,11 +466,16 @@ class BulletinScreen(QWidget):
         conv = (repository.get_active_convention(self._client_id,
                                                 conn=self._conn)
                 if self._client_id is not None else None)
-        if not conv or not conv.get("confirme"):
+        # الاتفاقية «مُراجَعة» فقط إذا أكّدها المستخدم صراحةً (نسخة ≥ 2).
+        # الاتفاقية الافتراضية المؤكَّدة تلقائياً (نسخة 1) تُبقي الشريط
+        # ظاهراً — قيمها لم يراجعها أحد (المراجعة الميدانية #7).
+        reviewed = bool(conv and conv.get("confirme")
+                        and int(conv.get("version", 1)) > 1)
+        if not reviewed:
             msgs.append(
-                "معاملات الاتفاقية افتراضية ولم تُراجَع. تأكّد من قاعدة "
-                "احتساب منحة الأقدمية وتنسيب السلة مع صاحب العمل قبل "
-                "اعتماد الكشف.")
+                "معاملات الاتفاقية لم تُراجَع بعد (قيم افتراضية). تأكّد من "
+                "قاعدة احتساب منحة الأقدمية وتنسيب السلة والنقل مع صاحب "
+                "العمل قبل اعتماد الكشف.")
         msgs.extend(getattr(self, "_warnings", []))
         if msgs:
             self._warnbar.setText("\n".join("• " + m for m in msgs))
@@ -514,6 +553,17 @@ class BulletinScreen(QWidget):
         if self._view is None:
             warn(self, "حفظ الكشف", ["لا نتيجة حساب — أضف أسطراً صحيحة."])
             return None
+        if not self._view.lignes:
+            warn(self, "حفظ الكشف",
+                 ["لا أسطر بقيمة في الكشف — أضف سطراً واحداً على الأقل."])
+            return None
+
+        # V3: الصافي للدفع سالب → منع الحفظ (SPEC §6)
+        if self._view.e < 0:
+            warn(self, "الصافي سالب (V3)", [
+                f"الصافي للدفع = {fmt_money(self._view.e)} دج (سالب).",
+                "لا يُحفَظ ولا يُثبَّت كشف بصافٍ سالب — راجِع الأسطر."])
+            return None
 
         # V7: سطر حرّ غير مصنَّف صراحةً
         unclassified = self._libre_unclassified()
@@ -578,6 +628,12 @@ class BulletinScreen(QWidget):
     def fige(self):
         if self._bulletin_id is None:
             warn(self, "تثبيت", ["احفظ الكشف أولاً."])
+            return
+        # V3: لا تثبيت لكشف صافيه سالب (SPEC §6)
+        if self._view is not None and self._view.e < 0:
+            warn(self, "الصافي سالب (V3)", [
+                f"الصافي للدفع = {fmt_money(self._view.e)} دج (سالب).",
+                "لا يُثبَّت كشف بصافٍ سالب."])
             return
         numero = repository.fige_bulletin(self._bulletin_id, conn=self._conn)
         self._readonly = True

@@ -46,12 +46,15 @@ class TestRepositoryCycle(unittest.TestCase):
 
         # --- بذرة الكتالوج (SPEC §2.2) ---
         n = repo.seed_catalogue(ent_id, conn=c)
-        self.assertEqual(n, 23)  # 25 صفّاً في SPEC §2.2 ناقص CNAS و IRG
+        self.assertEqual(n, 19)  # 23 ناقص 4 رُبريكات حُذفت (يغطّيها السطر الحرّ)
         self.assertEqual(repo.seed_catalogue(ent_id, conn=c), 0)  # لا تكرار
 
         rubs = repo.list_rubriques(ent_id, conn=c)
-        self.assertEqual(len(rubs), 23)
+        self.assertEqual(len(rubs), 19)
         by_code = {r["code"]: r for r in rubs}
+        # حُذفت نهائياً: منطقة · إنابة · تعاضدية · اقتطاع قضائي
+        for code in ("3000", "1080", "5000", "5020"):
+            self.assertNotIn(code, by_code)
         # السلة والنقل: معفاتان من CNAS، خاضعتان لـ IRG (SPEC §2.2)
         self.assertEqual((by_code["2000"]["cotisable"],
                           by_code["2000"]["imposable"]), (0, 1))
@@ -341,7 +344,7 @@ class TestRepositoryCycle(unittest.TestCase):
         self.assertEqual(repo.ensure_default_client(conn=c), cid)
         self.assertEqual(
             len(repo.list_entreprises(registered_only=True, conn=c)), 1)
-        self.assertEqual(len(repo.list_rubriques(cid, conn=c)), 23)
+        self.assertEqual(len(repo.list_rubriques(cid, conn=c)), 19)
         conv = repo.get_active_convention(cid, conn=c)
         self.assertEqual(conv["confirme"], 1)
         self.assertEqual(conv["base_iep"], "SAL_BASE_BRUT")   # §1.2.1

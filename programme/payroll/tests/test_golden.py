@@ -195,6 +195,17 @@ class TestSequenceComposite(unittest.TestCase):
                                prorata_jours=Decimal("0.5")), self.cfg)
         self.assertEqual(partiel.assiette_cnas, Decimal("12000.00"))
 
+    def test_snmg_plancher_ignore_form_vide(self):
+        """استمارة بلا أجر قاعدي (sb = 0): الأرضية لا تُطبَّق إطلاقاً —
+        [A]=[B]=[C]=[D]=[E]=0، بلا رفع وبلا تحذير. الأرضية تحمي أجراً
+        منخفضاً موجوداً، لا تخترع وعاءً من العدم (المراجعة الميدانية #1)."""
+        r = calc.compute_sequence(
+            calc.SequenceInput(salaire_base=Decimal("0")), self.cfg)
+        for champ in ("assiette_cnas", "retenue_cnas", "assiette_irg",
+                      "irg", "net_a_payer"):
+            self.assertEqual(getattr(r, champ), Decimal("0.00"), champ)
+        self.assertEqual(r.avertissements, [])
+
 
 def _rapport():
     """تقرير جدول مقروء (تشغيل مباشر كملف) — 14/14."""

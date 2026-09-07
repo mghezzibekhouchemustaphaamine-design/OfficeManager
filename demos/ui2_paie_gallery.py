@@ -111,9 +111,11 @@ def _selftest() -> int:
     print(f"[selftest] الآلية: قاعدي Z1 · غياب Z1(−) يمسّ [A] · سلة Z2 تتنسّب "
           f"→ [A]={v.a} [C]={v.c} [E]={v.e}")
 
-    # الاتفاقية الافتراضية مؤكَّدة → لا شريط تحذير
-    assert scr._warnbar.isHidden(), "شريط التحذير ظاهر رغم اتفاقية مؤكَّدة"
-    print("[selftest] الاتفاقية الافتراضية مؤكَّدة → لا تحذير V15")
+    # الاتفاقية الافتراضية مؤكَّدة تلقائياً (نسخة 1) → التوليد يعمل، لكن
+    # الشريط الاستشاري يبقى ظاهراً: قيمها لم يراجعها أحد (المراجعة #7).
+    assert not scr._warnbar.isHidden(), "الشريط الاستشاري غائب للاتفاقية الافتراضية"
+    assert "لم تُراجَع" in scr._warnbar.text(), scr._warnbar.text()
+    print("[selftest] #7: اتفاقية افتراضية غير مُراجَعة → الشريط الاستشاري ظاهر دائماً")
 
     # حذف السلة → إعادة حساب فورية
     scr._remove_line(scr._rows[2])
@@ -244,6 +246,44 @@ def _selftest() -> int:
         got = next(l.zone for l in scr4._view.lignes if l.key == "libre")
         assert got == want, (cot, imp, ret, got, want)
     print("[selftest] السطر الحرّ: القفز للمناطق الأربع Z1/Z2/Z3/Z4 صحيح")
+
+    # #2 — V3: صافٍ سالب يُمنع حفظه وتثبيته، بلا أثر جانبي
+    def _count_bulletins():
+        return conn.execute("SELECT COUNT(*) FROM bulletin").fetchone()[0]
+
+    scr5 = BulletinScreen(conn=conn)
+    scr5._header.set_values({"employe_nom": "V3 ت", "periode": "2026-09"})
+    scr5._rows[0].form.set_values({"montant": "20000"})
+    scr5.add_line("avance")
+    scr5._rows[-1].form.set_values({"montant": "25000"})
+    scr5.recompute()
+    assert scr5._view.e < 0, scr5._view.e
+    n_b = _count_bulletins()
+    _captured.clear()
+    assert scr5.save() is None, "V3 لم تمنع الحفظ"
+    assert any("V3" in t for t, _ in _captured), _captured
+    assert _count_bulletins() == n_b, "V3: صفّ كشف رغم الرفض"
+    print(f"[selftest] #2: V3 صافٍ سالب ({scr5._view.e}) → حفظ وتثبيت ممنوعان")
+
+    # #5 — نوع فريد لا يُضاف مرّتين (القائمة تعطّله)
+    scr6 = BulletinScreen(conn=conn)
+    scr6.add_line("panier")
+    scr6.add_line("panier")
+    assert [r.type_key for r in scr6._rows].count("panier") == 1
+    scr6.add_line("avance")
+    scr6.add_line("avance")               # التسبيق متكرّر
+    assert [r.type_key for r in scr6._rows].count("avance") == 2
+    print("[selftest] #5: النوع الفريد لا يتكرّر · التسبيق يتكرّر")
+
+    # #4 — سطر بلا قيمة: لا يُحتسَب + تنبيه «أدخل القيمة»
+    scr7 = BulletinScreen(conn=conn)
+    scr7._rows[0].form.set_values({"montant": "40000"})
+    scr7.add_line("nuit")
+    scr7.recompute()
+    assert "nuit" not in [l.key for l in scr7._view.lignes]
+    assert not scr7._rows[-1].is_filled()
+    assert not scr7._rows[-1]._warn.isHidden()      # ظاهر (لا يعتمد على عرض النافذة)
+    print("[selftest] #4: سطر بلا قيمة → غير محتسَب + تنبيه «أدخل القيمة»")
 
     print("[selftest] ALLOK")
     return 0

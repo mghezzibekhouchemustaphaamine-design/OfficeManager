@@ -5,20 +5,34 @@
 كل عمود يقبل محاذاة واتجاهاً خاصّين به (الاتجاه عبر ``QStyledItemDelegate``
 لا عبر ``setLayoutDirection``).
 
+``sortable=False`` يُثبّت ترتيب الصفوف كما بُنيت (جداول ترتيبها إلزامي).
+``row_style(row_dict) -> dict | None`` يمنح صفوفاً بعينها خلفيةً/خطاً
+أثقل/فاصلاً علوياً — الألوان تأتي من المُستدعي، لا يعرّفها الجدول.
+
 لا SQL ولا منطق حساب.
 """
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from PySide6.QtCore import (
     QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt, Signal,
 )
+from PySide6.QtGui import QColor, QFont, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView, QHeaderView, QStyledItemDelegate, QTableView,
     QVBoxLayout, QWidget,
 )
 
 _ALIGN_DEFAULT = Qt.AlignRight | Qt.AlignVCenter
+
+#  دور مخصَّص: نمط الصفّ (dict) — يُقرأ في المفوَّض لرسم الفاصل العلوي.
+_STYLE_ROLE = Qt.UserRole + 1000
+
+#  ``row_style(row_dict) -> dict | None`` بمفاتيح اختيارية:
+#    background (لون) · bold (bool) · separator_above (bool) ·
+#    separator_color (لون الفاصل). الألوان تأتي من المُستدعي — الجدول
+#    لا يعرّف ألواناً.
+RowStyleFn = Callable[[Dict], Optional[Dict]]
 
 
 @dataclass
@@ -33,10 +47,12 @@ class Column:
 
 
 class _TableModel(QAbstractTableModel):
-    def __init__(self, columns: List[Column], rows=None):
+    def __init__(self, columns: List[Column], rows=None,
+                 row_style: Optional[RowStyleFn] = None):
         super().__init__()
         self._cols = list(columns)
         self._rows: List[dict] = list(rows or [])
+        self._row_style = row_style
 
     def set_rows(self, rows):
         self.beginResetModel()
@@ -65,6 +81,19 @@ class _TableModel(QAbstractTableModel):
             return "" if val is None else str(val)
         if role == Qt.TextAlignmentRole:
             return int(col.align)
+        if role in (Qt.BackgroundRole, Qt.FontRole, _STYLE_ROLE):
+            st = (self._row_style(self._rows[index.row()])
+                  if self._row_style else None)
+            if role == _STYLE_ROLE:
+                return st
+            if not st:
+                return None
+            if role == Qt.BackgroundRole and st.get("background"):
+                return QColor(st["background"])
+            if role == Qt.FontRole and st.get("bold"):
+                f = QFont()
+                f.setBold(True)
+                return f
         return None
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
@@ -88,15 +117,28 @@ class _DirectionDelegate(QStyledItemDelegate):
         if index.isValid() and self._cols[index.column()].ltr:
             option.direction = Qt.LeftToRight
 
+    def paint(self, painter, option, index):
+        super().paint(painter, option, index)
+        st = index.data(_STYLE_ROLE)
+        if isinstance(st, dict) and st.get("separator_above"):
+            painter.save()
+            pen = QPen(QColor(st.get("separator_color") or "#8a8a8a"))
+            pen.setWidth(2)
+            painter.setPen(pen)
+            r = option.rect
+            painter.drawLine(r.left(), r.top(), r.right(), r.top())
+            painter.restore()
+
 
 class DataTable(QWidget):
     rowActivated = Signal(dict)          # نقر مزدوج على صفّ
     selectionChanged = Signal(object)   # dict الصفّ المحدَّد أو None
 
-    def __init__(self, columns: List[Column], rows=None, parent=None):
+    def __init__(self, columns: List[Column], rows=None, parent=None, *,
+                 sortable: bool = True, row_style: Optional[RowStyleFn] = None):
         super().__init__(parent)
         self._columns = list(columns)
-        self._model = _TableModel(self._columns, rows)
+        self._model = _TableModel(self._columns, rows, row_style)
         self._proxy = QSortFilterProxyModel(self)
         self._proxy.setSourceModel(self._model)
         self._proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
@@ -106,7 +148,13 @@ class DataTable(QWidget):
 
         self._view = QTableView(self)
         self._view.setModel(self._proxy)
-        self._view.setSortingEnabled(True)
+        self._view.setSortingEnabled(sortable)
+        if not sortable:
+            # ترتيب هذا الجدول ليس اختيارياً — يُعرَض كما بُني تماماً.
+            self._proxy.sort(-1)
+            hdr = self._view.horizontalHeader()
+            hdr.setSortIndicatorShown(False)
+            hdr.setSectionsClickable(False)
         self._view.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._view.setSelectionMode(QAbstractItemView.SingleSelection)
         self._view.setEditTriggers(QAbstractItemView.NoEditTriggers)

@@ -16,7 +16,8 @@ from typing import Dict, List, Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QLabel, QMenu, QPushButton, QScrollArea, QToolButton, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QMenu, QPushButton, QScrollArea, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
 from programme.payroll import config_loader, lignes, repository
@@ -51,6 +52,9 @@ class _LineRow(QWidget):
 
         title = QLabel(f"● {lt.libelle}")
         title.setStyleSheet("font-weight:600;")
+        title.setFixedWidth(150)
+        title.setWordWrap(True)
+        title.setAlignment(Qt.AlignRight | Qt.AlignTop)
 
         self.form = Form([Field(f.key, f.label, kind=f.kind, default=f.default,
                                 choices=list(f.choices) or None)
@@ -71,18 +75,26 @@ class _LineRow(QWidget):
         self._warn.setStyleSheet(f"color:{theme.WARNING};")
         self._warn.hide()
         self._aux.addWidget(self._warn)
-        self._btn_del = QPushButton("حذف السطر")
-        self._btn_del.setEnabled(not lt.system)      # الأجر القاعدي لا يُحذف
+        self._btn_del = QPushButton("✕")                 # أيقونة صغيرة
+        self._btn_del.setToolTip("حذف السطر")
+        self._btn_del.setFixedWidth(28)
+        self._btn_del.setEnabled(not lt.system)          # الأجر القاعدي لا يُحذف
         self._btn_del.clicked.connect(lambda: self.removeRequested.emit(self))
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(theme.SPACE["sm"], theme.SPACE["sm"],
-                               theme.SPACE["sm"], theme.SPACE["sm"])
-        lay.addWidget(title)
-        lay.addWidget(self.form)
-        lay.addLayout(self._aux)
+        # سطر مضغوط: التسمية والحقول في صفّ أفقي واحد، وزرّ الحذف أيقونة.
+        top = QHBoxLayout()
+        top.setSpacing(theme.SPACE["sm"])
+        top.addWidget(title, 0, Qt.AlignTop)
+        top.addWidget(self.form, 1)
         if not lt.system:
-            lay.addWidget(self._btn_del, 0, Qt.AlignLeft)
+            top.addWidget(self._btn_del, 0, Qt.AlignTop)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(theme.SPACE["sm"], theme.SPACE["xs"],
+                               theme.SPACE["sm"], theme.SPACE["xs"])
+        lay.setSpacing(theme.SPACE["xs"])
+        lay.addLayout(top)
+        lay.addLayout(self._aux)
         self.setStyleSheet(
             f"_LineRow {{ border:1px solid {theme.BORDER}; border-radius:4px; }}")
 
@@ -105,6 +117,41 @@ class _LineRow(QWidget):
 
     def entry(self) -> Dict:
         return {"type": self.type_key, "values": self.form.values()}
+
+
+class _TwoColForm(QWidget):
+    """ترويسة في عمودين: نموذجان :class:`ui2.form.Form` جنباً إلى جنب،
+    بواجهة ``Form`` نفسها (``values`` · ``errors`` · ``set_values`` ·
+    ``widget``) فيبقى بقيّة الكود دون تغيير."""
+
+    def __init__(self, left: List[Field], right: List[Field], parent=None):
+        super().__init__(parent)
+        self._l = Form(left, self)
+        self._r = Form(right, self)
+        self._l.setMaximumWidth(460)
+        self._r.setMaximumWidth(460)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(theme.SPACE["lg"])
+        lay.addWidget(self._l, 1)
+        lay.addWidget(self._r, 1)
+        lay.addStretch(2)
+
+    def values(self) -> Dict[str, str]:
+        return {**self._l.values(), **self._r.values()}
+
+    def errors(self) -> List[str]:
+        return self._l.errors() + self._r.errors()
+
+    def set_values(self, data: Dict):
+        self._l.set_values(data)
+        self._r.set_values(data)
+
+    def widget(self, key: str) -> QWidget:
+        try:
+            return self._l.widget(key)
+        except KeyError:
+            return self._r.widget(key)
 
 
 class BulletinScreen(QWidget):
@@ -168,15 +215,16 @@ class BulletinScreen(QWidget):
         # ---------- الترويسة: الزبون / العامل / الفترة ----------
         #  لا قيم افتراضية موحِية: تاريخ الدخول فارغ (فيبقى اقتراح
         #  الأقدمية «حدّد تاريخ الدخول»)، والفترة = الشهر الحالي المحسوب.
-        self._header = Form([
-            Field("client_registered", "زبون مسجَّل", kind="choice", choices=[]),
-            Field("client_transient", "زبون عابر (اسم حرّ)"),
-            Field("employe_nom", "العامل — اللقب والاسم", required=True),
-            Field("employe_date_entree", "تاريخ الدخول (YYYY-MM-DD)",
-                  placeholder="YYYY-MM-DD"),
-            Field("periode", "الفترة (YYYY-MM)", required=True,
-                  default=date.today().strftime("%Y-%m")),
-        ], self)
+        self._header = _TwoColForm(
+            [Field("client_registered", "زبون مسجَّل", kind="choice",
+                   choices=[]),
+             Field("client_transient", "زبون عابر (اسم حرّ)")],
+            [Field("employe_nom", "العامل — اللقب والاسم", required=True),
+             Field("employe_date_entree", "تاريخ الدخول (YYYY-MM-DD)",
+                   placeholder="YYYY-MM-DD"),
+             Field("periode", "الفترة (YYYY-MM)", required=True,
+                   default=date.today().strftime("%Y-%m"))],
+            self)
         self._header.widget("client_registered").currentTextChanged.connect(
             self._on_client_changed)
         self._header.widget("periode").textChanged.connect(self._schedule)
@@ -196,16 +244,22 @@ class BulletinScreen(QWidget):
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setWidget(self._lines_host)
-        scroll.setFixedHeight(220)
+        scroll.setMinimumHeight(150)          # ارتفاع متكيّف بين حدّين
+        scroll.setMaximumHeight(380)
 
-        # ---------- جدول النتيجة ----------
-        self._result = DataTable(columns=[
-            Column("libelle", "السطر"),
-            Column("zone", "المنطقة", align=Qt.AlignCenter, width=90,
-                   stretch=False),
-            Column("montant", "المبلغ", ltr=True,
-                   align=Qt.AlignLeft | Qt.AlignVCenter),
-        ])
+        # ---------- جدول النتيجة (المخرَج الحقيقي — مساحة أكبر) ----------
+        #  ترتيبه ليس اختيارياً (Z1→[A]→[B]→Z2→[C]→[D]→Z3→Z4→[E]) →
+        #  الفرز مُعطَّل. الأسطر النظامية مميَّزة بصرياً عبر ``row_style``.
+        self._result = DataTable(
+            columns=[
+                Column("libelle", "السطر"),
+                Column("zone", "المنطقة", align=Qt.AlignCenter, width=90,
+                       stretch=False),
+                Column("montant", "المبلغ", ltr=True,
+                       align=Qt.AlignLeft | Qt.AlignVCenter),
+            ],
+            sortable=False, row_style=self._result_row_style)
+        self._result.setMinimumHeight(240)
         self._info = info_label("")
 
         # ---------- التخطيط ----------
@@ -214,9 +268,9 @@ class BulletinScreen(QWidget):
         lay.addWidget(self._header)
         lay.addWidget(self._warnbar)
         lay.addWidget(QLabel("الأسطر:"))
-        lay.addWidget(scroll)
+        lay.addWidget(scroll, 2)
         lay.addWidget(QLabel("الكشف:"))
-        lay.addWidget(self._result, 1)
+        lay.addWidget(self._result, 3)
         lay.addWidget(self._info)
 
         # مؤقّت إعادة الحساب (400ms بعد توقّف الكتابة)
@@ -430,6 +484,25 @@ class BulletinScreen(QWidget):
         self._view = lignes.compute_bulletin(entries, cfg, convention)
         self._render(self._view, convention)
 
+    _SYS_LABELS = {
+        "A": "[A] الأجر الخاضع للاشتراك",
+        "B": "[B] اقتطاع CNAS 9%",
+        "C": "[C] الأجر الخاضع للضريبة",
+        "D": "[D] اقتطاع IRG",
+        "E": "[E] الصافي للدفع",
+    }
+
+    def _result_row_style(self, row: dict):
+        """الأسطر النظامية ‎[A]…[E]‎: خلفية وخط أثقل وفاصل علوي واضح —
+        القفل وحده لا يكفي (‎[C]‎ و‎[E]‎ قد يتساويان فيبدوان مكرَّرين).
+        ‎[C]‎ و‎[D]‎ متلاصقان بلا فاصل بينهما (§2.3.1)."""
+        code = row.get("_sys")
+        if not code:
+            return None
+        return {"background": theme.SELECTION, "bold": True,
+                "separator_above": code != "D",
+                "separator_color": theme.PRIMARY}
+
     def _render(self, view: lignes.BulletinView, convention: Optional[dict]):
         rows: List[dict] = []
         by_zone = {z: [l for l in view.lignes if l.zone == z]
@@ -437,24 +510,29 @@ class BulletinScreen(QWidget):
 
         def emit_zone(z):
             for l in by_zone[z]:
-                sign = "−" if l.sens == "RETENUE" else ""
+                amount = fmt_money(l.montant)
+                if l.sens == "RETENUE" and l.montant != 0:
+                    amount = "−" + amount            # صفرٌ لا يأخذ إشارة
                 rows.append({"libelle": l.libelle, "zone": z,
-                             "montant": f"{sign}{fmt_money(l.montant)}"})
+                             "montant": amount})
 
+        def sys_row(code, value, *, negative=False):
+            amount = fmt_money(value)
+            if negative and value != 0:
+                amount = "−" + amount
+            rows.append({"libelle": f"🔒 {self._SYS_LABELS[code]}",
+                         "zone": f"[{code}]", "_sys": code, "montant": amount})
+
+        # ترتيب إلزامي: Z1 → [A] → [B] → Z2 → [C] → [D] → Z3 → Z4 → [E]
         emit_zone("Z1")
-        rows.append({"libelle": "🔒 [A] الأجر الخاضع للاشتراك", "zone": "—",
-                     "montant": fmt_money(view.a)})
-        rows.append({"libelle": "🔒 [B] اقتطاع CNAS 9%", "zone": "—",
-                     "montant": "−" + fmt_money(view.b)})
+        sys_row("A", view.a)
+        sys_row("B", view.b, negative=True)
         emit_zone("Z2")
-        rows.append({"libelle": "🔒 [C] الأجر الخاضع للضريبة", "zone": "—",
-                     "montant": fmt_money(view.c)})
-        rows.append({"libelle": "🔒 [D] اقتطاع IRG", "zone": "—",
-                     "montant": "−" + fmt_money(view.d)})
+        sys_row("C", view.c)
+        sys_row("D", view.d, negative=True)
         emit_zone("Z3")
         emit_zone("Z4")
-        rows.append({"libelle": "🔒 [E] الصافي للدفع", "zone": "—",
-                     "montant": fmt_money(view.e)})
+        sys_row("E", view.e)
         self._result.set_rows(rows)
         self._info.setText(
             f"عدد الأسطر: {len(view.lignes)}  ·  الصافي: {fmt_money(view.e)}")

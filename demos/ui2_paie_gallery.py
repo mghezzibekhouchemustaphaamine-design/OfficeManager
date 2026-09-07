@@ -285,6 +285,43 @@ def _selftest() -> int:
     assert not scr7._rows[-1]._warn.isHidden()      # ظاهر (لا يعتمد على عرض النافذة)
     print("[selftest] #4: سطر بلا قيمة → غير محتسَب + تنبيه «أدخل القيمة»")
 
+    # ===== الكوميت 2 — عرض وتصميم =====
+    from ui2.paie._common import fmt_money
+
+    # #10 — صيغة عربية موحّدة: فاصل آلاف مسافة، فاصلة عشرية
+    assert fmt_money(Decimal("25000")) == "25 000,00", fmt_money(Decimal("25000"))
+    # #11 — صفرٌ بلا إشارة سالبة
+    assert fmt_money(Decimal("0")) == "0,00"
+    assert fmt_money(Decimal("-0.00")) == "0,00"
+
+    scr8 = BulletinScreen(conn=conn)
+    scr8._rows[0].form.set_values({"montant": "25000"})   # [C] < 30 000 → [D]=0
+    scr8._header.set_values({"employe_nom": "عرض ت", "periode": "2026-09"})
+    scr8.recompute()
+    rrows = scr8._result._model._rows
+    # #8 — الترتيب: الأجر القاعدي أولاً، [E] أخيراً (الفرز مُعطَّل)
+    assert not rrows[0].get("_sys"), rrows[0]              # أوّل سطر ليس نظامياً
+    assert "🔒" not in rrows[0]["libelle"]
+    assert rrows[-1]["_sys"] == "E", rrows[-1]
+    assert [r.get("_sys") for r in rrows if r.get("_sys")] == \
+        ["A", "B", "C", "D", "E"], rrows
+    assert scr8._result._view.isSortingEnabled() is False
+    # #12 — عمود المنطقة للأسطر النظامية يعرض [A]..[E]
+    sysrows = {r["_sys"]: r for r in rrows if r.get("_sys")}
+    assert sysrows["A"]["zone"] == "[A]", sysrows["A"]
+    assert sysrows["D"]["zone"] == "[D]"
+    # #11 — [D] = 0 → «0,00» بلا «−»
+    assert sysrows["D"]["montant"] == "0,00", sysrows["D"]["montant"]
+    # #10 — كل المبالغ بالفاصلة العشرية
+    assert "," in sysrows["A"]["montant"] and "." not in sysrows["A"]["montant"]
+    # #9 — نمط السطر النظامي: خلفية + خط أثقل + فاصل (عدا [D] الملاصق لـ[C])
+    stA = scr8._result._model._row_style(sysrows["A"])
+    stD = scr8._result._model._row_style(sysrows["D"])
+    assert stA["bold"] and stA["separator_above"]
+    assert stD["bold"] and stD["separator_above"] is False
+    print("[selftest] #8/#9/#10/#11/#12: ترتيب ثابت · أسطر نظامية مميَّزة · "
+          "صيغة عربية · [A]..[E] في عمود المنطقة")
+
     print("[selftest] ALLOK")
     return 0
 

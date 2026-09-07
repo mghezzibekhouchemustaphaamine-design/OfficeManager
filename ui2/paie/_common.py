@@ -17,7 +17,9 @@ def fmt_money(value) -> str:
         d = value if isinstance(value, Decimal) else Decimal(str(value))
     except (InvalidOperation, ValueError):
         return str(value)
-    return f"{d:,.2f}".replace(",", " ")
+    if d == 0:
+        d = abs(d)                       # يمنع «-0,00»
+    return f"{d:,.2f}".replace(",", " ").replace(".", ",")
 
 
 def fmt_rate(value) -> str:

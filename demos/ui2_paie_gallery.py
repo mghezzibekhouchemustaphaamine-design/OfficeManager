@@ -188,6 +188,35 @@ def _selftest() -> int:
     assert "الحدّ الأدنى" in iep_row._iep_hint.text()
     print("[selftest] الأقدمية: تحت الحدّ الأدنى → 0% مع السبب")
 
+    # السطر الحرّ: V7 + القفز للمناطق الأربع
+    scr4 = BulletinScreen(conn=conn)
+    scr4._menu  # القائمة تحوي «سطر حرّ»
+    assert "libre" in _b.lignes.LINE_TYPES
+    scr4._rows[0].form.set_values({"montant": "40000"})
+    scr4._header.set_values({"employe_nom": "LIBRE ت", "periode": "2026-09"})
+    scr4.add_line("libre")
+    lib = scr4._rows[-1]
+    lib.form.set_values({"libelle": "منحة خاصة", "montant": "3000"})
+    scr4.recompute()
+    # غير مصنَّف → لا يُحتسَب + شريط V7
+    assert "libre" not in [l.key for l in scr4._view.lignes]
+    assert "V7" in lib._libre_hint.text()
+    _captured.clear()
+    assert scr4.save() is None
+    assert any("V7" in t for t, _ in _captured), _captured
+    print("[selftest] السطر الحرّ: بلا تصنيف → لا يُحتسَب + save مُنِع (V7)")
+
+    for cot, imp, ret, want in (("نعم", "نعم", "لا", "Z1"),
+                                ("لا", "نعم", "لا", "Z2"),
+                                ("لا", "لا", "لا", "Z3"),
+                                ("لا", "لا", "نعم", "Z4")):
+        lib.form.set_values({"cotisable": cot, "imposable": imp,
+                             "est_retenue": ret})
+        scr4.recompute()
+        got = next(l.zone for l in scr4._view.lignes if l.key == "libre")
+        assert got == want, (cot, imp, ret, got, want)
+    print("[selftest] السطر الحرّ: القفز للمناطق الأربع Z1/Z2/Z3/Z4 صحيح")
+
     print("[selftest] ALLOK")
     return 0
 

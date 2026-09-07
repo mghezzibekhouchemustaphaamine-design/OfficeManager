@@ -1515,3 +1515,48 @@ PySide6 مقابل Tkinter قبل أي قرار نقل. **PoC فقط، لا يم
 معدَّل: `programme/payroll/repository.py` (هجرة 3 + دوال الزبون +
 كتالوج 23) · `programme/payroll/tests/test_repository.py`. تحديث يدوي من
 المستخدم: `docs/specs/SPEC_PAIE_DZ.md` · `programme/data/params_paie/params_2026.json`.
+
+---
+
+## مرجع خمسة وثلاثون — 2026-09-07: السطر الحرّ (المرحلة 2 — ب / كوميت ب)
+
+نوع سطر أخير في شاشة الكشف: **سطر حرّ** — تسمية ومبلغ حرّان + تصنيف
+صريح. `cotisable` و`imposable` **إلزاميان بلا قيمة افتراضية** (V7 /
+SPEC §2.1): القوائم تبدأ عند «—»، والحفظ ممنوع حتى يختار المستخدم
+«نعم/لا» لكلٍّ منهما. لا مساس بالمحرّك.
+
+### `programme/payroll/lignes.py`
+
+- نوع `libre` في `LINE_TYPES`: حقول `libelle` · `montant` · `est_retenue`
+  (لا/نعم) · `cotisable` · `imposable` (—/نعم/لا).
+- `free_line_classified(values)` · `validate_free_line(values)` (يرفع
+  `FreeLineError`).
+- `compute_bulletin` **يتخطّى** أي سطر حرّ غير مصنَّف: لا يُطوى في
+  `SequenceInput` ولا يظهر في العرض — فلا تصنيف ضمنيّ صامت. `LineView`
+  اكتسب `cotisable`/`imposable` (لقطة السطر عند الحفظ).
+- المنطقة تُشتقّ من التصنيف عبر `LineType.zone` — أربع حالات:
+  `cotisable=نعم → Z1` · `غير cotisable + imposable → Z2` · `لا ولا →
+  Z3` · `est_retenue=نعم → Z4`.
+
+### `ui2/paie/bulletin.py`
+
+- القائمة المنسدلة: فاصل «── سطر حرّ ──» + النوع.
+- سطر حرّ يعرض تلميحاً حيّاً: «مصنَّف → المنطقة Zn» أو تحذير V7 أصفر
+  «لا يُحتسَب حتى يُصنَّف».
+- `save()` يمنع الحفظ (رسالة V7 صريحة) ما دام أيّ سطر حرّ بلا تصنيف.
+
+### التحقّق
+
+- `test_lignes.py` → **16 اختباراً** (+ 4 للسطر الحرّ): رفض بلا تصنيف
+  (V7) · القفز للمناطق الأربع · `compute_bulletin` يتجاهل غير المصنَّف
+  ويُدرج المصنَّف في منطقته بمبلغه · سطر حرّ اقتطاع → Z4.
+- `demos/ui2_paie_gallery.py --selftest` → `ALLOK` (بلا تصنيف → لا
+  يُحتسَب + `save` مُنِع · القفز Z1/Z2/Z3/Z4).
+- **المحرّك أخضر**: `test_golden.py` → **14/14** · `unittest` (golden +
+  repository + lignes) → **Ran 31, OK**. `ui2_gallery.py --selftest` →
+  `ALLOK`.
+
+### الملفات المتأثرة
+
+معدَّل: `programme/payroll/lignes.py` · `programme/payroll/tests/test_lignes.py`
+· `ui2/paie/bulletin.py` · `demos/ui2_paie_gallery.py`.

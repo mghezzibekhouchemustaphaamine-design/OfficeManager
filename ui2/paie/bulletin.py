@@ -106,11 +106,11 @@ class BulletinScreen(QWidget):
 
         add_group(_MENU_BASE)
         self._menu.addSeparator()
-        sep = self._menu.addAction("── أخرى ──")
-        sep.setEnabled(False)
+        self._menu.addAction("── أخرى ──").setEnabled(False)
         add_group(_MENU_AUTRES)
         if any(k in lignes.LINE_TYPES for k in _MENU_LIBRE):
             self._menu.addSeparator()
+            self._menu.addAction("── سطر حرّ ──").setEnabled(False)
             add_group(_MENU_LIBRE)
 
     def __init__(self, conn=None, parent=None):
@@ -269,7 +269,22 @@ class BulletinScreen(QWidget):
         self._rows.append(row)
         if type_key == "iep":
             self._attach_iep_aux(row)
+        elif type_key == "libre":
+            self._attach_libre_aux(row)
         self.recompute()          # فوري عند الإضافة
+
+    # ------- سطر حرّ: تصنيف صريح إلزامي (V7) -------
+    def _attach_libre_aux(self, row: _LineRow):
+        row._libre_hint = QLabel(
+            "حدّد «خاضع للاشتراك؟» و«خاضع للضريبة؟» — لا قيمة افتراضية "
+            "(V7). السطر يقفز تلقائياً إلى منطقته.")
+        row._libre_hint.setWordWrap(True)
+        row._libre_hint.setStyleSheet(f"color:{theme.WARNING};")
+        row.add_aux(row._libre_hint)
+
+    def _libre_unclassified(self) -> List[_LineRow]:
+        return [r for r in self._rows if r.type_key == "libre"
+                and not lignes.free_line_classified(r.form.values())]
 
     # ------- سطر الأقدمية §1.2.4 -------
     def _attach_iep_aux(self, row: _LineRow):
@@ -369,6 +384,17 @@ class BulletinScreen(QWidget):
         for row in self._rows:
             if row.type_key == "iep" and not getattr(row, "_iep_manual", False):
                 self._apply_iep_suggestion(row, force=False)
+            elif row.type_key == "libre" and hasattr(row, "_libre_hint"):
+                vals = row.form.values()
+                if lignes.free_line_classified(vals):
+                    z = lignes.LINE_TYPES["libre"].zone(vals)
+                    row._libre_hint.setStyleSheet(f"color:{theme.TEXT_DIM};")
+                    row._libre_hint.setText(f"مصنَّف → المنطقة {z}")
+                else:
+                    row._libre_hint.setStyleSheet(f"color:{theme.WARNING};")
+                    row._libre_hint.setText(
+                        "حدّد «خاضع للاشتراك؟» و«خاضع للضريبة؟» — لا قيمة "
+                        "افتراضية (V7). لا يُحتسَب حتى يُصنَّف.")
 
         convention = (repository.get_active_convention(self._client_id,
                                                        conn=self._conn)
@@ -451,13 +477,12 @@ class BulletinScreen(QWidget):
         out_lignes: List[dict] = []
         ordre = 0
         for l in view.lignes:
-            lt = lignes.LINE_TYPES.get(l.key)
             out_lignes.append({
                 "ordre_affichage": ordre, "zone": l.zone,
                 "code_snapshot": l.code or l.key,
                 "libelle_snapshot": l.libelle, "sens_snapshot": l.sens,
-                "cotisable_snapshot": (lt.cotisable if lt else None),
-                "imposable_snapshot": (lt.imposable if lt else None),
+                "cotisable_snapshot": l.cotisable,
+                "imposable_snapshot": l.imposable,
                 "regime_irg_snapshot": "BAREME",
                 "montant": l.montant,
             })
@@ -487,6 +512,18 @@ class BulletinScreen(QWidget):
             return None
         if self._view is None:
             warn(self, "حفظ الكشف", ["لا نتيجة حساب — أضف أسطراً صحيحة."])
+            return None
+
+        # V7: يُمنع حفظ كشف فيه سطر حرّ غير مصنَّف صراحةً
+        unclassified = self._libre_unclassified()
+        if unclassified:
+            try:
+                for r in unclassified:
+                    lignes.validate_free_line(r.form.values())
+            except lignes.FreeLineError as exc:
+                warn(self, "سطر حرّ غير مصنَّف (V7)", [
+                    str(exc),
+                    f"عدد الأسطر الحرّة بلا تصنيف: {len(unclassified)}."])
             return None
 
         client_id = self._resolve_client_id()

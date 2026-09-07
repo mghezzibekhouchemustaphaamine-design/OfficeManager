@@ -143,6 +143,57 @@ class TestZones(unittest.TestCase):
         self.assertEqual(zones, sorted(zones, key=lignes.ZONE_ORDER.get))
 
 
+class TestFreeLine(unittest.TestCase):
+    def test_v7_rejette_sans_classification(self):
+        with self.assertRaises(lignes.FreeLineError):
+            lignes.validate_free_line({"libelle": "x", "montant": "100"})
+        with self.assertRaises(lignes.FreeLineError):      # imposable ناقص
+            lignes.validate_free_line({"cotisable": "نعم", "imposable": "—"})
+        self.assertFalse(lignes.free_line_classified({"cotisable": "نعم"}))
+        # مصنَّف صراحةً → لا استثناء
+        lignes.validate_free_line({"cotisable": "نعم", "imposable": "لا"})
+        self.assertTrue(lignes.free_line_classified(
+            {"cotisable": "نعم", "imposable": "لا"}))
+
+    def test_saut_vers_les_quatre_zones(self):
+        libre = lignes.LINE_TYPES["libre"]
+        self.assertEqual(libre.zone(
+            {"est_retenue": "لا", "cotisable": "نعم", "imposable": "نعم"}), "Z1")
+        self.assertEqual(libre.zone(
+            {"est_retenue": "لا", "cotisable": "لا", "imposable": "نعم"}), "Z2")
+        self.assertEqual(libre.zone(
+            {"est_retenue": "لا", "cotisable": "لا", "imposable": "لا"}), "Z3")
+        self.assertEqual(libre.zone(
+            {"est_retenue": "نعم", "cotisable": "لا", "imposable": "لا"}), "Z4")
+
+    def test_compute_bulletin_ignore_ligne_non_classee(self):
+        base = {"type": "salaire_base", "values": {"montant": "40000"}}
+        # غير مصنَّف → لا يظهر في الأسطر ولا يؤثّر
+        v0 = _view([base, {"type": "libre",
+                           "values": {"libelle": "غامض", "montant": "5000"}}])
+        self.assertNotIn("libre", [l.key for l in v0.lignes])
+        # مصنَّف Z2 → يظهر بمبلغه في منطقته
+        v1 = _view([base, {"type": "libre", "values": {
+            "libelle": "منحة خاصة", "montant": "5000",
+            "est_retenue": "لا", "cotisable": "لا", "imposable": "نعم"}}])
+        libre = next(l for l in v1.lignes if l.key == "libre")
+        self.assertEqual(libre.zone, "Z2")
+        self.assertEqual(libre.montant, D("5000.00"))
+        self.assertEqual(libre.libelle, "منحة خاصة")
+        self.assertEqual(libre.sens, "GAIN")
+
+    def test_libre_retenue_va_en_z4(self):
+        v = _view([
+            {"type": "salaire_base", "values": {"montant": "40000"}},
+            {"type": "libre", "values": {
+                "libelle": "اقتطاع خاص", "montant": "1200",
+                "est_retenue": "نعم", "cotisable": "لا", "imposable": "لا"}},
+        ])
+        libre = next(l for l in v.lignes if l.key == "libre")
+        self.assertEqual(libre.zone, "Z4")
+        self.assertEqual(libre.sens, "RETENUE")
+
+
 class TestHeuresSupp(unittest.TestCase):
     def test_hs_50_et_100_lignes_distinctes(self):
         v = _view([

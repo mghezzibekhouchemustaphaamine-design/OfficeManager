@@ -398,15 +398,13 @@ LINE_TYPES: Dict[str, LineType] = {
         "alloc_fam", "المنح العائلية", "GAIN", 0, 0, False, "autres",
         (LineField("montant", "المبلغ", "amount"),),
         _fold_alloc_fam, _r_input("montant"), code="3010"),
-}
 
-# النوع الحرّ يُسجَّل في وحدةٍ لاحقة (كوميت مستقل) — انظر register_free_line().
-
-
-def register_free_line() -> None:
-    """يسجّل نوع «سطر حرّ» (كوميت مستقل). تسمية ومبلغ حرّان + ``cotisable``
-    و``imposable`` إلزاميان بلا افتراض (V7)."""
-    LINE_TYPES["libre"] = LineType(
+    # --------------------------- السطر الحرّ ---------------------------
+    #  تسمية ومبلغ حرّان + تصنيف صريح. ``cotisable``/``imposable``
+    #  إلزاميان بلا قيمة افتراضية (V7 / SPEC §2.1) — تُفرَض بـ
+    #  :func:`validate_free_line`. المنطقة تُشتقّ من التصنيف عبر
+    #  :meth:`LineType.zone` (§2.3.2) — أربع حالات.
+    "libre": LineType(
         "libre", "سطر حرّ", "", None, None, False, "libre",
         (
             LineField("libelle", "التسمية", "text"),
@@ -418,19 +416,29 @@ def register_free_line() -> None:
             LineField("imposable", "خاضع للضريبة؟ (إلزامي)", "choice",
                       choices=("—", "نعم", "لا")),
         ),
-        _fold_libre, _r_input_round("montant"), code="LIBRE")
+        _fold_libre, _r_input_round("montant"), code="LIBRE"),
+}
 
 
 class FreeLineError(ValueError):
     """سطر حرّ بلا تصنيف صريح (V7)."""
 
 
+_UNSET = ("", "—")
+
+
+def free_line_classified(values: Dict) -> bool:
+    """صحيح إن صُنِّف السطر الحرّ صراحةً (خاضع/غير خاضع لكلٍّ من
+    الاشتراك والضريبة)."""
+    return (str(values.get("cotisable", "")).strip() not in _UNSET
+            and str(values.get("imposable", "")).strip() not in _UNSET)
+
+
 def validate_free_line(values: Dict) -> None:
     """يرفع :class:`FreeLineError` إن لم يُصنَّف السطر الحرّ صراحةً."""
     for k, label in (("cotisable", "خاضع للاشتراك"),
                      ("imposable", "خاضع للضريبة")):
-        raw = str(values.get(k, "")).strip()
-        if raw in ("", "—"):
+        if str(values.get(k, "")).strip() in _UNSET:
             raise FreeLineError(
                 f"السطر الحرّ: حدِّد «{label}؟» صراحةً — لا قيمة افتراضية "
                 f"(V7 / SPEC §2.1).")
@@ -446,6 +454,8 @@ class LineView:
     sens: str
     montant: Decimal
     code: str = ""
+    cotisable: Optional[int] = None
+    imposable: Optional[int] = None
 
 
 @dataclass
@@ -484,10 +494,16 @@ def compute_bulletin(entries: List[Dict], cfg: Dict,
     تمريرتان فقط عندما تكون قاعدة IEP/PRI = ``SAL_BASE_APRES_ABSENCES``
     (نحتاج ``retenue_absence`` أولاً)؛ وإلا تمريرة واحدة."""
     convention = convention or {}
-    parsed: List[Tuple[LineType, Dict]] = [
-        (LINE_TYPES[e["type"]], e.get("values", {}))
-        for e in entries if e.get("type") in LINE_TYPES
-    ]
+    parsed: List[Tuple[LineType, Dict]] = []
+    for e in entries:
+        lt = LINE_TYPES.get(e.get("type"))
+        if lt is None:
+            continue
+        v = e.get("values", {})
+        # سطر حرّ غير مصنَّف (V7) → لا يُطوى ولا يُعرَض؛ الشاشة تمنع الحفظ
+        if lt.key == "libre" and not free_line_classified(v):
+            continue
+        parsed.append((lt, v))
     kw = _convention_kwargs(convention)
     sb_total = sum((_v(v, "montant") for lt, v in parsed
                     if lt.key == "salaire_base"), _ZERO)
@@ -525,9 +541,19 @@ def compute_bulletin(entries: List[Dict], cfg: Dict,
 
     views: List[LineView] = []
     for (lt, v), m in zip(parsed, metas):
+        sens = lt.sens or (
+            "RETENUE" if _truthy(v.get("est_retenue")) else "GAIN")
+        libelle = lt.libelle
+        if lt.key == "libre" and v.get("libelle"):
+            libelle = str(v["libelle"])
+        cot = lt.cotisable if lt.cotisable is not None else int(
+            _truthy(v.get("cotisable")))
+        imp = lt.imposable if lt.imposable is not None else int(
+            _truthy(v.get("imposable")))
         views.append(LineView(
-            key=lt.key, libelle=lt.libelle, zone=lt.zone(v), sens=lt.sens,
-            montant=lt.resolve(res, v, m), code=lt.code))
+            key=lt.key, libelle=libelle, zone=lt.zone(v), sens=sens,
+            montant=lt.resolve(res, v, m), code=lt.code,
+            cotisable=cot, imposable=imp))
     views.sort(key=lambda x: ZONE_ORDER.get(x.zone, 9))
 
     return BulletinView(

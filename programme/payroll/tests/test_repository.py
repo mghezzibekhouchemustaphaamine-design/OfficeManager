@@ -20,7 +20,7 @@ def _fresh_db() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
     applied = repo.run_migrations(conn)
-    assert applied == [1, 2], applied  # قاعدة جديدة: 1 ثم 2 بالترتيب
+    assert applied == [1, 2, 3], applied  # قاعدة جديدة: 1 ثم 2 ثم 3 بالترتيب
     return conn
 
 
@@ -46,11 +46,11 @@ class TestRepositoryCycle(unittest.TestCase):
 
         # --- بذرة الكتالوج (SPEC §2.2) ---
         n = repo.seed_catalogue(ent_id, conn=c)
-        self.assertEqual(n, 25)  # 27 صفّاً في SPEC §2.2 ناقص CNAS و IRG
+        self.assertEqual(n, 23)  # 25 صفّاً في SPEC §2.2 ناقص CNAS و IRG
         self.assertEqual(repo.seed_catalogue(ent_id, conn=c), 0)  # لا تكرار
 
         rubs = repo.list_rubriques(ent_id, conn=c)
-        self.assertEqual(len(rubs), 25)
+        self.assertEqual(len(rubs), 23)
         by_code = {r["code"]: r for r in rubs}
         # السلة والنقل: معفاتان من CNAS، خاضعتان لـ IRG (SPEC §2.2)
         self.assertEqual((by_code["2000"]["cotisable"],
@@ -277,6 +277,43 @@ class TestRepositoryCycle(unittest.TestCase):
         rid = repo.create_rubrique(
             ent_id, dict(base, cotisable=0, imposable=1), conn=c)
         self.assertIsInstance(rid, int)
+
+    def test_transient_column_and_promotion(self):
+        """الهجرة 3: عمود transient + منتقي «مسجَّل» + الترقية."""
+        c = self.conn
+        reg = repo.create_entreprise(
+            {"raison_sociale": "Enregistré", "transient": 0}, conn=c)
+        tra = repo.create_entreprise(
+            {"raison_sociale": "Passager", "transient": 1}, conn=c)
+
+        regs = {e["id"] for e in repo.list_entreprises(registered_only=True,
+                                                       conn=c)}
+        self.assertIn(reg, regs)
+        self.assertNotIn(tra, regs)
+        allids = {e["id"] for e in repo.list_entreprises(conn=c)}
+        self.assertEqual(allids, {reg, tra})
+
+        repo.promote_entreprise(tra, conn=c)
+        regs2 = {e["id"] for e in repo.list_entreprises(registered_only=True,
+                                                        conn=c)}
+        self.assertIn(tra, regs2)
+        self.assertEqual(repo.get_entreprise(tra, conn=c)["transient"], 0)
+
+    def test_ensure_default_client_first_run(self):
+        """أول تشغيل: زبون افتراضي + كتالوج + اتفاقية مؤكَّدة (V15 لا تمنع)."""
+        c = self.conn
+        self.assertEqual(repo.list_entreprises(registered_only=True, conn=c), [])
+        cid = repo.ensure_default_client(conn=c)
+        self.assertIsInstance(cid, int)
+        # نداء ثانٍ لا يُنشئ زبوناً جديداً
+        self.assertEqual(repo.ensure_default_client(conn=c), cid)
+        self.assertEqual(
+            len(repo.list_entreprises(registered_only=True, conn=c)), 1)
+        self.assertEqual(len(repo.list_rubriques(cid, conn=c)), 23)
+        conv = repo.get_active_convention(cid, conn=c)
+        self.assertEqual(conv["confirme"], 1)
+        self.assertEqual(conv["base_iep"], "SAL_BASE_BRUT")   # §1.2.1
+        self.assertEqual(str(conv["taux_hs_jour"]), "1.50")
 
     def test_convention_blocks_bulletin_when_unconfirmed_is_caller_concern(self):
         """التخزين لا يمنع — منع V15 منطق واجهة. لكن نتأكّد أنّ الحقل

@@ -214,9 +214,26 @@ def _m2_payroll(cur: sqlite3.Cursor) -> None:
     cur.executescript(_M2_PAYROLL_DDL)
 
 
+def _m3_transient(cur: sqlite3.Cursor) -> None:
+    """الهجرة 3 — عمود ``transient`` على ``entreprise``.
+
+    ``transient = 1`` → «زبون عابر» أُنشئ لحظياً من شاشة الكشف باسم حرّ،
+    لا يظهر في منتقي «زبون مسجَّل». ``transient = 0`` → زبون مسجَّل
+    (صاحب سجل تجاري). :func:`promote_entreprise` يرفع 1 → 0."""
+    cur.execute(
+        "ALTER TABLE entreprise ADD COLUMN transient INTEGER NOT NULL "
+        "DEFAULT 0 CHECK (transient IN (0, 1))"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_entreprise_transient "
+        "ON entreprise (transient)"
+    )
+
+
 _MIGRATIONS: List[Tuple[int, Callable[[sqlite3.Cursor], None]]] = [
     (1, _m1_baseline),
     (2, _m2_payroll),
+    (3, _m3_transient),
 ]
 
 
@@ -411,7 +428,7 @@ def _reading(conn: Optional[sqlite3.Connection] = None):
 _ENTREPRISE_COLS = (
     "raison_sociale", "forme_juridique", "nif", "nis", "rc", "art_imposition",
     "num_employeur_cnas", "adresse", "gerant_nom", "gerant_qualite", "tel",
-    "actif",
+    "actif", "transient",
 )
 
 
@@ -422,6 +439,16 @@ def create_entreprise(data: Dict, conn: Optional[sqlite3.Connection] = None) -> 
         return _insert(c.cursor(), "entreprise", _ENTREPRISE_COLS, data)
 
 
+def promote_entreprise(entreprise_id: int,
+                       conn: Optional[sqlite3.Connection] = None) -> None:
+    """يرفع «زبوناً عابراً» (transient=1) إلى «زبون مسجَّل» (transient=0)."""
+    with transaction(conn) as c:
+        c.execute(
+            "UPDATE entreprise SET transient = 0, "
+            "updated_at = datetime('now','localtime') WHERE id = ?",
+            (entreprise_id,))
+
+
 def get_entreprise(entreprise_id: int,
                    conn: Optional[sqlite3.Connection] = None) -> Optional[dict]:
     with _reading(conn) as c:
@@ -430,11 +457,16 @@ def get_entreprise(entreprise_id: int,
     return _row_to_dict(row)
 
 
-def list_entreprises(*, actif_only: bool = True,
+def list_entreprises(*, actif_only: bool = True, registered_only: bool = False,
                      conn: Optional[sqlite3.Connection] = None) -> List[dict]:
-    sql = "SELECT * FROM entreprise"
+    clauses = []
     if actif_only:
-        sql += " WHERE actif = 1"
+        clauses.append("actif = 1")
+    if registered_only:
+        clauses.append("transient = 0")
+    sql = "SELECT * FROM entreprise"
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY raison_sociale"
     with _reading(conn) as c:
         rows = c.execute(sql).fetchall()
@@ -770,17 +802,17 @@ _DEFAULT_CATALOGUE: Tuple[Tuple, ...] = (
      "المنحة المدرسية / الأجر الوحيد", "GAIN", "MONTANT", 0, 0, 0),
     ("3030", "Frais de mission (sur justificatifs)", "مصاريف المهمة",
      "GAIN", "MONTANT", 0, 0, 0),
-    # --- Z1 (سالب) : اقتطاعات الغياب — نفس المعادلة، فصلها إداري ---
-    ("4000", "Retenue jours d'absence", "اقتطاع أيام الغياب",
+    # --- Z1 (سالب) : اقتطاعات الغياب (SPEC §2.2 محدَّث) ---
+    #  الأيام والساعات مقاماهما مختلفان (÷30 مقابل ÷173,33) ولا يُدمجان.
+    #  «اقتطاع ساعات غياب» يجمع كل الدوافع (مبرر/غير مبرر/مغادرة) — الفصل
+    #  حسابي لا إداري. «اقتطاع ساعات تأخّر» يبقى منفصلاً إجبارياً (لا
+    #  يُطرح من ساعات الحضور في تنسيب السلة/النقل، §1.2.3).
+    ("4000", "Retenue jours d'absence", "اقتطاع أيام غياب",
      "RETENUE", "QUANTITE_X_PU", 1, 1, 0),
-    ("4010", "Retenue heures d'absence non justifiée",
-     "اقتطاع ساعات غياب غير مبرر", "RETENUE", "QUANTITE_X_PU", 1, 1, 0),
-    ("4020", "Retenue heures d'absence justifiée",
-     "اقتطاع ساعات غياب مبرر", "RETENUE", "QUANTITE_X_PU", 1, 1, 0),
-    ("4030", "Retenue heures de retard", "اقتطاع ساعات التأخّر",
+    ("4010", "Retenue heures d'absence", "اقتطاع ساعات غياب",
      "RETENUE", "QUANTITE_X_PU", 1, 1, 0),
-    ("4040", "Retenue heures d'absence (départ)",
-     "اقتطاع ساعات غياب المغادرة", "RETENUE", "QUANTITE_X_PU", 1, 1, 0),
+    ("4020", "Retenue heures de retard", "اقتطاع ساعات تأخّر",
+     "RETENUE", "QUANTITE_X_PU", 1, 1, 0),
     # --- Z4 : اقتطاعات غير CNAS/IRG ---
     ("5000", "Retenue mutuelle", "اقتطاع تعاضدية (mutuelle)",
      "RETENUE", "MONTANT", 0, 0, 0),
@@ -826,3 +858,39 @@ def seed_catalogue(entreprise_id: int,
             })
             n += 1
         return n
+
+
+# --------------------- زبون افتراضي عند أول تشغيل ---------------------
+
+DEFAULT_CLIENT_NAME = "الزبون الافتراضي"
+
+
+def ensure_default_client(conn: Optional[sqlite3.Connection] = None) -> int:
+    """يضمن وجود زبون مسجَّل واحد على الأقل. عند أول تشغيل (لا زبون
+    مسجَّلاً) يُنشئ زبوناً افتراضياً + كتالوجه الافتراضي + اتفاقية
+    **مؤكَّدة تلقائياً** بقيم §1.2.1 (كلّها DEFAULT في المخطط) حتى لا
+    تمنع V15 توليد الكشوف. يرجّع ``id`` زبون مسجَّل قابل للاستعمال."""
+    with transaction(conn) as c:
+        cur = c.cursor()
+        row = cur.execute(
+            "SELECT id FROM entreprise WHERE transient = 0 "
+            "ORDER BY id LIMIT 1").fetchone()
+        if row is not None:
+            return int(row["id"] if isinstance(row, sqlite3.Row) else row[0])
+        ent_id = _insert(cur, "entreprise", _ENTREPRISE_COLS, {
+            "raison_sociale": DEFAULT_CLIENT_NAME, "actif": 1, "transient": 0,
+        })
+        # كتالوج §2.2
+        for ordre, (code, fr, ar, sens, mode, cot, imp, prorat) in enumerate(
+                _DEFAULT_CATALOGUE):
+            _insert(cur, "rubrique_catalogue", _RUBRIQUE_COLS, {
+                "entreprise_id": ent_id, "code": code, "libelle_fr": fr,
+                "libelle_ar": ar, "sens": sens, "mode": mode,
+                "base_calcul": "[]", "cotisable": cot, "imposable": imp,
+                "regime_irg": "BAREME", "proratisable": prorat,
+                "depend_de": "[]", "ordre_affichage": ordre, "actif": 1,
+            })
+        # اتفاقية v1 مؤكَّدة (كل المعاملات DEFAULT = §1.2.1)
+        _insert(cur, "convention", _CONVENTION_COLS,
+                {"entreprise_id": ent_id, "version": 1, "confirme": 1})
+        return ent_id

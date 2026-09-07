@@ -20,10 +20,7 @@
     "taux_salarie": 0.09,
     "taux_employeur": 0.25,
     "taux_oeuvres_sociales": 0.005,
-    "appliquer_plancher_snmg": true,
-    "plancher_prorata": "CONTRAT_SEULEMENT",
-    "statut": "A_VERIFIER_CNAS",
-    "note": "Le prorata du plancher sur les absences n'est pas tranché par un texte explicite. Vérifier auprès de la CNAS."
+    "appliquer_plancher_snmg": true
   },
   "irg": {
     "seuil_exoneration": 30000,
@@ -80,7 +77,8 @@
   "iep": {
     "taux_par_annee": 0.01,
     "plafond_taux": null,
-    "note": "Aucun taux ni base fixés par la loi. La base (brute ou après absences) est un paramètre de CONVENTION, stocké par entreprise — voir §1.2 de la spec."
+    "note": "Aucun taux ni base fixés par la loi. Base, taux et ancienneté minimale sont des paramètres de CONVENTION (§1.2). Le taux est PROPOSÉ, jamais imposé — voir §1.2.4.",
+    "anciennete_minimale_annees": 1
   },
   "prime_rendement": {
     "taux_defaut": 0.0,
@@ -111,7 +109,7 @@
   "jours_mois": 30,
   "absences": {
     "methode": "les deux",
-    "note": "Retenue jour = salaire_base/jours_mois ; retenue heure = salaire_base/heures_mois. Les deux rubriques coexistent, l'employeur utilise celle qui convient."
+    "note": "Deux rubriques horaires seulement : 'heures d'absence' (tous motifs confondus) et 'heures de retard' (séparée — n'entre pas dans le calcul des heures de présence du prorata panier/transport, §1.2.3). Jours ÷ 30, heures ÷ 173,33 : dénominateurs distincts, aucune conversion entre eux."
   },
   "regime_irg": {
     "valeurs_supportees": [

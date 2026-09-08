@@ -2060,3 +2060,78 @@ Tkinter معدوماً عملياً: `ui/` لا يستورد `ui2/` ولا `PySi
 `programme/payroll/tests/test_repository.py` · `ui2/paie/bulletin.py` ·
 `ui2/paie/companies.py` · `demos/ui2_paie_gallery.py` · `CLAUDE.md`.
 لا مساس بـ`compute_sequence` ولا `irg.py` ولا `lignes.py`.
+
+---
+
+## مرجع أربعة وأربعون — 2026-09-08: تجربة الاستعمال (المهمة ج)
+
+أربعة إصلاحات من `docs/FULL_REVIEW.md` §4. لا مساس بمنطق المحرّك.
+
+### ج.4 — تحقّق حقيقي لحقلَي التاريخ والفترة
+
+كانا نصّاً حرّاً، فقُبل «13/01/2016» صامتاً ثم فشل التحليل بصمت.
+
+- **`ui2/form.py`**: `kind="date"` أُعيد بناؤه فوق `_DateEdit(QDateEdit)`
+  ISO؛ أُضيف `kind="month"` (صيغة `yyyy-MM`). حقل **غير إجباري** = يقبل
+  «لا تاريخ»: عند التاريخ الأدنى يعرض `—` ويردّ `""`، و`Delete`/`Backspace`
+  يعيده إلى «غير محدَّد». `values()`/`set_values()`/`errors()` تتعامل مع
+  `_DateEdit` (لا `QDateEdit` خام).
+- **`bulletin.py`**: `employe_date_entree` → `kind="date"` (غير إجباري،
+  يبدأ «غير محدَّد» فيبقى اقتراح الأقدمية «حدّد تاريخ الدخول»)؛ `periode`
+  → `kind="month"` إجباري، افتراضه الشهر الحالي. تعديل أيّ حقل ترويسة
+  (`dateChanged`/`textChanged`/`currentTextChanged`) → إعادة حساب مؤجَّلة.
+
+### ج.5 — تفعيل حفظ المسوّدة التلقائي لشاشة الأجور
+
+في مرجع 42 بقيت خطاطيف المسوّدة خاملة. الآن مفعَّلة فعلياً:
+
+- `_schedule()` (كل تعديل حقل حقيقي) و`_user_edited()` (إضافة/حذف سطر)
+  ينادِيان `Screen.mark_dirty()` — مع احترام `_suppress_schedule` (التعبئة
+  البرمجية، اقتراح الأقدمية، `apply_draft`، `new_bulletin` لا تُعلِّم).
+- `draft_state()` = قيم الترويسة + `[{type, values}]` للأسطر ·
+  `apply_draft()` يعيد بناءهما (مكتوماً) · `is_empty()` للمسوّدة فقط.
+- حفظ ناجح → `mark_clean()` (‏`_dirty=False` + مسح ملف المسوّدة).
+  `new_bulletin(discard_draft=True)` كذلك؛ أوّل بناء يستدعيها بـ`False`
+  فلا يمسّ المسوّدة، و`ui2/paie/__main__` يستدعي `maybe_restore_draft`
+  بمربّع «استعادة مسوّدة غير محفوظة؟» ثم يربط `aboutToQuit → on_deactivate`.
+- ملف المسوّدة: `programme/paths.get_local_state_dir()` (جذر المشروع اليوم؛
+  تنتقل إلى `%APPDATA%` في المهمة د). متغيّر البيئة
+  `OFFICEMANAGER_LOCAL_STATE_DIR` يعزله في الاختبارات.
+
+### ج.6 — رسائل خطأ مفهومة + التفاصيل للسجلّ
+
+`ui2/paie/bulletin.py` لم يعُد يعرض استثناء بايثون للمستخدم:
+`recompute()` (فشل تحميل المعاملات) و`save()` V16 يسجّلان الاستثناء عبر
+`logger.warning(..., exc_info=True)` ويعرضان رسالة عربية واضحة تُحيل إلى
+السجلّ.
+
+### ج.7 — تأكيد حذف سطر + مفتاح Delete
+
+- `_on_remove_requested` (زرّ ✕ أو Delete): إن كان السطر **مملوءاً** →
+  `confirm(...)` قبل الحذف (سطر فارغ أُضيف بالخطأ يُحذف بلا سؤال).
+- `_LineRow` صار قابلاً للتركيز (`Qt.ClickFocus`) بحدّ `PRIMARY` عند
+  التحديد؛ `keyPressEvent` يلتقط `Delete`/`Backspace` **فقط حين يكون
+  التركيز على جسم السطر** (لا على حقل داخله — فلا يصطدم بحذف النصّ).
+
+### التحقّق — بوّابة القبول كاملة خضراء
+
+- `python -m unittest discover -s ui2/paie/tests` → **Ran 11, OK** (+3:
+  جولة إغلاق/استعادة المسوّدة، حفظ ناجح يُصفّر `has_unsaved_changes`
+  ويمسح الملف، صيغة تاريخ خاطئة تُردّ `""`). `setUp` يعزل مجلد المسوّدة
+  ويُبدِّل `confirm`→True.
+- `python -m unittest discover -s ui2/tests` → **Ran 10, OK**.
+- `python -m unittest discover -s programme/payroll/tests` → **Ran 40, OK**.
+  `test_golden.py` → **14/14**.
+- `demos/ui2_paie_gallery.py --selftest` → `ALLOK` (‏`employe_date_entree`
+  يبدأ `""`، `periode` تقبل `2026-09`/`1990-01`).
+- `demos/ui2_gallery.py --selftest` (مكتبة المكوّنات، فيها `kind="date"`)
+  → `ALLOK`. `demos/pyside6_demo` → `ALLOK`.
+- `python -m ui2.paie` → `main() → 0` · `import main` / `ui.home` /
+  `ui.cd.tab` → سليمة.
+
+### الملفات المتأثرة
+
+معدَّل: `ui2/form.py` (`_DateEdit` + `kind="month"`) · `ui2/paie/bulletin.py`
+· `ui2/paie/__main__.py` (استعادة المسوّدة) ·
+`ui2/paie/tests/test_bulletin_screen.py` · `CLAUDE.md` · `docs/CHANGELOG.md`.
+لا مساس بـ`programme/**` ولا بمحرّك الحساب.

@@ -12,6 +12,7 @@
 ``lignes``، ويقفز السطر تلقائياً إلى منطقته (§2.3.2). الأسطر النظامية
 ‎[A]…[E]‎ مقفلة. الأجر القاعدي يُضاف آلياً ولا يُحذف.
 """
+import logging
 from datetime import date
 from decimal import Decimal
 from typing import Dict, List, Optional
@@ -25,11 +26,13 @@ from PySide6.QtWidgets import (
 from programme.payroll import config_loader, lignes, repository
 from programme.payroll.calc import fmt_montant       # مُنسِّق العرض الموحّد
 from ui2 import theme
-from ui2.alerts import info_label, warn
+from ui2.alerts import confirm, info_label, warn
 from ui2.form import Field, Form
 from ui2.screen import Screen
 from ui2.table import Column, DataTable
 from ui2.toolbar import ToolAction
+
+logger = logging.getLogger(__name__)
 
 _RECOMPUTE_MS = 400
 
@@ -51,6 +54,10 @@ class _LineRow(QWidget):
     def __init__(self, type_key: str, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_StyledBackground, True)
+        # قابل للتركيز: نقرة على جسم السطر (لا على حقل) تحدّده، ومفتاح
+        # Delete عندها يحذفه (راجع keyPressEvent). النقر داخل حقل يبقى
+        # عادياً — التركيز يذهب للحقل لا للسطر.
+        self.setFocusPolicy(Qt.ClickFocus)
         self.type_key = type_key
         lt = lignes.LINE_TYPES[type_key]
 
@@ -100,7 +107,17 @@ class _LineRow(QWidget):
         lay.addLayout(top)
         lay.addLayout(self._aux)
         self.setStyleSheet(
-            f"_LineRow {{ border:1px solid {theme.BORDER}; border-radius:4px; }}")
+            f"_LineRow {{ border:1px solid {theme.BORDER}; border-radius:4px; }}"
+            f"_LineRow:focus {{ border:1px solid {theme.PRIMARY}; }}")
+
+    def keyPressEvent(self, event):                       # noqa: N802 (Qt)
+        # يصل هنا فقط حين يكون التركيز على جسم السطر نفسه (لا على حقل
+        # داخله) — فحذف السطر بـ Delete لا يصطدم بحذف النصّ داخل الحقول.
+        if (event.key() in (Qt.Key_Delete, Qt.Key_Backspace)
+                and not lignes.LINE_TYPES[self.type_key].system):
+            self.removeRequested.emit(self)
+            return
+        super().keyPressEvent(event)
 
     def add_aux(self, widget: QWidget):
         self._aux.addWidget(widget)
@@ -223,7 +240,9 @@ class BulletinScreen(Screen):
         self._warnbar = self.warnbar
         self.on_activate()                    # اختصارات الشاشة (Ctrl+S) تعمل مستقلّةً
         self.reload_clients()
-        self.new_bulletin()
+        # أوّل بناء: استمارة فارغة بلا مسّ المسوّدة على القرص — المضيف
+        # (ui2/paie/__main__) يستدعي maybe_restore_draft بعدها.
+        self.new_bulletin(discard_draft=False)
 
     # ======================= خطاطيف ui2.screen.Screen =======================
     def build_toolbar(self, toolbar):
@@ -242,21 +261,29 @@ class BulletinScreen(Screen):
         self._act_pdf = toolbar.add(ToolAction("طباعة PDF", self._print_pdf))
 
     def build_header(self):
-        #  لا قيم افتراضية موحِية: تاريخ الدخول فارغ (فيبقى اقتراح
-        #  الأقدمية «حدّد تاريخ الدخول»)، والفترة = الشهر الحالي المحسوب.
+        #  التاريخ/الفترة عبر ``kind="date"``/``kind="month"`` (تحقّق حقيقي
+        #  بدل نصّ حرّ — سبب قبول «13/01/2016» صامتاً سابقاً). تاريخ الدخول
+        #  غير إجباري فيبدأ «غير محدَّد» (يبقى اقتراح الأقدمية «حدّد تاريخ
+        #  الدخول»)؛ الفترة إجبارية = الشهر الحالي المحسوب.
         self._header = _TwoColForm(
             [Field("client_registered", "زبون مسجَّل", kind="choice",
                    choices=[]),
              Field("client_transient", "زبون عابر (اسم حرّ)")],
             [Field("employe_nom", "العامل — اللقب والاسم", required=True),
-             Field("employe_date_entree", "تاريخ الدخول (YYYY-MM-DD)",
-                   placeholder="YYYY-MM-DD"),
-             Field("periode", "الفترة (YYYY-MM)", required=True,
+             Field("employe_date_entree", "تاريخ الدخول", kind="date"),
+             Field("periode", "الفترة", kind="month", required=True,
                    default=date.today().strftime("%Y-%m"))],
             self)
         self._header.widget("client_registered").currentTextChanged.connect(
             self._on_client_changed)
-        self._header.widget("periode").textChanged.connect(self._schedule)
+        # كل تعديل في الترويسة → إعادة حساب مؤجَّلة + تعليم «غير محفوظ»
+        self._header.widget("client_registered").currentTextChanged.connect(
+            self._schedule)
+        self._header.widget("client_transient").textChanged.connect(self._schedule)
+        self._header.widget("employe_nom").textChanged.connect(self._schedule)
+        self._header.widget("employe_date_entree").dateChanged.connect(
+            self._schedule)
+        self._header.widget("periode").dateChanged.connect(self._schedule)
         return self._header
 
     def build_body(self):
@@ -305,12 +332,19 @@ class BulletinScreen(Screen):
                 "lines": [r.entry() for r in self._rows]}
 
     def apply_draft(self, data):
-        self._header.set_values(data.get("header", {}))
-        self._clear_lines()
-        for e in data.get("lines", []):
-            self.add_line(e.get("type"))
-            if self._rows:
-                self._rows[-1].form.set_values(e.get("values", {}))
+        """يستعيد مسوّدة: قيم الترويسة + قائمة ``{type, values}`` للأسطر.
+        يُكتَم التأجيل أثناء البناء؛ ``Screen.maybe_restore_draft`` يضع
+        ``_dirty = True`` بعده (مسوّدة مستعادة = غير محفوظة)."""
+        self._suppress_schedule = True
+        try:
+            self._header.set_values(data.get("header", {}))
+            self._clear_lines()
+            for e in data.get("lines", []):
+                self.add_line(e.get("type"))
+                if self._rows:
+                    self._rows[-1].form.set_values(e.get("values", {}))
+        finally:
+            self._suppress_schedule = False
         self.recompute()
 
     def is_empty(self):
@@ -332,13 +366,24 @@ class BulletinScreen(Screen):
         if self._clients:
             self._on_client_changed(self._clients[0]["raison_sociale"])
 
-    def new_bulletin(self):
-        """استمارة جديدة: فارغة عدا الأجر القاعدي المُضاف آلياً (§2.3.1)."""
+    def new_bulletin(self, *, discard_draft: bool = True):
+        """استمارة جديدة: فارغة عدا الأجر القاعدي المُضاف آلياً (§2.3.1).
+        ``discard_draft=True`` (زرّ «جديد» من المستخدم) يُصفّر ``_dirty``
+        **ويمسح المسوّدة**؛ ``=False`` (أوّل بناء) يترك المسوّدة على القرص
+        ليقرّر المضيف استعادتها."""
         self._bulletin_id = None
         self._readonly = False
-        self._clear_lines()
-        self.add_line("salaire_base")
+        self._suppress_schedule = True
+        try:
+            self._clear_lines()
+            self.add_line("salaire_base")
+        finally:
+            self._suppress_schedule = False
         self.recompute()
+        if discard_draft:
+            self.mark_clean()            # _dirty=False + مسح المسوّدة
+        else:
+            self._dirty = False
 
     # =============================== الزبون ===============================
     def _on_client_changed(self, name: str):
@@ -379,7 +424,7 @@ class BulletinScreen(Screen):
         row.changed.connect(self._schedule)
         row.fieldEdited.connect(
             lambda k, r=row: self._on_line_field_edited(r, k))
-        row.removeRequested.connect(self._remove_line)
+        row.removeRequested.connect(self._on_remove_requested)
         self._lines_lay.addWidget(row)
         self._rows.append(row)
         if type_key == "iep":
@@ -387,6 +432,7 @@ class BulletinScreen(Screen):
         elif type_key == "libre":
             self._attach_libre_aux(row)
         self._build_menu()        # نوع فريد صار مُضافاً → عطّله في القائمة
+        self._user_edited()
         self.recompute()          # فوري عند الإضافة
 
     # ------- سطر حرّ: تصنيف صريح إلزامي (V7) -------
@@ -462,6 +508,19 @@ class BulletinScreen(Screen):
         if force:
             self.recompute()
 
+    def _on_remove_requested(self, row: _LineRow):
+        """طلب حذف سطر (زرّ ✕ أو مفتاح Delete على السطر). يؤكَّد فقط إن
+        كان السطر مُدخَلاً فيه قيمة — حذف سطر فارغ أُضيف بالخطأ لا يحتاج
+        سؤالاً."""
+        if row not in self._rows:
+            return
+        if row.is_filled() and not confirm(
+                self, "حذف سطر",
+                f"حذف السطر «{lignes.LINE_TYPES[row.type_key].libelle}» "
+                f"وقيمته المُدخَلة؟"):
+            return
+        self._remove_line(row)
+
     def _remove_line(self, row: _LineRow):
         if row not in self._rows:
             return
@@ -469,6 +528,7 @@ class BulletinScreen(Screen):
         row.setParent(None)
         row.deleteLater()
         self._build_menu()        # النوع صار متاحاً من جديد
+        self._user_edited()
         self.recompute()          # فوري عند الحذف
 
     def _clear_lines(self):
@@ -478,22 +538,33 @@ class BulletinScreen(Screen):
         self._rows.clear()
 
     # =============================== الحساب ===============================
-    def _schedule(self):
-        """إعادة حساب مؤجَّلة 400ms (بعد توقّف الكتابة)."""
+    def _schedule(self, *_a):
+        """تعديل حقيقي من المستخدم: إعادة حساب مؤجَّلة 400ms + تعليم
+        «غير محفوظ» (يبدأ مؤقّت حفظ المسوّدة في ``Screen``)."""
         if getattr(self, "_suppress_schedule", False):
             return
+        self.mark_dirty()                 # ui2.screen.Screen: _dirty + مسوّدة
         self._timer.start()
+
+    def _user_edited(self):
+        """تعديل بنيوي (إضافة/حذف سطر): تعليم «غير محفوظ» بلا تأجيل حساب
+        (المُستدعي يعيد الحساب فوراً)."""
+        if not getattr(self, "_suppress_schedule", False):
+            self.mark_dirty()
 
     def recompute(self):
         self._timer.stop()
         periode = self._header.values().get("periode", "").strip()
         try:
             cfg = config_loader.load_params(f"{periode}-01")
-        except Exception as exc:                       # noqa: BLE001
+        except Exception:                              # noqa: BLE001
+            logger.warning("فشل تحميل معاملات الفترة %r", periode, exc_info=True)
             self._view = None
             self._cfg = None
             self._result.set_rows([])
-            self._info.setText(f"تعذّر تحميل المعاملات: {exc}")
+            self._info.setText(
+                "تعذّر تحميل معاملات هذه الفترة — تأكّد من صيغتها ومن وجود "
+                "ملف معاملات سنتها (programme/data/params_paie). التفاصيل في السجلّ.")
             return
         self._cfg = cfg
 
@@ -661,10 +732,13 @@ class BulletinScreen(Screen):
         try:
             params_version = str(
                 config_loader.load_params(f"{v['periode']}-01")["version"])
-        except Exception as exc:                        # noqa: BLE001
+        except Exception:                               # noqa: BLE001
+            logger.warning("V16: فشل تحميل معاملات الفترة %r عند الحفظ",
+                           v.get("periode"), exc_info=True)
             warn(self, "نسخة المعاملات غير محدَّدة (V16)", [
-                f"تعذّر تحميل معاملات الفترة «{v['periode']}»: {exc}",
-                "لا يُحفَظ كشف بلا نسخة معاملات حقيقية — صحّح الفترة."])
+                f"تعذّر تحميل معاملات الفترة «{v['periode']}».",
+                "لا يُحفَظ كشف بلا نسخة معاملات حقيقية — صحّح الفترة أو أضِف "
+                "ملف معاملات سنتها. التفاصيل في السجلّ."])
             return None
 
         if self._view is None:
@@ -738,6 +812,7 @@ class BulletinScreen(Screen):
         self._bulletin_id = repository.create_bulletin(
             bulletin, out_lignes, conn=self._conn)
         self._client_id = client_id
+        self.mark_clean()                # حفظ ناجح → _dirty=False + مسح المسوّدة
         self._info.setText(f"حُفِظ الكشف #{self._bulletin_id}.")
         self.bulletinSaved.emit(self._bulletin_id)
         return self._bulletin_id

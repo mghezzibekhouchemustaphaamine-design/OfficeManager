@@ -20,7 +20,7 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 from programme.database import get_connection
 from programme.payroll import repository
@@ -45,11 +45,25 @@ def main() -> int:
 
     # نافذة بشاشة واحدة — لا حاجة لتبويبات. BulletinScreen يحمل شريط
     # أدواته الخاص (من ui2/toolbar).
+    screen = BulletinScreen(conn=conn)
     win = QMainWindow()
     win.setWindowTitle("OfficeManager — كشف الراتب")
     win.resize(1040, 680)
-    win.setCentralWidget(BulletinScreen(conn=conn))
+    win.setCentralWidget(screen)
     win.show()
+
+    # مسوّدة غير محفوظة من جلسة سابقة (إغلاق قبل الحفظ) → اعرضها للاستعادة.
+    def _ask_restore() -> bool:
+        return QMessageBox.question(
+            win, "مسوّدة غير محفوظة",
+            "وُجدت مسوّدة كشف لم تُحفَظ من جلسة سابقة.\n"
+            "استعادتها؟ («لا» تتجاهلها وتمسحها.)",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes
+
+    screen.maybe_restore_draft(_ask_restore)
+
+    # حفظ المسوّدة فوراً عند إغلاق النافذة (قبل أن تُهدَم الشاشة).
+    app.aboutToQuit.connect(screen.on_deactivate)
     try:
         return app.exec()
     finally:

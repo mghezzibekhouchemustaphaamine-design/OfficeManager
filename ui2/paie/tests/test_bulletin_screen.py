@@ -30,6 +30,7 @@ except Exception:                                    # noqa: BLE001
 
 if _HAS_QT:
     import ui2.paie.bulletin as bulletin_mod
+    from programme import paths
     from programme.payroll import repository
     from ui2 import theme
     from ui2.paie.bulletin import BulletinScreen
@@ -59,14 +60,20 @@ class BulletinScreenPin(unittest.TestCase):
         # التقاط صناديق الرسائل بدل عرضها (تُوقف التشغيل بلا شاشة)
         self.captured = []
         self._orig_warn = bulletin_mod.warn
+        self._orig_confirm = bulletin_mod.confirm
         bulletin_mod.warn = lambda _p, title, lines: self.captured.append(
             (title, list(lines)))
+        bulletin_mod.confirm = lambda *_a, **_k: True     # تأكيد الحذف: نعم
         self._tmp = tempfile.mkdtemp(prefix="om_pin_")
+        # عزل ملفات المسوّدة في مجلد الاختبار (بدل جذر المستودع)
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
         self.conn = _fresh_db(self._tmp)
         self.scr = BulletinScreen(conn=self.conn)
 
     def tearDown(self):
         bulletin_mod.warn = self._orig_warn
+        bulletin_mod.confirm = self._orig_confirm
+        os.environ.pop(paths._LOCAL_STATE_ENV_OVERRIDE, None)
         self.scr.deleteLater()
         self.conn.close()
         shutil.rmtree(self._tmp, ignore_errors=True)
@@ -263,6 +270,60 @@ class BulletinScreenPin(unittest.TestCase):
         keys = [r.type_key for r in self.scr._rows]
         self.assertEqual(keys.count("panier"), 1)
         self.assertEqual(keys.count("avance"), 2)
+
+    # ==================== المهمة ج/5: حفظ المسوّدة التلقائي ====================
+    def test_draft_autosave_close_and_restore_roundtrip(self):
+        """إغلاق الشاشة بتعديل غير محفوظ ثم إعادة فتحها يستعيد نفس الحالة."""
+        self.scr._header.set_values(
+            {"employe_nom": "مسوّدة تجريبية", "periode": "2026-09",
+             "employe_date_entree": "2018-03-01"})
+        self._line(0, montant="41250")
+        self._add("panier", montant_mensuel="2500")
+        self.assertTrue(self.scr.has_unsaved_changes())
+
+        self.scr.on_deactivate()                          # = إغلاق → flush_draft
+        self.scr.deleteLater()
+
+        scr2 = BulletinScreen(conn=self.conn)
+        self.assertFalse(scr2.has_unsaved_changes())      # قبل الاستعادة
+        restored = scr2.maybe_restore_draft(ask=lambda: True)
+        self.assertTrue(restored)
+
+        hv = scr2._header.values()
+        self.assertEqual(hv["employe_nom"], "مسوّدة تجريبية")
+        self.assertEqual(hv["periode"], "2026-09")
+        self.assertEqual(hv["employe_date_entree"], "2018-03-01")
+        by_type = {r.type_key: r.form.values() for r in scr2._rows}
+        self.assertEqual(by_type["salaire_base"]["montant"], "41250")
+        self.assertEqual(by_type["panier"]["montant_mensuel"], "2500")
+        self.assertTrue(scr2.has_unsaved_changes())       # مسوّدة مستعادة = غير محفوظة
+        scr2.deleteLater()
+
+    def test_successful_save_clears_unsaved_flag_and_draft(self):
+        self.scr._header.set_values(
+            {"employe_nom": "حفظ ناجح", "periode": "2026-09"})
+        self._line(0, montant="45000")
+        self.scr.recompute()
+        self.assertTrue(self.scr.has_unsaved_changes())
+        self.scr.flush_draft()
+        self.assertTrue(os.path.exists(
+            os.path.join(self._tmp, "paie_draft.json")))
+
+        bid = self.scr.save()
+        self.assertIsNotNone(bid)
+        self.assertFalse(self.scr.has_unsaved_changes())
+        self.assertFalse(os.path.exists(
+            os.path.join(self._tmp, "paie_draft.json")))
+
+    def test_invalid_date_cannot_be_typed_freely(self):
+        """حقل التاريخ الآن ``kind="date"`` — ``values()`` يردّ دائماً
+        ISO صالحاً أو "" (لا «13/01/2016» صامتة)."""
+        w = self.scr._header.widget("employe_date_entree")
+        w.set_iso("13/01/2016")                           # صيغة خاطئة
+        self.assertEqual(self.scr._header.values()["employe_date_entree"], "")
+        w.set_iso("2016-01-13")
+        self.assertEqual(
+            self.scr._header.values()["employe_date_entree"], "2016-01-13")
 
 
 if __name__ == "__main__":

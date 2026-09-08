@@ -17,8 +17,45 @@ from PySide6.QtWidgets import (
 )
 
 # الأنواع اللاتينية: تُجبَر على LTR على مستوى الحقل
-_LTR_KINDS = {"number", "amount", "date", "ssn"}
+_LTR_KINDS = {"number", "amount", "date", "month", "ssn"}
 KINDS = {"text", "multiline", "choice"} | _LTR_KINDS
+
+_DATE_FMT = {"date": "yyyy-MM-dd", "month": "yyyy-MM"}
+
+
+class _DateEdit(QDateEdit):
+    """``QDateEdit`` بصيغة ISO (``yyyy-MM-dd`` أو ``yyyy-MM``). إن كان
+    الحقل غير إجباري فهو **يقبل «لا تاريخ»**: عند التاريخ الأدنى يعرض
+    نصّاً خاصاً ويردّ ``""``؛ ``Delete`` / ``Backspace`` يعيده إلى «لا
+    تاريخ». يمنع إدخال صيغ حرّة خاطئة (سبب قبول «13/01/2016» صامتاً سابقاً)."""
+
+    def __init__(self, fmt: str, *, nullable: bool, parent=None):
+        super().__init__(parent)
+        self._fmt = fmt
+        self._nullable = nullable
+        self.setCalendarPopup(True)
+        self.setDisplayFormat(fmt)
+        if nullable:
+            self.setMinimumDate(QDate(1900, 1, 1))
+            self.setSpecialValueText("—")
+
+    def keyPressEvent(self, event):                       # noqa: N802 (Qt)
+        if self._nullable and event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            self.setDate(self.minimumDate())
+            return
+        super().keyPressEvent(event)
+
+    def iso(self) -> str:
+        if self._nullable and self.date() == self.minimumDate():
+            return ""
+        return self.date().toString(self._fmt)
+
+    def set_iso(self, value) -> None:
+        d = QDate.fromString(str(value or ""), self._fmt)
+        if d.isValid():
+            self.setDate(d)
+        elif self._nullable:
+            self.setDate(self.minimumDate())
 
 
 @dataclass
@@ -67,12 +104,17 @@ class Form(QWidget):
                 w.setCurrentText(str(f.default))
             return w
 
-        if f.kind == "date":
-            w = QDateEdit()
-            w.setCalendarPopup(True)
-            w.setDisplayFormat("yyyy-MM-dd")
-            d = QDate.fromString(str(f.default), "yyyy-MM-dd")
-            w.setDate(d if d.isValid() else QDate.currentDate())
+        if f.kind in ("date", "month"):
+            fmt = _DATE_FMT[f.kind]
+            # حقل غير إجباري = يقبل «لا تاريخ»؛ إجباري = دائماً بقيمة.
+            w = _DateEdit(fmt, nullable=not f.required)
+            d = QDate.fromString(str(f.default or ""), fmt)
+            if d.isValid():
+                w.setDate(d)
+            elif not f.required:
+                w.setDate(w.minimumDate())               # يبدأ «غير محدَّد»
+            else:
+                w.setDate(QDate.currentDate())
             return w
 
         w = QLineEdit(str(f.default or ""))
@@ -102,8 +144,8 @@ class Form(QWidget):
                 out[f.key] = w.toPlainText().strip()
             elif isinstance(w, QComboBox):
                 out[f.key] = w.currentText()
-            elif isinstance(w, QDateEdit):
-                out[f.key] = w.date().toString("yyyy-MM-dd")
+            elif isinstance(w, _DateEdit):
+                out[f.key] = w.iso()
             else:
                 out[f.key] = w.text().strip()
         return out
@@ -117,10 +159,8 @@ class Form(QWidget):
                 w.setPlainText(str(val or ""))
             elif isinstance(w, QComboBox):
                 w.setCurrentText(str(val or ""))
-            elif isinstance(w, QDateEdit):
-                d = QDate.fromString(str(val), "yyyy-MM-dd")
-                if d.isValid():
-                    w.setDate(d)
+            elif isinstance(w, _DateEdit):
+                w.set_iso(val)
             else:
                 w.setText("" if val is None else str(val))
 
@@ -143,8 +183,9 @@ class Form(QWidget):
                     errs.append(f"«{f.label}» ليس مبلغاً صالحاً.")
             elif f.kind == "number" and not val.lstrip("-").isdigit():
                 errs.append(f"«{f.label}» يجب أن يكون رقماً صحيحاً.")
-            elif f.kind == "date" and not QDate.fromString(val, "yyyy-MM-dd").isValid():
-                errs.append(f"«{f.label}» تاريخ غير صالح (YYYY-MM-DD).")
+            elif f.kind in ("date", "month") and not QDate.fromString(
+                    val, _DATE_FMT[f.kind]).isValid():
+                errs.append(f"«{f.label}» تاريخ غير صالح.")
         return errs
 
     def widget(self, key: str) -> QWidget:

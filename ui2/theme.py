@@ -4,33 +4,56 @@
 المكوّنات الأخرى **لا تستدعي** ``setLayoutDirection`` ولا تعرّف ألواناً.
 الاستثناء الوحيد المسموح على مستوى المكوّن هو اتجاه *حقل مفرد* لاتيني
 (أرقام/تواريخ) — سلوك مكتبة مقصود في ``ui2.form`` و``ui2.table``.
+
+مبدأ القيَم (المرحلة 3-صفر / البند 2): **مطابقة حرفية لبرنامج Tkinter
+الحالي**، لا ذوق مستقل. كل قيمة مستخرَجة من الكود القديم أو من palette
+نمط ``windowsvista`` الفعلي — لا تخمين. المصدر مذكور بجانب كل token.
 """
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import QApplication
 
 # ------------------------- لوحة الألوان -------------------------
-BG          = "#f4f5f7"
-SURFACE     = "#ffffff"
-BORDER      = "#d6d9de"
-TEXT        = "#1f2430"
-TEXT_DIM    = "#6b7280"
-PRIMARY     = "#2f6fb2"
-PRIMARY_DK  = "#255a91"
-SELECTION   = "#dbe9f7"
-ROW_ALT     = "#fafbfc"
-WARNING     = "#b4690e"
-DANGER      = "#b23b3b"
-FIELD_EMPTY = "#fff8e1"
+# المصدر: [ui] = قيمة hex صريحة في ui/ القديم · [vista] = دور في
+# QPalette الفعلي لنمط windowsvista (app.palette()، ألوان نظام ويندوز).
+BG           = "#f0f0f0"   # [ui] ui/cd/tab.py:561 (fallback خلفية TFrame) + [vista] Window
+SURFACE      = "#ffffff"   # [ui] widgets.py:29 FILLED_BG_COLOR + [vista] Base
+BORDER       = "#e3e3e3"   # [vista] Midlight — فاصل/حدّ خفيف (Mid #a0a0a0 لحدّ أقوى)
+TEXT         = "#202124"   # [ui] hr/bulletin_paie.py:39 _INK · hr/base.py:114
+TEXT_DIM     = "#888888"   # [ui] الأكثر تكراراً للنص الخافت: #888 (cd/tab.py:773,777 · settings_screen.py:133)
+PRIMARY      = "#0078d7"   # [vista] Highlight — إبراز ويندوز (تركيز، زر افتراضي، فواصل)
+PRIMARY_DK   = "#00599f"   # [vista] Highlight.darker(135) — حالة الضغط
+SELECTION    = "#e8f0fe"   # [ui] file_explorer.py:244 (تظليل صفّ التمرير) — لا دور «تظليل باهت» في QPalette
+ROW_ALT      = "#f5f5f5"   # [vista] AlternateBase — تناوب صفوف الجداول
+WARNING      = "#b4690e"   # (بلا مصدر: لا دور QPalette، لا hex في ui/ — يستهلكه ui2 فقط؛ يُراجَع في البند 3)
+DANGER       = "#b23b3b"   # (بلا مصدر — نفس WARNING)
+FIELD_EMPTY  = "#fff3cd"   # [ui] widgets.py:28 EMPTY_BG_COLOR (تنبيه الحقل الفارغ — يعيده cd/tab.py:430 حرفياً)
+FIELD_INVALID = "#fbe3e3"  # [ui] widgets.py:162,633 _INVALID_BG (تاريخ مستحيل)
+HOVER        = "#4a90d9"   # [ui] cd/constants.py:86 HOVER_ON_COLOR · hr/bulletin_paie.py:37 _HOVER_ON
+BAND_BLACK   = "#111111"   # [ui] hr/bulletin_paie.py:38 _BAND_BG (شريط NET À PAYER الأسود)
+COMPUTED     = "#1a56b0"   # [ui] hr/paie/template_simple.py:45 COMPUTED_COLOR (قيَم محسوبة تلقائياً)
+
+# خلفية منطقة عرض ورقة المستند — سياقان مختلفان، لكلٍّ قيمته الأصلية:
+CANVAS_BG_CD = "#c9c9c9"   # [ui] cd/tab.py:1159,1178,1182
+CANVAS_BG_HR = "#9aa0a6"   # [ui] hr/a4_canvas.py:34 · hr/bulletin_paie.py:201
 
 # ------------------------- المسافات (px) -------------------------
-SPACE = {"xs": 4, "sm": 8, "md": 12, "lg": 18, "xl": 26}
+# القيَم المستعملة فعلياً في ui/ (hr/base.py، cd/tab.py): 4·6·8·10·12·14.
+# المفاتيح كما هي (لا يُلمَس أيّ مستدعٍ) — القيَم فقط صُحِّحت.
+SPACE = {"xs": 4, "sm": 6, "md": 10, "lg": 14, "xl": 18}
 
 # ------------------------- الخط -------------------------
-# قابل للضبط من مكان واحد. على ويندوز "Segoe UI" و"Tahoma" يحملان
-# العربية؛ البقية fallback لبيئات أخرى (لينكس/سحابة).
+# [ui] ui/home/app_window.py:141-142 — الخط الأساسي للواجهة: Segoe UI حجم 10.
 FONT_FAMILIES = ["Segoe UI", "Tahoma", "Noto Naskh Arabic", "Arial", "DejaVu Sans"]
 FONT_POINT_SIZE = 10
+
+# أحجام العناوين [ui] ui/home/app_window.py:143-146 (Title/CardTitle/Subtitle/Status).
+FONT_SIZES = {"title": 20, "card": 13, "subtitle": 10, "base": 10, "status": 9}
+
+# خط الحقول اللاتينية فوق صورة المستند [ui] widgets.py:35 (Courier New) +
+# تصحيح cd/constants.py:75 BASE_FONT_SIZE = 10 (لا 9 القديمة).
+MONO_FAMILY = "Courier New"
+MONO_SIZE = 10
 
 _config = {
     "families": list(FONT_FAMILIES),

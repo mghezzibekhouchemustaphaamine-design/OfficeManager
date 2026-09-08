@@ -2504,3 +2504,78 @@ PySide6 (المرحلة 3-أ).
 معدَّل: `ui/home/services.py` · `ui/home/app_window.py` · `docs/CHANGELOG.md`.
 جديد: `docs/MIGRATION_PLAN_PYSIDE6.md` (خطة التحوّل — تحرير المستخدم).
 لا مساس بالمحرّك ولا بـ CD ولا بأي شيء آخر.
+
+---
+
+## مرجع واحد وخمسون — 2026-09-08: ضبط ui2/theme.py ليطابق ألوان/خطوط/مسافات ui/ القديمة
+
+المرحلة 3-صفر / البند 2 من `docs/MIGRATION_PLAN_PYSIDE6.md`. `ui2/theme.py`
+بُني في المرحلة 1 بذوق مستقل؛ المبدأ الحاكم للخطة يفرض **مطابقة حرفية**
+للبرنامج الحالي. كل قيمة **مستخرَجة** — من hex صريح في `ui/` القديم، أو من
+`app.palette()` الفعلي لنمط `windowsvista` (ألوان نظام ويندوز) — لا تخمين
+بصري من الصور. المصدر مذكور بجانب كل token في الملف.
+
+### الألوان (‏`[ui]` = hex في الكود القديم · `[vista]` = دور QPalette)
+
+| token | من | إلى | المصدر |
+|---|---|---|---|
+| `FIELD_EMPTY` | `#fff8e1` | `#fff3cd` | `[ui]` `widgets.py:28` `EMPTY_BG_COLOR` (التنبيه الأصفر؛ يعيده `cd/tab.py:430`) |
+| `TEXT` | `#1f2430` | `#202124` | `[ui]` `hr/bulletin_paie.py:39` `_INK` · `hr/base.py:114` |
+| `TEXT_DIM` | `#6b7280` | `#888888` | `[ui]` الأكثر تكراراً: `#888` ×3 (`cd/tab.py:773,777` · `settings_screen.py:133`) |
+| `BG` | `#f4f5f7` | `#f0f0f0` | `[ui]` `cd/tab.py:561` (fallback خلفية `TFrame`) + `[vista]` `Window` |
+| `BORDER` | `#d6d9de` | `#e3e3e3` | `[vista]` `Midlight` |
+| `PRIMARY` | `#2f6fb2` | `#0078d7` | `[vista]` `Highlight` (إبراز ويندوز) |
+| `PRIMARY_DK` | `#255a91` | `#00599f` | `[vista]` `Highlight.darker(135)` |
+| `SELECTION` | `#dbe9f7` | `#e8f0fe` | `[ui]` `file_explorer.py:244` (تظليل صفّ التمرير) — QPalette لا دور «باهت» فيه، و`Highlight` الصلب يكسر تلوين `[A..E]` |
+| `ROW_ALT` | `#fafbfc` | `#f5f5f5` | `[vista]` `AlternateBase` |
+| `SURFACE` | `#ffffff` | (بلا تغيير) | `[ui]` `widgets.py:29` `FILLED_BG_COLOR` + `[vista]` `Base` — تأكيد مزدوج |
+| **`WARNING`** | `#b4690e` | **(بلا تغيير)** | **لا مصدر** — لا دور QPalette، لا hex في `ui/` (تحذير القديم = خلفية الحقل الصفراء). يستهلكه `ui2` فقط؛ **يُراجَع في البند 3 بمقارنة الصور** |
+| **`DANGER`** | `#b23b3b` | **(بلا تغيير)** | نفس `WARNING` |
+
+### tokens جديدة (كلها `[ui]`)
+
+`FIELD_INVALID = #fbe3e3` (`widgets.py:162,633`) · `HOVER = #4a90d9`
+(`cd/constants.py:86`) · `BAND_BLACK = #111111` (`hr/bulletin_paie.py:38`،
+شريط NET À PAYER) · `COMPUTED = #1a56b0` (`template_simple.py:45`) ·
+`CANVAS_BG_CD = #c9c9c9` / `CANVAS_BG_HR = #9aa0a6` (خلفيتا عرض المستند —
+سياقان مختلفان، لا توحيد).
+
+### الخطوط والمسافات
+
+- `FONT_FAMILIES` / `FONT_POINT_SIZE` = `Segoe UI` / `10` — **بلا تغيير**
+  (يطابق `app_window.py:141-142`).
+- `FONT_SIZES = {title:20, card:13, subtitle:10, base:10, status:9}` (جديد)
+  — `app_window.py:143-146`.
+- `MONO_FAMILY = "Courier New"` · `MONO_SIZE = 10` (جديد) — `widgets.py:35`
+  + تصحيح `cd/constants.py:75` (‏`BASE_FONT_SIZE = 10`، لا 9 القديمة).
+- `SPACE` = `{xs:4, sm:6, md:10, lg:14, xl:18}` (بدل `{4,8,12,18,26}`) —
+  القيَم المستعملة فعلياً في `ui/` هي 4·6·8·10·12·14. **المفاتيح كما هي**،
+  لا مساس بأيّ مستدعٍ في `ui2/`.
+
+### محرّك النمط — تحقّق تقني
+
+PySide6 6.11.2 على ويندوز يوفّر `windows11` و `windowsvista` أصليَّين بلا
+عمل إضافي. **لكن** QSS فوق نمط Windows غير موصى به من Qt ويُنتج تنافراً
+(ضبط `background`/`border` على ودجت يُخرجه من الرسم الأصلي بينما الباقي
+أصلي). وخطة التحوّل تفرض ألواناً دقيقة عبر QSS (أبرزها الأصفر `#fff3cd`).
+**القرار: إبقاء `Fusion` + QSS مضبوطاً.** الفارق المتبقي غير القابل للسدّ:
+هيئة الأزرار/أشرطة التمرير/مؤشّر التركيز (Fusion أكثر تسطيحاً من vista
+الأصلي) — لا يمسّ لوناً ولا تخطيطاً ولا محتوى، ويُراجَع بصرياً في البند 3.
+
+### التحقّق
+
+`ui2/theme.py` ملف معزول (لا شاشة نهائية تستهلكه بعد)، لكن كل شاشات `ui2/`
+الحالية تقرأ tokenاته:
+- `python -m unittest discover -s ui2/tests` → **Ran 10, OK**.
+- `python -m unittest discover -s ui2/paie/tests` → **Ran 17, OK**.
+- `demos/ui2_paie_gallery.py` + `demos/ui2_gallery.py` `--selftest` → `ALLOK`.
+- render smoke (‏`apply_theme` + `BulletinScreen.recompute` + `CompaniesScreen`
+  + `MainWindow`+tab + `Form(amount/date/month)` + `DataTable`) → **كلها
+  صُيِّرت بلا استثناء ولا تحذير** بالقيَم الجديدة. `SELECTION` باهت (`#e8f0fe`)
+  فتلوين أسطر `[A..E]` سليم.
+
+### الملفات المتأثرة
+
+معدَّل: `ui2/theme.py` (لوحة الألوان + `SPACE` + ثوابت الخط الجديدة —
+`_qss()`/`apply_theme()` بلا تغيير) · `docs/CHANGELOG.md`.
+لا مساس بأي شيء آخر.

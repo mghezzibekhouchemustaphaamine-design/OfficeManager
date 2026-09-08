@@ -27,20 +27,23 @@ from ui.cd.tab import CDTab
 from ui.common.alerts import confirm as _confirm
 from ui.hr.attestation_travail import AttestationTravailScreen
 from ui.hr.titre_conge import TitreCongeScreen
+from ui.hr.bulletin_paie import BulletinPaieScreen
 from ui.hr.releve_annuel import ReleveAnnuelScreen
 from ui.home.services import build_services
 
 # شاشات خدمات الموارد البشرية / الأجور — كلها ترث نفس الأرضية
 # (ui/hr/base.py) وتُفتح بنفس الآلية العامة (OfficeApp.open_hr).
 #
-# كشف الراتب الشهري (ui/hr/bulletin_paie.py) لم يعُد هنا: بطاقة «كشف راتب
-# شهري» تفتح الآن شاشة PySide6 الجديدة عبر open_paie_v2 (نافذة Qt مملوكة).
-# الملف القديم يبقى بلا تسجيل حتى المرحلة 3.
+# كشف الراتب الشهري: أُعيد هنا مؤقتاً (المرحلة 3-صفر / البند 1) — البطاقة
+# تفتح الشاشة القديمة (Tkinter) كما قبل مرجع 49، ريثما تجهز إعادة بناء
+# template_simple.py على PySide6. بنية النافذة المملوكة (open_paie_v2
+# وتوابعها أدناه) تبقى كما هي كجسر جاهز، لكن لا زرّ يستدعيها الآن.
 _HR_SCREENS = {
     cls.SCREEN_KEY: cls
     for cls in (
         AttestationTravailScreen,
         TitreCongeScreen,
+        BulletinPaieScreen,
         ReleveAnnuelScreen,
     )
 }
@@ -68,6 +71,7 @@ _SERVICE_TAB_LABELS = {
     "cd": "💱 CD",
     "hr_attestation_travail": "📄 شهادة عمل",
     "hr_titre_conge": "🏖️ شهادة عطلة",
+    "hr_bulletin_paie": "💵 كشف شهري",
     "hr_releve_annuel": "📊 كشف سنوي",
 }
 
@@ -78,6 +82,7 @@ _SERVICE_TAB_STATUS = {
     "cd": "CD — العمل على مستندات Change Devise",
     "hr_attestation_travail": "شهادة عمل — Attestation de travail",
     "hr_titre_conge": "شهادة عطلة — Titre de congé",
+    "hr_bulletin_paie": "كشف راتب شهري — Bulletin de paie",
     "hr_releve_annuel": "كشف راتب سنوي — Relevé annuel des émoluments",
 }
 

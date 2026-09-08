@@ -46,15 +46,16 @@ def build_services(app):
             icon="🏖️",
         ),
         ServiceDefinition(
-            # كشف الراتب الشهري: الشاشة الجديدة (PySide6، المحرّك المُصادَق +
-            # الكتالوج الديناميكي + التحقّق + المسوّدة). تُفتح كنافذة Qt
-            # مملوكة لـ OfficeManager (تتبعه تصغيراً/إغلاقاً وتُخفى عند
-            # القفل) — راجع OfficeApp.open_paie_v2. الشاشة القديمة
-            # (ui/hr/bulletin_paie.py) لم تعُد مُسجَّلة.
+            # كشف الراتب الشهري: الشاشة القديمة (ui/hr/bulletin_paie.py،
+            # Tkinter) — أُعيدت مؤقتاً (المرحلة 3-صفر / البند 1 من
+            # docs/MIGRATION_PLAN_PYSIDE6.md) ريثما تجهز إعادة بناء
+            # template_simple.py على PySide6 (المرحلة 3-أ). شاشة
+            # ui2/paie/bulletin.py تبقى أداة تشخيص في demos/ فقط، غير
+            # مربوطة بأي زرّ (الخطة §3).
             key="hr_bulletin_paie",
             title="كشف راتب شهري",
             description="توليد كشف الراتب الشهري مع حساب IRG (Bulletin de paie)",
-            open_handler=lambda owner: owner.open_paie_v2(),
+            open_handler=lambda owner: owner.open_hr("hr_bulletin_paie"),
             icon="💵",
         ),
         ServiceDefinition(

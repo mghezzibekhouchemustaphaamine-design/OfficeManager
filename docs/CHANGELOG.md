@@ -2455,3 +2455,52 @@ PyInstaller في Program Files. نُقلتا إلى `%APPDATA%\OfficeManager\` �
 معدَّل: `ui/home/services.py` · `ui/home/app_window.py` · `ui2/paie/__main__.py`
 · `CLAUDE.md` · `docs/CHANGELOG.md`. `ui/hr/bulletin_paie.py` **باقٍ بلا
 تسجيل**. لا مساس بالمحرّك ولا بـ CD ولا ببقيّة `ui/`.
+
+---
+
+## مرجع خمسون — 2026-09-08: المرحلة 3-صفر / البند 1 — فكّ ربط بطاقة «كشف راتب شهري»
+
+أوّل خطوة في `docs/MIGRATION_PLAN_PYSIDE6.md` (التحوّل الكامل إلى PySide6،
+مبدأه الحاكم: كل شاشة بعد التحوّل تبدو وتتصرّف **كما هي اليوم بالضبط**).
+شاشة `ui2/paie/bulletin.py` بُنيت في المرحلة 2 كأداة اختبار للمحرّك
+(مناطق Z1..Z4، أسطر ديناميكية) — شكلها «تصميم جديد» يخالف المبدأ الحاكم،
+فلا تُربط بأي زرّ في البرنامج الرئيسي (تبقى أداة تشخيص في `demos/`).
+الواجهة النهائية = إعادة بناء `ui/hr/paie/template_simple.py` حرفياً على
+PySide6 (المرحلة 3-أ).
+
+### التغيير
+
+- **`ui/home/services.py`**: بطاقة `hr_bulletin_paie` رجع `open_handler`
+  إلى `owner.open_hr("hr_bulletin_paie")` (الشاشة القديمة Tkinter، كما
+  قبل مرجع 49). حُذفت بطاقة `paie_v2` وعلَم `SHOW_PAIE_V2` (بقايا مرجع 40
+  — الخطة §3 تمنع ربط شاشة `ui2/paie` بأي زرّ).
+- **`ui/home/app_window.py`**: `BulletinPaieScreen` أُعيد إلى استيراد
+  `_HR_SCREENS` وإلى `_SERVICE_TAB_LABELS`/`_SERVICE_TAB_STATUS`.
+  **بنية النافذة المملوكة تبقى كما هي** (‏`open_paie_v2` · `_own_hwnd` ·
+  `_capture_paie_v2_hwnd` · `_hide_paie_v2`/`_show_paie_v2` · خطاطيف القفل)
+  — جسر جاهز للمرحلة 3-د (الخطة §2)، لكن لا زرّ يستدعيها الآن.
+- **`ui2/paie/__main__.py`**: بلا تغيير — `python -m ui2.paie` يبقى يعمل
+  كأداة تشخيص مستقلّة.
+- **`ui/hr/bulletin_paie.py`**: بلا تغيير (كان باقياً بلا تسجيل، عاد مُسجَّلاً).
+
+### التحقّق — تشغيل يدوي فعلي
+
+`OfficeApp` حقيقية + استدعاء معالج البطاقة:
+- المعالج ينادي `open_hr` · يُفتح تبويب حيّ `hr_bulletin_paie` من نوع
+  **`BulletinPaieScreen`** (Tkinter) · شريط التبويبات فيه المفتاح · شريط
+  الحالة «كشف راتب شهري — Bulletin de paie» · **`_paie_v2_proc is None`**
+  (لا عملية PySide6).
+- تبديل الخدمات (فتح CD ثم الرجوع للتبويب) يعمل كتبويب حيّ — كما قبل مرجع 49.
+- `open_hr("hr_titre_conge")` وبقيّة HR سليمة.
+
+**الاختبارات الآلية:** `programme/payroll/tests` → **Ran 49, OK** ·
+`test_golden.py` → **14/14** · `programme/tests` → 6 · `ui2/tests` → 10 ·
+`ui2/paie/tests` → 17 · galleries `--selftest` → `ALLOK` ·
+`import main` / `ui.home.app_window` / `ui.home.services` / `ui.cd.tab` /
+`ui.hr.bulletin_paie` → سليمة.
+
+### الملفات المتأثرة
+
+معدَّل: `ui/home/services.py` · `ui/home/app_window.py` · `docs/CHANGELOG.md`.
+جديد: `docs/MIGRATION_PLAN_PYSIDE6.md` (خطة التحوّل — تحرير المستخدم).
+لا مساس بالمحرّك ولا بـ CD ولا بأي شيء آخر.

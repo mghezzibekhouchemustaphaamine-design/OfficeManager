@@ -2210,3 +2210,57 @@ PyInstaller في Program Files. نُقلتا إلى `%APPDATA%\OfficeManager\` �
 معدَّل: `programme/paths.py` · `programme/database.py` · `programme/backup.py`
 · `main.py` · `ui2/paie/__main__.py` · `CLAUDE.md` · `docs/CHANGELOG.md`.
 لا مساس بمحرّك الحساب ولا بـ`ui/` (توافق `DB_PATH` عبر `__getattr__`).
+
+---
+
+## مرجع ستة وأربعون — 2026-09-08: أداء (المهمة هـ)
+
+بندان من `docs/FULL_REVIEW.md` §5. لا مساس بمنطق المحرّك.
+
+### هـ.9 — كاش الاتفاقية (قراءة واحدة بدل ثلاث في كل إعادة حساب)
+
+`ui2/paie/bulletin.py` كان يقرأ `repository.get_active_convention` ثلاث
+مرّات في كل `recompute()` (المحرّك + العرض + شريط التحذير) — أي كل 400ms
+أثناء الكتابة.
+
+- `_convention()` — يقرأ مرّة ويُخزّن في `self._conv_cache` (علامة
+  `_CONV_UNSET` = «غير محمَّل»). `recompute` و`_refresh_warnbar` يستعملانه.
+- `invalidate_convention_cache()` — يُبطِل الكاش. يُستدعى عند: **تغيير
+  الزبون** (`_on_client_changed`)، **إعادة تحميل القائمة** (`reload_clients`
+  — يغطّي `_promote`)، **الحفظ الناجح** (`save` — قد يُنشئ زبوناً عابراً
+  باتفاقيته)، و**تفعيل التبويب** (`on_activate` — قد تكون الاتفاقية أُكِّدت
+  من شاشة أخرى بين المغادرة والعودة؛ بدونه يعرض الشريط حالة قديمة بعد
+  تأكيد المستخدم للاتفاقية للتوّ).
+- `_refresh_warnbar` صار يمسح نصّ الشريط عند الإخفاء (لا نصّ قديم مخبَّأ).
+- `save()` يُبقي قراءاته المباشرة للاتفاقية (مسار كتابة نادر، يحتاج
+  `client_id` الصحيح لحظتها) لكنه يُبطِل الكاش بعد النجاح.
+
+### هـ.10 — `_matched_employe_taux` استعلام مباشر مفهرَس
+
+- `repository.get_employe_by_nom(entreprise_id, nom)` (جديد) — استعلام
+  مباشر بدل `list_employes` (جلب كل العمّال) + بحث في بايثون. يخدم اقتراح
+  الأقدمية (يُستدعى في كل إعادة حساب إن كان ثمّة سطر IEP). `save()` يستعمله
+  أيضاً لإيجاد العامل بدل المرور على القائمة كاملة.
+- **الهجرة 5** (`_m5_employe_nom_index`): `CREATE INDEX idx_employe_ent_nom
+  ON employe (entreprise_id, nom)`.
+
+### التحقّق — بوّابة القبول كاملة خضراء
+
+- `python -m unittest discover -s programme/payroll/tests` → **Ran 42, OK**
+  (+2: الفهرس موجود · `get_employe_by_nom` مباشر ولا يخلط الشركتين).
+  `_fresh_db()` يؤكّد `applied == [1, 2, 3, 4, 5]`.
+- `python -m unittest discover -s ui2/paie/tests` → **Ran 14, OK** (+3:
+  قراءة واحدة للاتفاقية في كل إعادة حساب · إبطال الكاش عند تأكيد اتفاقية
+  معلَّقة → الشريط يختفي · `on_activate` يُعيد الإبطال).
+- `programme/tests` → **Ran 6, OK** · `ui2/tests` → **Ran 10, OK** ·
+  `test_golden.py` → **14/14**.
+- `demos/ui2_paie_gallery.py` + `demos/ui2_gallery.py` `--selftest` → `ALLOK`.
+- `python -m ui2.paie` → `main() → 0` · `import main` / `ui.home` /
+  `ui.cd.tab` → سليمة.
+
+### الملفات المتأثرة
+
+معدَّل: `ui2/paie/bulletin.py` · `programme/payroll/repository.py`
+(‏`get_employe_by_nom` + الهجرة 5) · `programme/payroll/tests/test_repository.py`
+· `ui2/paie/tests/test_bulletin_screen.py` · `CLAUDE.md` · `docs/CHANGELOG.md`.
+لا مساس بمحرّك الحساب.

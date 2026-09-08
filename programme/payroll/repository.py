@@ -259,11 +259,23 @@ def _m4_drop_dead_invoice_tables(cur: sqlite3.Cursor) -> None:
         cur.execute(f"DROP TABLE {tbl}")
 
 
+def _m5_employe_nom_index(cur: sqlite3.Cursor) -> None:
+    """الهجرة 5 — فهرس ``(entreprise_id, nom)`` على ``employe``.
+
+    يخدم :func:`get_employe_by_nom` (اقتراح الأقدمية في شاشة الكشف —
+    استعلام متكرّر بدل جلب كل العمّال)."""
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_employe_ent_nom "
+        "ON employe (entreprise_id, nom)"
+    )
+
+
 _MIGRATIONS: List[Tuple[int, Callable[[sqlite3.Cursor], None]]] = [
     (1, _m1_baseline),
     (2, _m2_payroll),
     (3, _m3_transient),
     (4, _m4_drop_dead_invoice_tables),
+    (5, _m5_employe_nom_index),
 ]
 
 
@@ -688,6 +700,19 @@ def list_employes(entreprise_id: int, *, actif_only: bool = True,
     with _reading(conn) as c:
         rows = c.execute(sql, (entreprise_id,)).fetchall()
     return [_row_to_dict(r, money=_EMPLOYE_MONEY) for r in rows]
+
+
+def get_employe_by_nom(entreprise_id: int, nom: str,
+                       conn: Optional[sqlite3.Connection] = None
+                       ) -> Optional[dict]:
+    """أوّل عامل بهذا اللقب لدى الشركة (أو ``None``). استعلام مباشر مفهرَس
+    على ``(entreprise_id, nom)`` — بدل جلب كل العمّال والبحث في بايثون
+    (يُستدعى كثيراً: اقتراح الأقدمية في شاشة الكشف)."""
+    with _reading(conn) as c:
+        row = c.execute(
+            "SELECT * FROM employe WHERE entreprise_id = ? AND nom = ? "
+            "ORDER BY id LIMIT 1", (entreprise_id, nom)).fetchone()
+    return _row_to_dict(row, money=_EMPLOYE_MONEY)
 
 
 def update_employe(employe_id: int, data: Dict,

@@ -325,6 +325,59 @@ class BulletinScreenPin(unittest.TestCase):
         self.assertEqual(
             self.scr._header.values()["employe_date_entree"], "2016-01-13")
 
+    # ==================== المهمة هـ: كاش الاتفاقية ====================
+    def test_convention_read_once_per_recompute(self):
+        """قراءة واحدة للاتفاقية في كل إعادة حساب (كانت 3)."""
+        import ui2.paie.bulletin as bm
+        real = repository.get_active_convention
+        calls = {"n": 0}
+
+        def counting(*a, **k):
+            calls["n"] += 1
+            return real(*a, **k)
+
+        bm.repository.get_active_convention = counting
+        try:
+            self.scr.invalidate_convention_cache()
+            calls["n"] = 0
+            self._line(0, montant="30000")
+            self.scr.recompute()                          # المحرّك + العرض + الشريط
+            self.assertLessEqual(calls["n"], 1, "أكثر من قراءة واحدة للاتفاقية")
+        finally:
+            bm.repository.get_active_convention = real
+
+    def test_convention_cache_invalidated_when_convention_confirmed(self):
+        """تأكيد اتفاقية معلَّقة أثناء الجلسة → شريط «لم تُراجَع» يختفي
+        فور إبطال الكاش (لا يعرض حالة قديمة)."""
+        cid = self.scr._client_id
+        self.assertIsNotNone(cid)
+        self.scr.recompute()
+        # الاتفاقية الافتراضية نسخة 1 (مؤكَّدة تلقائياً، غير مُراجَعة) →
+        # الشريط ظاهر بنصّ «لم تُراجَع».
+        self.assertIn("لم تُراجَع", self.scr._warnbar.text())
+
+        # المستخدم (أو شاشة أخرى) يؤكّد الاتفاقية → نسخة 2 مؤكَّدة
+        repository.create_convention(cid, {"confirme": 1}, conn=self.conn)
+
+        # بلا إبطال: الكاش يخفي الحقيقة الجديدة
+        self.scr._refresh_warnbar()
+        self.assertIn("لم تُراجَع", self.scr._warnbar.text(),
+                      "الكاش يجب أن يبقى قديماً قبل الإبطال")
+
+        # بعد الإبطال (يحدث فعلياً عبر on_activate عند العودة للتبويب):
+        self.scr.invalidate_convention_cache()
+        self.scr._refresh_warnbar()
+        self.assertNotIn("لم تُراجَع", self.scr._warnbar.text())
+        self.assertTrue(self.scr._warnbar.isHidden())
+
+    def test_on_activate_reinvalidates_convention(self):
+        cid = self.scr._client_id
+        self.scr.recompute()
+        self.assertIn("لم تُراجَع", self.scr._warnbar.text())
+        repository.create_convention(cid, {"confirme": 1}, conn=self.conn)
+        self.scr.on_activate()                            # العودة للتبويب
+        self.assertNotIn("لم تُراجَع", self.scr._warnbar.text())
+
 
 if __name__ == "__main__":
     unittest.main()

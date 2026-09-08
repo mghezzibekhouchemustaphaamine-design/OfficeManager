@@ -20,7 +20,7 @@ def _fresh_db() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
     applied = repo.run_migrations(conn)
-    assert applied == [1, 2, 3, 4], applied  # قاعدة جديدة: 1..4 بالترتيب
+    assert applied == [1, 2, 3, 4, 5], applied  # قاعدة جديدة: 1..5 بالترتيب
     return conn
 
 
@@ -359,6 +359,27 @@ class TestRepositoryCycle(unittest.TestCase):
                       "AND name='invoices'").fetchone())
         self.assertEqual(
             c.execute("SELECT COUNT(*) FROM invoices").fetchone()[0], 1)
+
+    def test_m5_employe_nom_index_exists(self):
+        """الهجرة 5: فهرس (entreprise_id, nom) على employe موجود."""
+        c = self.conn
+        idx = c.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' "
+            "AND name='idx_employe_ent_nom'").fetchone()
+        self.assertIsNotNone(idx)
+
+    def test_get_employe_by_nom_direct_lookup(self):
+        c = self.conn
+        ent = repo.create_entreprise({"raison_sociale": "SARL X"}, conn=c)
+        repo.create_employe(ent, {"nom": "بن علي", "taux_iep": "0.09"}, conn=c)
+        repo.create_employe(ent, {"nom": "قاسمي"}, conn=c)
+        other = repo.create_entreprise({"raison_sociale": "SARL Y"}, conn=c)
+        repo.create_employe(other, {"nom": "بن علي", "taux_iep": "0.05"}, conn=c)
+
+        hit = repo.get_employe_by_nom(ent, "بن علي", conn=c)
+        self.assertIsNotNone(hit)
+        self.assertEqual(str(hit["taux_iep"]), "0.09")           # لا يخلط الشركتين
+        self.assertIsNone(repo.get_employe_by_nom(ent, "غير موجود", conn=c))
 
     def test_ensure_default_client_first_run(self):
         """أول تشغيل: زبون افتراضي + كتالوج + اتفاقية مؤكَّدة (V15 لا تمنع)."""

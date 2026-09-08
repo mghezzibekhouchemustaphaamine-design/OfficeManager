@@ -35,6 +35,7 @@ from ui2.toolbar import ToolAction
 logger = logging.getLogger(__name__)
 
 _RECOMPUTE_MS = 400
+_CONV_UNSET = object()          # علامة «الكاش غير محمَّل» للاتفاقية
 
 # ترتيب القائمة المنسدلة: مجموعة أساسية ثم فاصل «أخرى»
 _MENU_BASE = ["salaire_base", "abs_jours", "abs_heures", "retard",
@@ -225,6 +226,11 @@ class BulletinScreen(Screen):
         self._readonly = False
         self._view: Optional[lignes.BulletinView] = None
         self._cfg: Optional[Dict] = None
+        # الاتفاقية النشطة — تُقرأ مرّة وتُخزَّن مؤقتاً (كانت 3 قراءات في كل
+        # إعادة حساب، أي كل 400ms أثناء الكتابة). تُبطَل عند: تغيير الزبون،
+        # إعادة تحميل القائمة، الحفظ، وتفعيل التبويب (قد تكون أُكِّدت من
+        # شاشة أخرى). راجع _convention / invalidate_convention_cache.
+        self._conv_cache = _CONV_UNSET
         self._rows: List[_LineRow] = []
         self._menu = QMenu(self)
 
@@ -354,8 +360,35 @@ class BulletinScreen(Screen):
                 and self._rows[0].type_key == "salaire_base"
                 and not self._rows[0].is_filled())
 
+    # ===================== الاتفاقية — قراءة واحدة مُخزَّنة =====================
+    def _convention(self) -> Optional[dict]:
+        """الاتفاقية النشطة للزبون الحالي، مقروءة مرّة وتُخزَّن مؤقتاً حتى
+        تُبطَل. تُستدعى عدّة مرّات في كل إعادة حساب (المحرّك + العرض +
+        شريط التحذير)."""
+        if self._conv_cache is _CONV_UNSET:
+            self._conv_cache = (
+                repository.get_active_convention(self._client_id,
+                                                 conn=self._conn)
+                if self._client_id is not None else None)
+        return self._conv_cache
+
+    def invalidate_convention_cache(self):
+        """يُبطِل كاش الاتفاقية — يُستدعى عند تغيير الزبون، وأيضاً **فور
+        أيّ تغيير في الاتفاقية نفسها أثناء الجلسة** (تأكيد اتفاقية معلَّقة
+        من شاشة أخرى مثلاً)؛ وإلا يعرض شريط التحذير حالة قديمة."""
+        self._conv_cache = _CONV_UNSET
+
+    def on_activate(self):
+        # قد يكون المستخدم أكّد الاتفاقية من شاشة أخرى بين مغادرة هذا
+        # التبويب والعودة إليه → أعد قراءتها وأعد الحساب.
+        super().on_activate()
+        self.invalidate_convention_cache()
+        if getattr(self, "_rows", None):
+            self.recompute()
+
     # =============================== دورة الحياة ===============================
     def reload_clients(self):
+        self.invalidate_convention_cache()
         self._clients = repository.list_entreprises(
             registered_only=True, conn=self._conn)
         combo = self._header.widget("client_registered")
@@ -390,6 +423,7 @@ class BulletinScreen(Screen):
         match = next((c for c in self._clients
                       if c["raison_sociale"] == name), None)
         self._client_id = match["id"] if match else None
+        self.invalidate_convention_cache()      # زبون آخر → اتفاقية أخرى
         is_transient = bool(match and match.get("transient"))
         self._act_promote.setEnabled(is_transient)
         self.set_company(self._client_id)        # يبثّ companySelected للمضيف
@@ -472,10 +506,9 @@ class BulletinScreen(Screen):
         nom = self._header.values().get("employe_nom", "").strip()
         if not nom:
             return None
-        for e in repository.list_employes(self._client_id, conn=self._conn):
-            if e["nom"] == nom:
-                return e.get("taux_iep")
-        return None
+        # استعلام مباشر مفهرَس (idx_employe_ent_nom) بدل جلب كل العمّال
+        e = repository.get_employe_by_nom(self._client_id, nom, conn=self._conn)
+        return e.get("taux_iep") if e else None
 
     def _apply_iep_suggestion(self, row: _LineRow, *, force: bool = False):
         if getattr(row, "_iep_manual", False) and not force:
@@ -587,9 +620,7 @@ class BulletinScreen(Screen):
                         "حدّد «خاضع للاشتراك؟» و«خاضع للضريبة؟» — لا قيمة "
                         "افتراضية (V7). لا يُحتسَب حتى يُصنَّف.")
 
-        convention = (repository.get_active_convention(self._client_id,
-                                                       conn=self._conn)
-                      if self._client_id is not None else None)
+        convention = self._convention()
         entries = [r.entry() for r in self._rows]
         self._view = lignes.compute_bulletin(entries, cfg, convention)
         self._render(self._view, convention)
@@ -651,9 +682,7 @@ class BulletinScreen(Screen):
 
     def _refresh_warnbar(self):
         msgs: List[str] = []
-        conv = (repository.get_active_convention(self._client_id,
-                                                conn=self._conn)
-                if self._client_id is not None else None)
+        conv = self._convention()               # كاش — يُبطَل عند تغيّرها
         # الاتفاقية «مُراجَعة» فقط إذا أكّدها المستخدم صراحةً (نسخة ≥ 2).
         # الاتفاقية الافتراضية المؤكَّدة تلقائياً (نسخة 1) تُبقي الشريط
         # ظاهراً — قيمها لم يراجعها أحد (المراجعة الميدانية #7).
@@ -669,6 +698,7 @@ class BulletinScreen(Screen):
             self._warnbar.setText("\n".join("• " + m for m in msgs))
             self._warnbar.show()
         else:
+            self._warnbar.setText("")            # لا نصّ قديم يبقى مخبَّأً
             self._warnbar.hide()
 
     # =============================== الحفظ / التثبيت ===============================
@@ -796,9 +826,8 @@ class BulletinScreen(Screen):
                 client_id, {"confirme": 1}, conn=self._conn)
             conv = repository.get_active_convention(client_id, conn=self._conn)
 
-        employes = repository.list_employes(client_id, conn=self._conn)
-        match = next((e for e in employes
-                      if e["nom"] == v["employe_nom"]), None)
+        match = repository.get_employe_by_nom(
+            client_id, v["employe_nom"], conn=self._conn)
         if match:
             employe_id = match["id"]
         else:
@@ -812,6 +841,9 @@ class BulletinScreen(Screen):
         self._bulletin_id = repository.create_bulletin(
             bulletin, out_lignes, conn=self._conn)
         self._client_id = client_id
+        # الزبون/الاتفاقية قد تغيّرا (زبون عابر أُنشئ الآن، أو client_id
+        # صار غير None) → أبطِل الكاش فيُعاد قراءته في _refresh_warnbar.
+        self.invalidate_convention_cache()
         self.mark_clean()                # حفظ ناجح → _dirty=False + مسح المسوّدة
         self._info.setText(f"حُفِظ الكشف #{self._bulletin_id}.")
         self.bulletinSaved.emit(self._bulletin_id)

@@ -12,9 +12,13 @@
   عبر شريط التبويبات (self.tab_strip) يعرض نفس حالتها بالضبط، بلا أي
   إعادة تحميل. راجع open_cd/_activate_service_tab/_close_service_tab.
 """
+import logging
+import os
+import subprocess
+import sys
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 import programme.auth as auth
 import programme.settings as settings
@@ -40,6 +44,12 @@ _HR_SCREENS = {
 }
 from ui.lock_overlay import LockOverlay
 from ui.settings_screen import SettingsScreen
+
+logger = logging.getLogger(__name__)
+
+# جذر المشروع (صعوداً من ui/home/) — يُمرَّر cwd لعملية شاشة الكشف
+# الجديدة حتى يعمل ``python -m ui2.paie`` أياً كان مجلد التشغيل.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # نفس نص تنبيه الشغل غير المحفوظ بكل مكان يُستعمل فيه (إغلاق البرنامج
 # كامل، أو إغلاق تبويب CD وحده بـ×) — رسالة واحدة بمكان واحد بدل نسختين
@@ -89,6 +99,9 @@ class OfficeApp(tk.Tk):
         # المعروضة حالياً (لو فيه) — كلاهما فاضي قبل show_home() بالأسفل.
         self._service_tabs = {}
         self._transient_view = None
+        # عملية شاشة كشف الراتب الجديدة (PySide6) — تُطلَق مستقلّة عبر
+        # open_paie_v2؛ نتتبّعها حتى لا نفتح عدّة نوافذ.
+        self._paie_v2_proc = None
         # وين ترجع لما تسكّر الإعدادات (زر "رجوع" جواها، أو ضغطة ثانية
         # على "⚙️ الإعدادات" بالهيدر) — راجع open_settings/close_settings/
         # return_to_settings تحت. مفتاح تبويب خدمة حي (زي "cd") لو كنت
@@ -359,6 +372,35 @@ class OfficeApp(tk.Tk):
             self._service_tabs[key] = tab
             self._refresh_tab_strip()
         self._activate_service_tab(key)
+
+    def open_paie_v2(self):
+        """يفتح شاشة كشف الراتب الجديدة (PySide6) كـ**عملية منفصلة** —
+        ``python -m ui2.paie`` على نفس ``office_system.db``. Qt و Tkinter
+        لكلٍّ حلقة أحداث، فلا يُشغَّلان في عملية واحدة؛ العزل يعني كذلك أنّ
+        فشل الشاشة الجديدة لا يمسّ OfficeManager.
+
+        ملاحظة تحزيم: ``sys.executable`` هو مفسّر بايثون عند التشغيل من
+        المصدر (``python main.py``). لو حُزِم البرنامج لاحقاً بـPyInstaller
+        فسيشير إلى ملف الـ.exe نفسه، ولن يقبل ``-m ui2.paie`` — تحتاج
+        حينها نقطة دخول موحّدة (وسيط ``--paie`` في الـ.exe مثلاً)."""
+        if self._paie_v2_proc is not None and self._paie_v2_proc.poll() is None:
+            self._set_status("شاشة كشف الراتب (PySide6) مفتوحة أصلاً في نافذة مستقلّة")
+            return
+        try:
+            self._paie_v2_proc = subprocess.Popen(
+                [sys.executable, "-m", "ui2.paie"], cwd=_PROJECT_ROOT
+            )
+        except Exception:
+            logger.exception("تعذّر إطلاق شاشة كشف الراتب (PySide6)")
+            messagebox.showerror(
+                "تعذّر فتح الشاشة",
+                "تعذّر فتح شاشة كشف الراتب الجديدة.\n"
+                "تأكّد من تثبيت PySide6 (pip install -r requirements.txt).\n"
+                "راجع office_manager.log للتفاصيل.",
+                parent=self,
+            )
+            return
+        self._set_status("فُتحت شاشة كشف الراتب (PySide6) في نافذة مستقلّة")
 
     def open_backup(self):
         self._current_service = "backup"

@@ -24,3 +24,6 @@ officemanager.db
 # سجل أخطاء التشغيل (programme/logging_setup.py) — يُنشأ محلياً تلقائياً،
 # مو جزء من الكود
 office_manager.log
+
+# أرشيفات مضغوطة تُبنى عند الطلب (مثل OfficeManager_review.zip) — مو جزء من الكود
+*.zip

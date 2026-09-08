@@ -1796,3 +1796,88 @@ V7 · V15) تجري قبل أيّ كتابة**؛ `_resolve_client_id` حُذفت
 `اقتطاع تعاضدية` · `اقتطاع بحكم قضائي` — يغطّيها السطر الحرّ)، وأُضيفت
 **قاعدة الفريد/القابل للتكرار**: كل نوع سطر يُضاف مرّة واحدة عدا
 `تسبيق على الراتب` و`السطر الحرّ`. (كوميت وثائقي فقط، بلا كود.)
+
+---
+
+## مرجع أربعون — 2026-09-08: ربط شاشة الكشف PySide6 بالتطبيق + PySide6 في requirements
+
+شاشة توليد الكشف الجديدة (`ui2/paie/bulletin.py`) كانت تُفتح فقط من
+`demos/ui2_paie_gallery.py`. صارت الآن تُفتح من داخل OfficeManager نفسه،
+وأُعلن PySide6 كتبعية.
+
+### القرار: عملية منفصلة (subprocess) لا حلقة Qt متداخلة
+
+Tkinter و Qt لكلٍّ حلقة أحداث خاصة. تشغيلهما في عملية واحدة كان سيُجمّد
+النافذة القديمة ويوقف مؤقّت القفل التلقائي طوال فتح نافذة Qt. الحلّ:
+زرّ في الشاشة الرئيسية يُطلق `python -m ui2.paie` كعملية ابنة على نفس
+`office_system.db`، وتُفتح الشاشة الجديدة كنافذة top-level مستقلّة. هذا
+يطابق فلسفة الترحيل (`ui2/` بجانب `ui/` بلا مساس) ويُبقي الخطر على
+Tkinter معدوماً عملياً: `ui/` لا يستورد `ui2/` ولا `PySide6`، والتغيير
+الوحيد فيه سطرُ `subprocess.Popen` داخل `try/except`.
+
+### الملفات
+
+- **`ui2/paie/__main__.py`** (جديد): نقطة تشغيل مستقلّة — `QApplication`
+  + `theme.apply_theme` (RTL + الخط) + `get_connection()` على القاعدة
+  الحقيقية مع `PRAGMA busy_timeout = 5000` + `run_migrations` و
+  `ensure_default_client` (كلاهما idempotent) + `QMainWindow` بشاشة
+  `BulletinScreen` واحدة (بلا تبويبات — الشاشة تحمل شريط أدواتها).
+- **`ui/home/services.py`**: `ServiceDefinition` جديدة `key="paie_v2"`
+  («كشف راتب (PySide6)»، أيقونة 🧾)، خلف علم `SHOW_PAIE_V2 = True`
+  (نفس نمط `SHOW_ADMIN_SCREENS` في المعرض — إخفاؤها سطر واحد).
+- **`ui/home/app_window.py`**: دالة `open_paie_v2()` — تُطلق العملية،
+  تتتبّعها في `self._paie_v2_proc` (لا تفتح نافذتين)، وتُظهر
+  `messagebox.showerror` + `logger.exception` عند الفشل (PySide6 غير
+  مثبَّت مثلاً). لا تمرّ عبر `_service_tabs` — نافذة خارجية.
+- **`requirements.txt`**: `PySide6>=6.7` (النسخة المُختبَرة 6.11.2)، مع
+  تعليق أنّ النواة و`ui/` لا تحتاجه.
+
+### ديون تقنية معروفة (تُسدَّد في المرحلة 3/4)
+
+- **القفل التلقائي لا يغطّي نافذة PySide6.** لأنها عملية منفصلة، قفل
+  OfficeManager (خمول / زرّ «🔒 قفل») لا يقفلها، وتبقى مفتوحة ومقروءة
+  والكشوف ظاهرة فيها بعد قفل النافذة الرئيسية. **الشاشة تعرض معطيات
+  رواتب حساسة**؛ هذا الثقب يُغلَق حين تصير الواجهة كلها PySide6 في عملية
+  واحدة (المرحلة 3/4) فيشملها القفل الموحّد. حتى ذلك الحين: أغلق نافذة
+  الكشف يدوياً عند ترك المكتب.
+- **`sys.executable` + التحزيم (.exe).** الإطلاق يفترض تشغيلاً من المصدر
+  (`python main.py`)، فـ`sys.executable` هو مفسّر بايثون ويقبل
+  `-m ui2.paie`. لو حُزِم البرنامج لاحقاً بـPyInstaller فسيشير إلى الـ.exe
+  نفسه ولن يقبل `-m` — يلزم حينها نقطة دخول موحّدة (وسيط `--paie` داخل
+  الـ.exe، أو دمج الواجهتين). موثَّق في docstring `open_paie_v2`.
+
+### أثر جانبي متوقَّع
+
+أول إطلاق يشغّل `ensure_default_client` على `office_system.db` الحقيقية:
+يُنشأ «الزبون الافتراضي» + كتالوجه (19 رُبريكة) + اتفاقية v1 مؤكَّدة — في
+**جداول الأجور فقط** (`entreprise`/`convention`/`rubrique_catalogue`)،
+لا تراها خدمات Tkinter. idempotent: الإطلاقات التالية لا تكرّره.
+
+### التحقّق
+
+- `python -m ui2.paie` (نافذة مستقلّة على القاعدة الحقيقية) → تُبنى
+  وتُغلق بلا خطأ (`main() → 0`).
+- `python -m unittest discover -s programme/payroll/tests` → **Ran 38, OK**
+  (لا تغيير في `programme/`).
+- `demos/ui2_paie_gallery.py --selftest` → `ALLOK`.
+- `import ui.home.app_window` · `import main` → سليمة.
+- `build_services()` → آخر خدمة `paie_v2` ومعالجها ينادي `open_paie_v2`.
+
+### مضموم في نفس الكوميت (حوايج جانبية معلَّقة)
+
+- **`CLAUDE.md`** (جديد): دليل عمل مختصر + قسم «مهام معلّقة» يوثّق مهمة
+  **«ربط البند الدائم»**: كتالوج `rubrique_catalogue` ودواله في
+  `repository.py` موجودة وتخدم، لكن `ui2/paie/bulletin.py` يبني قائمته من
+  `lignes.LINE_TYPES` الثابتة فقط ولا يقرأ `list_rubriques` — فالمستخدم
+  يزيد سطراً حرّاً لمرّة واحدة لكن لا يعرّف بنداً دائماً جديداً. تُعالَج لاحقاً.
+- **`docs/ARCHITECTURE_REVIEW.md`** (جديد): مراجعة معمارية من جلسة سابقة،
+  كانت غير متتبَّعة.
+- **`.gitignore`**: تجاهل `*.zip` (أرشيفات تُبنى عند الطلب).
+
+### الملفات المتأثرة
+
+جديد: `ui2/paie/__main__.py` · `CLAUDE.md` · `docs/ARCHITECTURE_REVIEW.md`.
+معدَّل: `ui/home/services.py` · `ui/home/app_window.py` · `requirements.txt`
+· `.gitignore` · `docs/CHANGELOG.md`.
+لا مساس بـ`main.py` · `programme/**` · `ui/cd/**` · `ui/hr/**` ·
+`ui2/paie/bulletin.py` · أي اختبار.

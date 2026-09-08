@@ -30,7 +30,8 @@
 ## الاختبارات
 
 ```
-python -m unittest discover -s programme/payroll/tests      # 38 اختباراً
+python -m unittest discover -s programme/payroll/tests      # النواة — 38 اختباراً
+python -m unittest discover -s ui2/paie/tests               # شاشة الكشف (pinning) — 8
 python programme/payroll/tests/test_golden.py               # تقرير IRG المقروء
 QT_QPA_PLATFORM=offscreen python demos/ui2_paie_gallery.py --selftest
 ```

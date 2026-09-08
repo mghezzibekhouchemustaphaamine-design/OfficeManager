@@ -23,6 +23,7 @@ if _ROOT not in sys.path:
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 from programme.database import get_connection
+from programme.paths import ensure_user_data_migrated
 from programme.payroll import repository
 from ui2 import theme
 from ui2.paie.bulletin import BulletinScreen
@@ -32,6 +33,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     theme.apply_theme(app)                       # RTL + الخط العربي
 
+    ensure_user_data_migrated()                  # idempotent — لو أُطلقت مستقلّةً
     conn = get_connection()                      # office_system.db الحقيقية
     # العملية القديمة (Tkinter) قد تكتب في نفس الملف بالتوازي — مهلة
     # انتظار بدل رفع «database is locked» فوراً. القديم يكتب

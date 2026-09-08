@@ -1,23 +1,32 @@
 """
 طبقة الاتصال بقاعدة البيانات (SQLite) وإنشاء الجداول.
+
+مكان الملف يُحسَب في :func:`programme.paths.get_db_path` — ``%APPDATA%\\
+OfficeManager\\office_system.db`` بعد الترحيل (المهمة د)، مع تدرّج آمن
+للمكان القديم بجذر المشروع. لا مسار حرفي هنا.
 """
 import json
 import os
 import sqlite3
 from datetime import date
 
-# قاعدة البيانات الحقيقية تبقى بجذر المشروع (بلا أي تغيير بمكانها رغم
-# نقل هذا الملف نفسه لمجلد programme/ — راجع تنظيم المشروع بالجذر)،
-# فلازم مستوى إضافي (dirname مرتين) يطلع من programme/ للجذر بالضبط.
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(_PROJECT_ROOT, "office_system.db")
+from programme import paths
 
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(paths.get_db_path())
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def __getattr__(name):
+    """توافق: ``from programme.database import DB_PATH`` و``database.DB_PATH``
+    لا يزالان يعملان — يُحسَبان لحظياً من :func:`programme.paths.get_db_path`
+    (فيعكسان المكان الحالي بعد الترحيل، لا لقطة وقت الاستيراد)."""
+    if name == "DB_PATH":
+        return paths.get_db_path()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def init_db():

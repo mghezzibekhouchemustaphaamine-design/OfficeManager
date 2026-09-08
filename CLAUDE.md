@@ -6,6 +6,13 @@
 توليد مستندات العمل من استمارات فوق صورة النموذج، مع أرشفة وسجلّ. الواجهة
 عربية، المستندات بالفرنسية. نقطة التشغيل الوحيدة: `python main.py`.
 
+**مكان البيانات:** `office_system.db` وملفات `params_paie` تعيش في
+`%APPDATA%\OfficeManager\` (‏`programme.paths.get_db_path` /
+`get_params_paie_dir`). ترحيل تلقائي لمرّة واحدة من جذر المشروع عند أوّل
+تشغيل (`ensure_user_data_migrated` في `main()`)؛ النسخة القديمة بجذر
+المشروع تبقى كاحتياط. الاختبارات تتجاوز المكان بمتغيّر البيئة
+`OFFICEMANAGER_DATA_DIR`.
+
 ## الوثائق المرجعية (اقرأها قبل التعديل)
 
 - `README.md` — البنية والخدمات والتشغيل.
@@ -31,6 +38,7 @@
 
 ```
 python -m unittest discover -s programme/payroll/tests      # النواة — 40 اختباراً
+python -m unittest discover -s programme/tests              # ترحيل بيانات المستخدم — 6
 python -m unittest discover -s ui2/tests                    # قاعدة الشاشة Screen — 10
 python -m unittest discover -s ui2/paie/tests               # شاشة الكشف (pinning + مسوّدة) — 11
 python programme/payroll/tests/test_golden.py               # تقرير IRG المقروء

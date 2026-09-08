@@ -47,8 +47,7 @@ import sqlite3
 import threading
 from datetime import date, datetime
 
-from programme.database import DB_PATH
-from programme.paths import get_travail_root
+from programme.paths import get_db_path, get_travail_root
 
 # ملف الإعدادات الحقيقي يبقى بجذر المشروع (بلا أي تغيير بمكانه رغم نقل
 # هذا الملف نفسه لمجلد programme/) — لازم مستوى إضافي (dirname مرتين).
@@ -71,6 +70,15 @@ RETENTION_DAYS = 30
 _SNAPSHOTS_SUBDIR = "_snapshots"
 _TRAVAIL_MIRROR_SUBDIR = "travail"
 _DB_FILENAME = "office_system.db"
+
+
+def __getattr__(name):
+    """توافق: ``backup.DB_PATH`` (تستعمله شاشتا الإعدادات والمعالج في
+    ``ui/`` للعرض) لا يزال يعمل — يُحسَب لحظياً من المكان الحالي بعد
+    الترحيل، لا لقطة وقت الاستيراد."""
+    if name == "DB_PATH":
+        return get_db_path()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _load_settings():
@@ -104,7 +112,7 @@ def _primary_drives():
     البيانات ومجلد travail) — أي وجهة "ثانوية" لازم تكون بقرص مختلف عن
     كل هذي، وإلا عطل قرص وحيد يقدر يمسح الرئيسية والثانوية معاً."""
     drives = set()
-    for p in (DB_PATH, get_travail_root()):
+    for p in (get_db_path(), get_travail_root()):
         drive = os.path.splitdrive(os.path.abspath(p))[0].upper()
         if drive:
             drives.add(drive)
@@ -196,7 +204,7 @@ def _backup_db_to(dest_dir):
     """ينسخ قاعدة البيانات لوجهة معيّنة: مرآة (اسم ثابت، تُستبدَل كل
     مرة) + نسخة بتاريخ بمجلد _snapshots (للرجوع لنقطة قبل أي تلف)."""
     os.makedirs(dest_dir, exist_ok=True)
-    src_conn = sqlite3.connect(DB_PATH)
+    src_conn = sqlite3.connect(get_db_path())
     try:
         mirror_path = os.path.join(dest_dir, _DB_FILENAME)
         mirror_conn = sqlite3.connect(mirror_path)

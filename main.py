@@ -15,6 +15,7 @@ from tkinter import messagebox
 import programme.backup as backup
 from programme.database import init_db
 from programme.logging_setup import configure_logging
+from programme.paths import ensure_user_data_migrated
 from ui.home.app_window import OfficeApp
 from ui.login_screen import run_login_flow
 from ui.resilience_wizard import maybe_show_setup_wizard
@@ -26,6 +27,10 @@ logger = configure_logging()
 def main():
     logger.info("OfficeManager startup")
     try:
+        # ترحيل لمرّة واحدة لبيانات المستخدم إلى %APPDATA%\OfficeManager
+        # (قبل init_db حتى يعمل على المكان الجديد). آمن الفشل: يسجّل
+        # تحذيراً ويستمرّ من المكان القديم بدل التعطّل.
+        ensure_user_data_migrated(logger)
         init_db()
         # نسخة احتياطية تلقائية صامتة أول فتح بكل يوم (راجع backup.py) — قبل
         # ما ننشئ النافذة حتى، بلا أي تأخير ملموس (قاعدة البيانات صغيرة).

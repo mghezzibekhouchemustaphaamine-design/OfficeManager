@@ -2135,3 +2135,78 @@ Tkinter معدوماً عملياً: `ui/` لا يستورد `ui2/` ولا `PySi
 · `ui2/paie/__main__.py` (استعادة المسوّدة) ·
 `ui2/paie/tests/test_bulletin_screen.py` · `CLAUDE.md` · `docs/CHANGELOG.md`.
 لا مساس بـ`programme/**` ولا بمحرّك الحساب.
+
+---
+
+## مرجع خمسة وأربعون — 2026-09-08: مكان قاعدة البيانات → %APPDATA% (المهمة د)
+
+المهمة د من `docs/FULL_REVIEW.md` §2. `office_system.db` وملفات
+`params_paie` كانتا بجذر المشروع — يصير للقراءة فقط بعد التحزيم بـ
+PyInstaller في Program Files. نُقلتا إلى `%APPDATA%\OfficeManager\` عبر
+`programme/paths.py`، مع ترحيل تلقائي **آمن الفشل** لمرّة واحدة.
+
+### `programme/paths.py`
+
+- **`get_data_dir()`** — `%APPDATA%\OfficeManager\` (‏`~/.local/share/OfficeManager`
+  على غير ويندوز). متغيّر البيئة `OFFICEMANAGER_DATA_DIR` يتجاوزه (اختبارات).
+- **`get_db_path()`** — تدرّج آمن: نسخة `get_data_dir()` إن وُجدت →
+  القديمة بجذر المشروع إن وُجدت → مسار `get_data_dir()` (تثبيت جديد) إن
+  أمكن إنشاء مجلده، وإلا القديم. **لا يتعطّل أبداً.**
+- **`get_params_paie_dir()`** — `get_data_dir()\params_paie` إن كان فيه
+  ملف `params_*.json`، وإلا المجلد المشحون مع الكود.
+- **`ensure_user_data_migrated(log)`** — ترحيل لمرّة واحدة:
+  * **ينسخ لا ينقل**؛ القديم يبقى كما هو.
+  * **idempotent بصرامة** بملف علامة `.data_migrated_v1` (نظير
+    `schema_migrations`): العلامة موجودة → خروج فوري. غائبة لكن نسخة
+    `get_data_dir()` من القاعدة موجودة → **لا تُدهَس بالقديمة**، تُكتب
+    العلامة فقط.
+  * **آمن الفشل**: أيّ `OSError` (صلاحيات، قرص ممتلئ) → `log.warning`
+    فقط، **بلا علامة، بلا تعطّل إقلاع** — `get_db_path` يتدرّج للقديم.
+  * العلامة تُكتب **فقط بعد نجاح كل النسخ** (نسخ ذرّي عبر `.partial` +
+    `os.replace`).
+  * `params_paie`: ينسخ أيّ ملف مشحون غير موجود في الوجهة (يغطّي ملفّات
+    سنوات لاحقة مع تحديث الكود)؛ لا يدهس ملفاً موجوداً (قد يكون حُيِّن يدوياً).
+
+### الملفات التابعة
+
+- **`programme/database.py`**: `get_connection()` → `paths.get_db_path()`.
+  حُذف ثابت `DB_PATH`؛ `__getattr__` يوفّره لحظياً (‏`from programme.database
+  import DB_PATH` و`database.DB_PATH` لا يزالان يعملان، ويعكسان المكان الحالي).
+- **`programme/backup.py`**: يستعمل `get_db_path()` في `_primary_drives`
+  و`_backup_db_to`؛ `__getattr__` يوفّر `backup.DB_PATH` (تقرأه شاشتا
+  الإعدادات والمعالج في `ui/` للعرض — بلا مساس بـ`ui/`).
+- **`main.py`**: `ensure_user_data_migrated(logger)` قبل `init_db()`.
+- **`ui2/paie/__main__.py`**: يستدعيها أيضاً (idempotent) لو أُطلقت مستقلّةً.
+
+### التحقّق — بوّابة القبول كاملة خضراء + تشغيل يدوي فعلي
+
+**تشغيل حقيقي على الجهاز** (لا محاكاة): `ensure_user_data_migrated` +
+`init_db` + استعلام →
+- أُنشئ `C:\Users\...\AppData\Roaming\OfficeManager\` فيه `office_system.db`
+  (151 552 بايت، مطابق للقديم)، `params_paie\params_2026.json`،
+  `.data_migrated_v1` (محتواه `2026-09-08`).
+- **القديمة بجذر المشروع بلا تغيير** (sha256 مطابق قبل/بعد).
+- `get_db_path()` و`get_connection()` يقرآن من `%APPDATA%`؛ `cd_documents`
+  = 7 صفوف حقيقية، `schema_migrations = [1,2,3,4]`.
+- تشغيل ثانٍ متتالٍ → **صفر رسائل ترحيل** (idempotent).
+- النسخ الاحتياطي: `backup._backup_db_to(tmp)` ينتج مرآة (151 552 بايت،
+  SQLite سليمة، 7 صفوف) + snapshot مؤرَّخ من نسخة `%APPDATA%`؛
+  `run_backup()` بلا وجهات → `([], [])`.
+
+**الاختبارات:**
+- `python -m unittest discover -s programme/tests` → **Ran 6, OK** (نسخ
+  + إبقاء القديم + علامة · idempotent لا يدهس · نسخة APPDATA موجودة تُحترَم
+  · تثبيت جديد بلا قاعدة · وجهة غير قابلة للكتابة → تحذير + تدرّج، لا
+  تعطّل · العلامة بعد النجاح فقط).
+- `programme/payroll/tests` → **Ran 40, OK** · `programme/tests` → 6 ·
+  `ui2/tests` → 10 · `ui2/paie/tests` → 11 · `test_golden.py` → 14/14.
+- `demos/ui2_paie_gallery.py` + `demos/ui2_gallery.py` `--selftest` → `ALLOK`.
+- `python -m ui2.paie` → `main() → 0` · `import main` / `ui.home` /
+  `ui.cd.tab` / `ui.backup_tab` / `ui.resilience_wizard` → سليمة.
+
+### الملفات المتأثرة
+
+جديد: `programme/tests/__init__.py` · `programme/tests/test_data_migration.py`.
+معدَّل: `programme/paths.py` · `programme/database.py` · `programme/backup.py`
+· `main.py` · `ui2/paie/__main__.py` · `CLAUDE.md` · `docs/CHANGELOG.md`.
+لا مساس بمحرّك الحساب ولا بـ`ui/` (توافق `DB_PATH` عبر `__getattr__`).

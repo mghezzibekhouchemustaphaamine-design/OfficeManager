@@ -2348,3 +2348,41 @@ PyInstaller في Program Files. نُقلتا إلى `%APPDATA%\OfficeManager\` �
 `docs/specs/SPEC_PAIE_DZ.md` · `programme/data/params_paie/params_2026.json`.
 **لا مساس بـ`calc.py` / `irg.py` / `compute_sequence`** (`lignes.py` لا
 يستورد `repository`).
+
+---
+
+## مرجع ثمانية وأربعون — 2026-09-08: حارس تنسيب السلة/النقل المُعاد تصنيفه
+
+يجعل القيد الموثَّق في مرجع سبعة وأربعون **صريحاً في الواجهة** بدل أن يمرّ
+صامتاً: `panier`/`transport` بتصنيف مُعاد من الكتالوج (غير الافتراضي
+`(0,1)`) يُطويان بلا تنسيب §1.2.3. لو صادف مستخدم هذا المزيج مع غياب في
+نفس الكشف، الفرق في الصافي حقيقي — فيجب أن يراه.
+
+### `programme/payroll/lignes.py`
+
+في نهاية `compute_bulletin`، بعد بناء `si` و `res`: إن كان مجموع الغياب
+(`si.jours_absence + si.heures_absence_irreguliere + si.heures_absence_justifiee`)
+`> 0` **و** يوجد سطر `panier`/`transport` بتصنيف فعلي ≠ `(0,1)` →
+تحذير غير حاجب لكلّ منهما:
+
+> منحة «‹السلة/النقل›» بتصنيف مخصَّص لا تُنسَّب على الغياب في هذا الإصدار
+> (§1.2.3 مقصورة على المسار الافتراضي) — المبلغ المعروض كامل غير منسَّب.
+
+التأخّر مستثنى (‏§1.2.3 لا يطرحه من ساعات الحضور أصلاً). يُعرَض في شريط
+التحذير عبر مسار `avertissements` القائم.
+
+### التحقّق
+
+- `programme/payroll/tests` → **Ran 49, OK** (+3: مُعاد + غياب → التحذير
+  يظهر · مُعاد بلا غياب → لا تحذير · افتراضي `(0,1)` + غياب → لا تحذير).
+- تشغيل فعلي: مُعاد + 8 س غياب → `True` · مُعاد بلا غياب → `False` ·
+  افتراضي + 8 س غياب → `False`.
+- `test_golden.py` → **14/14** · `programme/tests` → 6 · `ui2/tests` → 10
+  · `ui2/paie/tests` → 17 · `ui2_paie_gallery` + `ui2_gallery` `--selftest`
+  → `ALLOK` · `python -m ui2.paie` → `main() → 0`.
+
+### الملفات المتأثرة
+
+معدَّل: `programme/payroll/lignes.py` (حارس التحذير) ·
+`programme/payroll/tests/test_lignes.py` · `CLAUDE.md` · `docs/CHANGELOG.md`.
+لا مساس بالمحرّك.

@@ -635,6 +635,21 @@ def compute_bulletin(entries: List[Dict], cfg: Dict,
                 f"الرُبريكة «{lt.libelle}» تستعمل تصنيفاً افتراضياً — لا "
                 f"كتالوج مخصَّص لهذا الزبون لهذا الرمز ({lt.code}).")
 
+    # حارس القيد الموثَّق: سلة/نقل بتصنيف مُعاد (غير الافتراضي (0,1))
+    # **مع وجود غياب في نفس الكشف** → مبلغها لم يُنسَّب على الغياب (تنسيب
+    # §1.2.3 مقصور على المسار الافتراضي في المحرّك). تحذير غير حاجب حتى لا
+    # يمرّ فرق حقيقي في الصافي بصمت قبل توسيع calc.py. (التأخّر مستثنى —
+    # §1.2.3 لا يطرحه من ساعات الحضور أصلاً.)
+    a_absence = (_d(si.jours_absence) + _d(si.heures_absence_irreguliere)
+                 + _d(si.heures_absence_justifiee))
+    if a_absence > _ZERO:
+        for (lt, _v1), (cot, imp, _m2) in zip(parsed, eff):
+            if lt.key in _PT_KEYS and (cot, imp) != _PT_DEFAULT_CLASS:
+                avertissements.append(
+                    f"منحة «{lt.libelle}» بتصنيف مخصَّص لا تُنسَّب على "
+                    f"الغياب في هذا الإصدار (§1.2.3 مقصورة على المسار "
+                    f"الافتراضي) — المبلغ المعروض كامل غير منسَّب.")
+
     return BulletinView(
         lignes=views, a=res.assiette_cnas, b=res.retenue_cnas,
         c=res.assiette_irg, d=res.irg, e=res.net_a_payer,

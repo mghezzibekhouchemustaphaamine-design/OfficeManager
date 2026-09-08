@@ -37,7 +37,7 @@
 ## الاختبارات
 
 ```
-python -m unittest discover -s programme/payroll/tests      # النواة — 46 اختباراً
+python -m unittest discover -s programme/payroll/tests      # النواة — 49 اختباراً
 python -m unittest discover -s programme/tests              # ترحيل بيانات المستخدم — 6
 python -m unittest discover -s ui2/tests                    # قاعدة الشاشة Screen — 10
 python -m unittest discover -s ui2/paie/tests               # شاشة الكشف (pinning + مسوّدة + كاش) — 17

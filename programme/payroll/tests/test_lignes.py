@@ -225,6 +225,34 @@ class TestCatalogueClassification(unittest.TestCase):
                          (v_match.a, v_match.c, v_match.e))
         self.assertEqual(v_match.avertissements, [])    # كل الرموز مطابقة
 
+    _CAT_RECLASSE = {"2000": {"cotisable": False, "imposable": False}}  # ≠ (0,1)
+
+    def test_garde_prorata_panier_reclasse_avec_absence(self):
+        """حارس القيد: سلة بتصنيف مُعاد + غياب → تحذير «لا تُنسَّب على الغياب»."""
+        avec_abs = self._ENTRIES + [
+            {"type": "abs_heures", "values": {"heures": "8"}}]
+        v = lignes.compute_bulletin(avec_abs, CFG, {"confirme": 1},
+                                    catalogue=self._CAT_RECLASSE)
+        self.assertTrue(any("لا تُنسَّب على الغياب" in w
+                            for w in v.avertissements), v.avertissements)
+
+    def test_garde_prorata_pas_d_avertissement_sans_absence(self):
+        """نفس التصنيف المُعاد لكن بلا غياب → لا تحذير."""
+        v = lignes.compute_bulletin(self._ENTRIES, CFG, {"confirme": 1},
+                                    catalogue=self._CAT_RECLASSE)
+        self.assertFalse(any("لا تُنسَّب على الغياب" in w
+                             for w in v.avertissements), v.avertissements)
+
+    def test_garde_prorata_pas_d_avertissement_si_classe_defaut(self):
+        """تصنيف افتراضي (0,1) + غياب → المسار الافتراضي ينسّب، لا تحذير."""
+        avec_abs = self._ENTRIES + [
+            {"type": "abs_jours", "values": {"jours": "2"}}]
+        v = lignes.compute_bulletin(
+            avec_abs, CFG, {"confirme": 1},
+            catalogue={"2000": {"cotisable": False, "imposable": True}})
+        self.assertFalse(any("لا تُنسَّب على الغياب" in w
+                             for w in v.avertissements), v.avertissements)
+
 
 class TestFreeLine(unittest.TestCase):
     def test_v7_rejette_sans_classification(self):

@@ -51,8 +51,13 @@ QT_QPA_PLATFORM=offscreen python demos/ui2_paie_gallery.py --selftest
 - `ui2/` (PySide6) — الجديدة: مكتبة مكوّنات + `screen.py` (قاعدة شاشة
   مشتركة: هيكل + دورة حياة اختصارات + مسوّدة + سياق زبون — سترث منها HR
   و CD) + `paie/` (شاشة كشف الراتب، مبنيّة فوق `Screen`).
-- شاشة الكشف الجديدة تُطلَق كعملية منفصلة: `python -m ui2.paie`، أو من
-  الشاشة الرئيسية عبر بطاقة «كشف راتب (PySide6)» (`OfficeApp.open_paie_v2`).
+- **بطاقة «كشف راتب شهري»** في الشاشة الرئيسية تفتح الآن شاشة PySide6
+  (‏`OfficeApp.open_paie_v2` → `python -m ui2.paie --owner-hwnd <HWND>`):
+  عملية ابنة، نافذتها **مملوكة** لـ OfficeManager على ويندوز
+  (`GWLP_HWNDPARENT`) فتتبعه تصغيراً/إغلاقاً (اقتراع على owner-hwnd في
+  `ui2/paie/__main__`)، وتُخفى عند القفل (`_hide_paie_v2` في `_trigger_lock`).
+  الشاشة القديمة `ui/hr/bulletin_paie.py` لم تعُد مُسجَّلة (الملف باقٍ حتى
+  المرحلة 3). **هذا جسر مؤقّت** — الهدف النهائي نافذة Qt واحدة (المرحلة 3).
 
 ---
 

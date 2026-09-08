@@ -27,18 +27,20 @@ from ui.cd.tab import CDTab
 from ui.common.alerts import confirm as _confirm
 from ui.hr.attestation_travail import AttestationTravailScreen
 from ui.hr.titre_conge import TitreCongeScreen
-from ui.hr.bulletin_paie import BulletinPaieScreen
 from ui.hr.releve_annuel import ReleveAnnuelScreen
 from ui.home.services import build_services
 
 # شاشات خدمات الموارد البشرية / الأجور — كلها ترث نفس الأرضية
 # (ui/hr/base.py) وتُفتح بنفس الآلية العامة (OfficeApp.open_hr).
+#
+# كشف الراتب الشهري (ui/hr/bulletin_paie.py) لم يعُد هنا: بطاقة «كشف راتب
+# شهري» تفتح الآن شاشة PySide6 الجديدة عبر open_paie_v2 (نافذة Qt مملوكة).
+# الملف القديم يبقى بلا تسجيل حتى المرحلة 3.
 _HR_SCREENS = {
     cls.SCREEN_KEY: cls
     for cls in (
         AttestationTravailScreen,
         TitreCongeScreen,
-        BulletinPaieScreen,
         ReleveAnnuelScreen,
     )
 }
@@ -66,7 +68,6 @@ _SERVICE_TAB_LABELS = {
     "cd": "💱 CD",
     "hr_attestation_travail": "📄 شهادة عمل",
     "hr_titre_conge": "🏖️ شهادة عطلة",
-    "hr_bulletin_paie": "💵 كشف شهري",
     "hr_releve_annuel": "📊 كشف سنوي",
 }
 
@@ -77,7 +78,6 @@ _SERVICE_TAB_STATUS = {
     "cd": "CD — العمل على مستندات Change Devise",
     "hr_attestation_travail": "شهادة عمل — Attestation de travail",
     "hr_titre_conge": "شهادة عطلة — Titre de congé",
-    "hr_bulletin_paie": "كشف راتب شهري — Bulletin de paie",
     "hr_releve_annuel": "كشف راتب سنوي — Relevé annuel des émoluments",
 }
 
@@ -99,9 +99,11 @@ class OfficeApp(tk.Tk):
         # المعروضة حالياً (لو فيه) — كلاهما فاضي قبل show_home() بالأسفل.
         self._service_tabs = {}
         self._transient_view = None
-        # عملية شاشة كشف الراتب الجديدة (PySide6) — تُطلَق مستقلّة عبر
-        # open_paie_v2؛ نتتبّعها حتى لا نفتح عدّة نوافذ.
+        # شاشة كشف الراتب الجديدة (PySide6) — عملية ابنة نافذتُها **مملوكة**
+        # لهذه النافذة (GWLP_HWNDPARENT): تتبعها تصغيراً/إغلاقاً، وتُخفى عند
+        # القفل. راجع open_paie_v2 / _capture_paie_v2_hwnd / _hide|_show_paie_v2.
         self._paie_v2_proc = None
+        self._paie_v2_hwnd = None
         # وين ترجع لما تسكّر الإعدادات (زر "رجوع" جواها، أو ضغطة ثانية
         # على "⚙️ الإعدادات" بالهيدر) — راجع open_settings/close_settings/
         # return_to_settings تحت. مفتاح تبويب خدمة حي (زي "cd") لو كنت
@@ -225,10 +227,14 @@ class OfficeApp(tk.Tk):
                 tab.flush_draft_save()
             if hasattr(tab, "deactivate_shortcuts"):
                 tab.deactivate_shortcuts()
+        # نافذة الأجور (عملية منفصلة) خارج شجرة Tk، فلا يغطّيها LockOverlay
+        # — نُخفيها صراحةً حتى لا تبقى بياناتها مكشوفة فوق شاشة القفل.
+        self._hide_paie_v2()
         overlay = LockOverlay(self)
         self.wait_window(overlay)  # يعلّق هنا لحد ما LockOverlay تتدمر (فتح ناجح)
         self._is_locked = False
         self._last_activity_time = time.time()
+        self._show_paie_v2()       # فتح ناجح → أعِد إظهارها
         # نعيد التفعيل لتبويب الخدمة *النشط حالياً* بس (نفس فحص
         # _activate_service_tab) — ما نفعّل خدمات ثانية مو ظاهرة فعلياً.
         active_tab = self._service_tabs.get(self._current_service)
@@ -313,6 +319,10 @@ class OfficeApp(tk.Tk):
             if hasattr(tab, "has_unsaved_changes") and tab.has_unsaved_changes():
                 if not _confirm(_UNSAVED_CD_TITLE, _UNSAVED_CD_MESSAGE):
                     return
+        # نافذة الأجور (عملية ابنة) تُغلق نفسها بلطف حين تختفي نافذة
+        # OfficeManager (تقترع على owner-hwnd — راجع ui2/paie/__main__)،
+        # فتحفظ مسوّدتها. لا حاجة لإجراء هنا؛ ولو أُلغي الإغلاق (تنبيه CD)
+        # تبقى مفتوحة كما هي.
         auth.record_logout_current()
         self.destroy()
 
@@ -373,34 +383,107 @@ class OfficeApp(tk.Tk):
             self._refresh_tab_strip()
         self._activate_service_tab(key)
 
+    # ==================== شاشة الأجور (PySide6) — نافذة مملوكة ====================
     def open_paie_v2(self):
-        """يفتح شاشة كشف الراتب الجديدة (PySide6) كـ**عملية منفصلة** —
-        ``python -m ui2.paie`` على نفس ``office_system.db``. Qt و Tkinter
-        لكلٍّ حلقة أحداث، فلا يُشغَّلان في عملية واحدة؛ العزل يعني كذلك أنّ
-        فشل الشاشة الجديدة لا يمسّ OfficeManager.
+        """يفتح كشف الراتب الشهري: شاشة PySide6 (المحرّك المُصادَق + الكتالوج
+        الديناميكي + التحقّق + المسوّدة). تُطلَق كعملية ابنة (``python -m
+        ui2.paie``) لأنّ Qt و Tkinter لكلٍّ حلقة أحداث لا تُشغَّلان معاً؛
+        العزل يعني كذلك أنّ فشلها لا يمسّ OfficeManager.
 
-        ملاحظة تحزيم: ``sys.executable`` هو مفسّر بايثون عند التشغيل من
-        المصدر (``python main.py``). لو حُزِم البرنامج لاحقاً بـPyInstaller
-        فسيشير إلى ملف الـ.exe نفسه، ولن يقبل ``-m ui2.paie`` — تحتاج
-        حينها نقطة دخول موحّدة (وسيط ``--paie`` في الـ.exe مثلاً)."""
+        على ويندوز نافذتُها تُجعَل **مملوكة** لهذه النافذة عبر
+        ``GWLP_HWNDPARENT`` (يُمرَّر ``--owner-hwnd``): تبقى فوق OfficeManager،
+        تُصغَّر وتُغلَق معه. القفل يُخفيها صراحةً (راجع ``_trigger_lock``).
+
+        ملاحظة تحزيم: ``sys.executable`` مفسّر بايثون عند التشغيل من المصدر؛
+        بعد التحزيم بـPyInstaller يحتاج نقطة دخول موحّدة (وسيط ``--paie``)."""
         if self._paie_v2_proc is not None and self._paie_v2_proc.poll() is None:
-            self._set_status("شاشة كشف الراتب (PySide6) مفتوحة أصلاً في نافذة مستقلّة")
+            self._set_status("كشف الراتب مفتوح أصلاً")
+            self._show_paie_v2()
             return
+        argv = [sys.executable, "-m", "ui2.paie"]
+        hwnd = self._own_hwnd()
+        if hwnd:
+            argv += ["--owner-hwnd", str(hwnd)]
         try:
-            self._paie_v2_proc = subprocess.Popen(
-                [sys.executable, "-m", "ui2.paie"], cwd=_PROJECT_ROOT
-            )
+            self._paie_v2_proc = subprocess.Popen(argv, cwd=_PROJECT_ROOT)
         except Exception:
             logger.exception("تعذّر إطلاق شاشة كشف الراتب (PySide6)")
             messagebox.showerror(
                 "تعذّر فتح الشاشة",
-                "تعذّر فتح شاشة كشف الراتب الجديدة.\n"
+                "تعذّر فتح شاشة كشف الراتب.\n"
                 "تأكّد من تثبيت PySide6 (pip install -r requirements.txt).\n"
                 "راجع office_manager.log للتفاصيل.",
                 parent=self,
             )
             return
-        self._set_status("فُتحت شاشة كشف الراتب (PySide6) في نافذة مستقلّة")
+        self._paie_v2_hwnd = None
+        self._capture_paie_v2_hwnd(tries=20)   # النافذة تظهر بعد لحظة
+        self._set_status("فُتح كشف الراتب الشهري")
+
+    def _own_hwnd(self):
+        """HWND هذه النافذة العليا (ويندوز فقط) لتمريره كـowner للابنة."""
+        if sys.platform != "win32":
+            return None
+        try:
+            import ctypes
+            GA_ROOT = 2
+            return int(ctypes.windll.user32.GetAncestor(self.winfo_id(), GA_ROOT))
+        except Exception:
+            return None
+
+    def _capture_paie_v2_hwnd(self, tries=20):
+        """يبحث عن النافذة العليا المرئية للعملية الابنة (تظهر بعد بدء Qt)
+        ويخزّن HWND — نحتاجه لإخفائها/إظهارها عند القفل."""
+        proc = self._paie_v2_proc
+        if sys.platform != "win32" or proc is None or proc.poll() is not None:
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            found = []
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+            def _cb(hwnd, _lp):
+                pid = wintypes.DWORD()
+                ctypes.windll.user32.GetWindowThreadProcessId(
+                    hwnd, ctypes.byref(pid))
+                if (pid.value == proc.pid
+                        and ctypes.windll.user32.IsWindowVisible(hwnd)
+                        and ctypes.windll.user32.GetWindowTextLengthW(hwnd) > 0):
+                    found.append(hwnd)
+                    return False
+                return True
+
+            ctypes.windll.user32.EnumWindows(_cb, 0)
+            if found:
+                self._paie_v2_hwnd = found[0]
+                return
+        except Exception:
+            return
+        if tries > 1:
+            self.after(250, lambda: self._capture_paie_v2_hwnd(tries - 1))
+
+    def _paie_v2_alive(self):
+        return (self._paie_v2_proc is not None
+                and self._paie_v2_proc.poll() is None)
+
+    def _paie_v2_show_window(self, hide: bool):
+        """SW_HIDE=0 / SW_SHOW=5 لنافذة الأجور (ويندوز)."""
+        if sys.platform != "win32" or not self._paie_v2_hwnd:
+            return
+        try:
+            import ctypes
+            ctypes.windll.user32.ShowWindow(self._paie_v2_hwnd, 0 if hide else 5)
+        except Exception:
+            pass
+
+    def _hide_paie_v2(self):
+        if self._paie_v2_alive():
+            self._paie_v2_show_window(hide=True)
+
+    def _show_paie_v2(self):
+        if self._paie_v2_alive():
+            self._paie_v2_show_window(hide=False)
 
     def open_backup(self):
         self._current_service = "backup"

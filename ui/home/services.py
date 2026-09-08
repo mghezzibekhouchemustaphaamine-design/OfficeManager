@@ -7,11 +7,6 @@
 from dataclasses import dataclass
 from typing import Callable, Any
 
-# شاشة كشف الراتب الجديدة (PySide6، حزمة ui2/) — تُطلَق كعملية منفصلة
-# (راجع OfficeApp.open_paie_v2). علم واحد لإخفائها بسرعة إن لزم — نفس نمط
-# SHOW_ADMIN_SCREENS في demos/ui2_paie_gallery.py.
-SHOW_PAIE_V2 = True
-
 
 @dataclass(frozen=True)
 class ServiceDefinition:
@@ -51,10 +46,15 @@ def build_services(app):
             icon="🏖️",
         ),
         ServiceDefinition(
+            # كشف الراتب الشهري: الشاشة الجديدة (PySide6، المحرّك المُصادَق +
+            # الكتالوج الديناميكي + التحقّق + المسوّدة). تُفتح كنافذة Qt
+            # مملوكة لـ OfficeManager (تتبعه تصغيراً/إغلاقاً وتُخفى عند
+            # القفل) — راجع OfficeApp.open_paie_v2. الشاشة القديمة
+            # (ui/hr/bulletin_paie.py) لم تعُد مُسجَّلة.
             key="hr_bulletin_paie",
             title="كشف راتب شهري",
             description="توليد كشف الراتب الشهري مع حساب IRG (Bulletin de paie)",
-            open_handler=lambda owner: owner.open_hr("hr_bulletin_paie"),
+            open_handler=lambda owner: owner.open_paie_v2(),
             icon="💵",
         ),
         ServiceDefinition(
@@ -64,11 +64,4 @@ def build_services(app):
             open_handler=lambda owner: owner.open_hr("hr_releve_annuel"),
             icon="📊",
         ),
-        *([ServiceDefinition(
-            key="paie_v2",
-            title="كشف راتب (PySide6)",
-            description="شاشة توليد الكشف الجديدة — تُفتح في نافذة مستقلّة",
-            open_handler=lambda owner: owner.open_paie_v2(),
-            icon="🧾",
-        )] if SHOW_PAIE_V2 else []),
     ]

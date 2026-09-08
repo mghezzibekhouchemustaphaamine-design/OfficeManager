@@ -2386,3 +2386,72 @@ PyInstaller في Program Files. نُقلتا إلى `%APPDATA%\OfficeManager\` �
 معدَّل: `programme/payroll/lignes.py` (حارس التحذير) ·
 `programme/payroll/tests/test_lignes.py` · `CLAUDE.md` · `docs/CHANGELOG.md`.
 لا مساس بالمحرّك.
+
+---
+
+## مرجع تسعة وأربعون — 2026-09-08: بطاقة «كشف راتب شهري» تفتح شاشة PySide6 (نافذة مملوكة)
+
+إدماج حقيقي لا زرّ تجريبي: ضغطة «كشف راتب شهري» من الشاشة الرئيسية تفتح
+الآن الكشف الجديد (المحرّك المُصادَق + الكتالوج الديناميكي + التحقّق +
+المسوّدة)، لا شاشة Tkinter القديمة. الحلّ المختار: **عملية منفصلة بنافذة
+مملوكة** (الخيار ب) — لا embedding (غير مستقرّ لبرنامج يومي)، ولا بدء
+المرحلة 3 الآن (مشروع كبير مركزه ترحيل CD). **جسر مؤقّت معلَن؛ الهدف
+النهائي نافذة Qt واحدة (المرحلة 3).**
+
+### 1. إعادة توجيه البطاقة — `ui/home/services.py`
+
+بطاقة `hr_bulletin_paie` (العنوان والأيقونة كما هما) صار `open_handler`
+ينادي `owner.open_paie_v2()` بدل `open_hr("hr_bulletin_paie")`. حُذفت
+بطاقة `paie_v2` المؤقّتة وعلَم `SHOW_PAIE_V2` (مرجع 40) — لم يعُدا لازمَين.
+
+### 2. سحب الشاشة القديمة — `ui/home/app_window.py`
+
+`BulletinPaieScreen` (‏`ui/hr/bulletin_paie.py`) أُزيل من استيراد
+`_HR_SCREENS` ومن `_SERVICE_TAB_LABELS`/`_SERVICE_TAB_STATUS`. **الملف
+يبقى** بلا تسجيل (يُحذف في المرحلة 3). `open_hr` لم يعُد يعرف المفتاح.
+
+### 3. نافذة مملوكة — لا embedding
+
+- `open_paie_v2()` يمرّر HWND نافذة OfficeManager عبر `--owner-hwnd`
+  (‏`_own_hwnd` → `GetAncestor(GA_ROOT)`).
+- `ui2/paie/__main__.py`: `_make_owned(win, hwnd)` يضبط `GWLP_HWNDPARENT`
+  بعد `show()` (‏`SetWindowLongPtrW`). النتيجة: النافذة تبقى فوق
+  OfficeManager وتتبعه تصغيراً/إخفاءً — **بلا إعادة توطين، بلا ضخّ حلقة
+  أحداث** (كلٌّ في عمليته).
+- `_capture_paie_v2_hwnd`: `EnumWindows` بالبحث عن أوّل نافذة عليا مرئية
+  ذات عنوان لعملية الابنة — يُخزَّن HWND لاستعماله في الإخفاء/الإظهار.
+
+### 4. إخفاء عند القفل + إغلاق تابع
+
+- **القفل** (`_trigger_lock`): قبل `LockOverlay` → `_hide_paie_v2`
+  (`ShowWindow SW_HIDE`) حتى لا تبقى بيانات الأجور مكشوفة فوق شاشة القفل؛
+  بعد فتح القفل → `_show_paie_v2` (`SW_SHOW`).
+- **الإغلاق**: `ui2/paie/__main__` يقترع كل 400ms على نافذة OfficeManager
+  (‏`IsWindow(owner_hwnd)`): اختفت → `win.close()` **بلطف** (‏`aboutToQuit`
+  → حفظ المسوّدة، خروج `rc=0`)؛ صُغِّرت/استُعيدت → يتبع. (رسائل `WM_CLOSE`
+  عبر العمليات لا تصل Qt6 بثبات — الاقتراع أضمن.) لو أُلغي إغلاق
+  OfficeManager (تنبيه CD) تبقى نافذة الأجور كما هي.
+
+### التحقّق — تشغيل يدوي فعلي على الجهاز (لا محاكاة)
+
+`OfficeApp` حقيقية + `open_paie_v2()` (نفس ما يفعله زرّ البطاقة) + Win32 API:
+
+| # | فُحِص | النتيجة |
+|---|---|---|
+| 1 | بطاقة «كشف راتب شهري» → المعالج | ينادي `open_paie_v2` · نافذة PySide6 تُفتح، HWND مُلتقَط |
+| 2a | مملوكة | `child GWLP_HWNDPARENT == OfficeManager HWND` · تصغير OfficeManager (`SW_MINIMIZE`) → الابنة `IsWindowVisible=False` · استعادة → `True` |
+| 2b | إغلاق تابع | `app.destroy()` → الابنة تُغلق نفسها خلال ~0,5s بـ `rc=0` (خروج نظيف، المسوّدة محفوظة) |
+| 3 | القفل | `_hide_paie_v2` → الابنة مخفيّة · `_show_paie_v2` → ظاهرة |
+| 4 | باقي البرنامج | `open_cd()` يبني تبويب CD بلا خطأ · `open_hr("hr_attestation_travail")` يعمل · بقيّة `_HR_SCREENS` سليمة |
+
+**الاختبارات الآلية:** `programme/payroll/tests` → **Ran 49, OK** ·
+`test_golden.py` → **14/14** · `programme/tests` → 6 · `ui2/tests` → 10 ·
+`ui2/paie/tests` → 17 · `demos/ui2_paie_gallery.py` + `demos/ui2_gallery.py`
+`--selftest` → `ALLOK` · `import main` / `ui.home.app_window` / `ui.cd.tab`
+/ `ui.home.services` → سليمة · `python -m ui2.paie` (بلا owner) → `main() → 0`.
+
+### الملفات المتأثرة
+
+معدَّل: `ui/home/services.py` · `ui/home/app_window.py` · `ui2/paie/__main__.py`
+· `CLAUDE.md` · `docs/CHANGELOG.md`. `ui/hr/bulletin_paie.py` **باقٍ بلا
+تسجيل**. لا مساس بالمحرّك ولا بـ CD ولا ببقيّة `ui/`.

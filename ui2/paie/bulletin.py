@@ -2,8 +2,10 @@
 
 مبنيّة من مكوّنات ``ui2/`` (``Form`` · ``DataTable`` · ``ToolBar``). كل
 الحساب في ``programme.payroll`` (``lignes.compute_bulletin`` الذي وحده
-يستدعي المحرّك — الشاشة **لا تستدعي ``calc`` مباشرةً أبداً**)، وكل
-التخزين في ``programme.payroll.repository``. لا SQL ولا حساب هنا.
+يستدعي محرّك ``calc`` — الشاشة **لا تستدعي منطق الحساب مباشرةً**؛ الاستثناء
+الوحيد ``calc.fmt_montant``، وهو **مُنسِّق عرض** لا حساب، والمصدر الوحيد
+لتنسيق المبالغ في المشروع). التخزين في ``programme.payroll.repository``.
+لا SQL ولا حساب هنا.
 
 جدول أسطر ديناميكي: زرّ [＋ إضافة سطر ▾] بقائمة أنواع مجمَّعة (أساسية /
 أخرى / سطر حرّ). عند اختيار النوع تُفتح حقوله فقط، ويُطبَّق منطقه من
@@ -21,9 +23,10 @@ from PySide6.QtWidgets import (
 )
 
 from programme.payroll import config_loader, lignes, repository
+from programme.payroll.calc import fmt_montant       # مُنسِّق العرض الموحّد
 from ui2 import theme
+from ui2.alerts import info_label, warn
 from ui2.form import Field, Form
-from ui2.paie._common import fmt_money, info_label, warn
 from ui2.screen import Screen
 from ui2.table import Column, DataTable
 from ui2.toolbar import ToolAction
@@ -546,14 +549,14 @@ class BulletinScreen(Screen):
 
         def emit_zone(z):
             for l in by_zone[z]:
-                amount = fmt_money(l.montant)
+                amount = fmt_montant(l.montant)
                 if l.sens == "RETENUE" and l.montant != 0:
                     amount = "−" + amount            # صفرٌ لا يأخذ إشارة
                 rows.append({"libelle": l.libelle, "zone": z,
                              "montant": amount})
 
         def sys_row(code, value, *, negative=False):
-            amount = fmt_money(value)
+            amount = fmt_montant(value)
             if negative and value != 0:
                 amount = "−" + amount
             rows.append({"libelle": f"🔒 {self._SYS_LABELS[code]}",
@@ -571,7 +574,7 @@ class BulletinScreen(Screen):
         sys_row("E", view.e)
         self._result.set_rows(rows)
         self._info.setText(
-            f"عدد الأسطر: {len(view.lignes)}  ·  الصافي: {fmt_money(view.e)}")
+            f"عدد الأسطر: {len(view.lignes)}  ·  الصافي: {fmt_montant(view.e)}")
         self._warnings = list(view.avertissements)
         self._refresh_warnbar()
 
@@ -675,7 +678,7 @@ class BulletinScreen(Screen):
         # V3: الصافي للدفع سالب → منع الحفظ (SPEC §6)
         if self._view.e < 0:
             warn(self, "الصافي سالب (V3)", [
-                f"الصافي للدفع = {fmt_money(self._view.e)} دج (سالب).",
+                f"الصافي للدفع = {fmt_montant(self._view.e)} دج (سالب).",
                 "لا يُحفَظ ولا يُثبَّت كشف بصافٍ سالب — راجِع الأسطر."])
             return None
 
@@ -746,7 +749,7 @@ class BulletinScreen(Screen):
         # V3: لا تثبيت لكشف صافيه سالب (SPEC §6)
         if self._view is not None and self._view.e < 0:
             warn(self, "الصافي سالب (V3)", [
-                f"الصافي للدفع = {fmt_money(self._view.e)} دج (سالب).",
+                f"الصافي للدفع = {fmt_montant(self._view.e)} دج (سالب).",
                 "لا يُثبَّت كشف بصافٍ سالب."])
             return
         numero = repository.fige_bulletin(self._bulletin_id, conn=self._conn)

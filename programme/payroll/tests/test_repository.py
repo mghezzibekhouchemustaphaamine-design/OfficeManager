@@ -20,7 +20,7 @@ def _fresh_db() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
     applied = repo.run_migrations(conn)
-    assert applied == [1, 2, 3], applied  # قاعدة جديدة: 1 ثم 2 ثم 3 بالترتيب
+    assert applied == [1, 2, 3, 4], applied  # قاعدة جديدة: 1..4 بالترتيب
     return conn
 
 
@@ -333,6 +333,32 @@ class TestRepositoryCycle(unittest.TestCase):
                                                         conn=c)}
         self.assertIn(tra, regs2)
         self.assertEqual(repo.get_entreprise(tra, conn=c)["transient"], 0)
+
+    def test_m4_drops_dead_invoice_tables_on_fresh_db(self):
+        """الهجرة 4: قاعدة جديدة → invoices/invoice_items غير موجودين
+        (تُشغَّل قبل CREATE TABLE في init_db، والجدولان حُذفا من هناك)."""
+        c = self.conn
+        for tbl in ("invoices", "invoice_items"):
+            self.assertIsNone(
+                c.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                          "AND name=?", (tbl,)).fetchone())
+        # tasks/documents محجوزان — يبقيان
+        for tbl in ("tasks", "documents"):
+            pass  # لا يُنشئهما repository؛ init_db يفعل (خارج نطاق هذا الاختبار)
+
+    def test_m4_refuses_to_drop_populated_invoice_table(self):
+        """حارس الهجرة 4: جدول invoices فيه صفوف → RuntimeError، لا إسقاط."""
+        c = self.conn
+        c.execute("CREATE TABLE invoices (id INTEGER PRIMARY KEY, x TEXT)")
+        c.execute("INSERT INTO invoices (x) VALUES ('بيانات')")
+        with self.assertRaises(RuntimeError):
+            repo._m4_drop_dead_invoice_tables(c.cursor())
+        # لم يُسقَط
+        self.assertIsNotNone(
+            c.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                      "AND name='invoices'").fetchone())
+        self.assertEqual(
+            c.execute("SELECT COUNT(*) FROM invoices").fetchone()[0], 1)
 
     def test_ensure_default_client_first_run(self):
         """أول تشغيل: زبون افتراضي + كتالوج + اتفاقية مؤكَّدة (V15 لا تمنع)."""

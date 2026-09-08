@@ -1,25 +1,15 @@
-"""أدوات مشتركة بين شاشات الأجور — تنسيق أرقام، تنظيف قيم النماذج،
-وصناديق رسائل موحّدة. لا SQL ولا حساب."""
+"""أدوات عرض مشتركة لكل شاشات ``ui2/`` (ليست خاصة بالأجور): صناديق رسائل
+موحّدة، تنظيف قيم النماذج، وسمات عرض صغيرة. لا SQL ولا حساب.
+
+تنسيق المبالغ **ليس هنا**: المصدر الوحيد هو
+:func:`programme.payroll.calc.fmt_montant` (تستعمله شاشات ``ui2/`` والطبقة
+القديمة ``ui/hr/paie`` معاً)."""
 from decimal import Decimal, InvalidOperation
 from typing import Dict, Iterable, List
 
 from PySide6.QtWidgets import QLabel, QMessageBox
 
 from ui2 import theme
-
-
-def fmt_money(value) -> str:
-    """``Decimal``/``str``/``None`` → ``"45 000,00"`` (فاصلة عشرية،
-    فراغ للآلاف). فارغ → ``""``."""
-    if value is None or value == "":
-        return ""
-    try:
-        d = value if isinstance(value, Decimal) else Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        return str(value)
-    if d == 0:
-        d = abs(d)                       # يمنع «-0,00»
-    return f"{d:,.2f}".replace(",", " ").replace(".", ",")
 
 
 def fmt_rate(value) -> str:

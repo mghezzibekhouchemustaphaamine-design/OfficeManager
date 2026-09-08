@@ -230,10 +230,40 @@ def _m3_transient(cur: sqlite3.Cursor) -> None:
     )
 
 
+def _m4_drop_dead_invoice_tables(cur: sqlite3.Cursor) -> None:
+    """الهجرة 4 — إسقاط ``invoices`` و``invoice_items``.
+
+    جدولان أُنشئا في ``database.py`` ولم يُقرأهما أيّ كود قطّ (كانت
+    ``programme/utils.generate_invoice_number`` وحدها تشير إلى ``invoices``،
+    وهي نفسها غير مُستدعاة — حُذفت). الابن أولاً (``invoice_items`` يشير إلى
+    ``invoices``).
+
+    **حارس:** إن كان أيّ من الجدولين موجوداً وفيه صفوف، تتوقّف الهجرة
+    برفع استثناء بدل الإسقاط الصامت — إسقاط جدول فيه بيانات قرار واعٍ لا
+    تلقائي. على قاعدة جديدة الجدولان غير موجودين بعد (الهجرات تُشغَّل قبل
+    ``CREATE TABLE`` في ``init_db``) فتُتخطّى بأمان."""
+    for tbl in ("invoice_items", "invoices"):
+        exists = cur.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (tbl,),
+        ).fetchone()
+        if not exists:
+            continue
+        n = cur.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+        if n:
+            raise RuntimeError(
+                f"الهجرة 4 متوقّفة: الجدول «{tbl}» فيه {n} صفّ بيانات. "
+                f"إسقاط جدول فيه بيانات قرار واعٍ — راجِعه يدوياً ثم عدّل "
+                f"هذه الهجرة."
+            )
+        cur.execute(f"DROP TABLE {tbl}")
+
+
 _MIGRATIONS: List[Tuple[int, Callable[[sqlite3.Cursor], None]]] = [
     (1, _m1_baseline),
     (2, _m2_payroll),
     (3, _m3_transient),
+    (4, _m4_drop_dead_invoice_tables),
 ]
 
 

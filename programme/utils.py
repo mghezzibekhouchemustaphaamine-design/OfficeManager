@@ -1,25 +1,13 @@
 """
-دوال مساعدة عامة: توليد أرقام الفواتير، تصدير CSV، فتح الملفات.
+دالة مساعدة عامة: فتح ملف بالبرنامج الافتراضي لنظام التشغيل.
+
+(حُذفت ``generate_invoice_number`` و``export_rows_to_csv`` — كانتا مرتبطتين
+بجدول ``invoices`` الميت الذي أُسقط في هجرة الأجور رقم 4؛ لم تكن أيّ منهما
+مُستدعاة.)
 """
-import csv
 import os
 import subprocess
 import sys
-from datetime import datetime
-
-
-def generate_invoice_number(conn):
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM invoices")
-    count = cur.fetchone()[0] + 1
-    return f"INV-{datetime.now().strftime('%Y%m')}-{count:04d}"
-
-
-def export_rows_to_csv(rows, headers, file_path):
-    with open(file_path, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
-        writer.writerow(headers)
-        writer.writerows(rows)
 
 
 def open_path(path):

@@ -30,7 +30,7 @@
 ## الاختبارات
 
 ```
-python -m unittest discover -s programme/payroll/tests      # النواة — 38 اختباراً
+python -m unittest discover -s programme/payroll/tests      # النواة — 40 اختباراً
 python -m unittest discover -s ui2/tests                    # قاعدة الشاشة Screen — 10
 python -m unittest discover -s ui2/paie/tests               # شاشة الكشف (pinning) — 8
 python programme/payroll/tests/test_golden.py               # تقرير IRG المقروء

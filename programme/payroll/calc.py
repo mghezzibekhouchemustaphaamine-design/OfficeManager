@@ -367,9 +367,13 @@ def compute(data: PaieInput, cfg: dict) -> PaieResult:
 
 
 def fmt_montant(x) -> str:
-    """تنسيق فرنسي: فاصلة عشرية، فراغ لآلاف — «49 505,71»."""
-    try:
-        s = f"{_d(x):,.2f}"
-    except (ValueError, InvalidOperation):
-        return ""
-    return s.replace(",", " ").replace(".", ",")
+    """تنسيق فرنسي موحّد للمبالغ: فاصلة عشرية، فراغ لآلاف — «49 505,71».
+    صفر يُطبَع «0,00» بلا إشارة سالبة.
+
+    **المصدر الوحيد لتنسيق المبالغ في المشروع** — تستعمله شاشة الأجور
+    الجديدة (``ui2/paie``) والطبقة القديمة (``ui/hr/paie/template_simple``)
+    معاً. (``_d`` يردّ أيّ إدخال غير صالح/فارغ إلى صفر، فلا استثناء.)"""
+    d = _d(x)
+    if d == 0:
+        d = abs(d)                       # يمنع «-0,00»
+    return f"{d:,.2f}".replace(",", " ").replace(".", ",")

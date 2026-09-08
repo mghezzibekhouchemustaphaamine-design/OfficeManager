@@ -1995,3 +1995,68 @@ Tkinter معدوماً عملياً: `ui/` لا يستورد `ui2/` ولا `PySi
 `docs/CHANGELOG.md`.
 لا مساس بمحرّك الحساب (`programme/payroll/{calc,irg,lignes}.py`) ولا بأي
 اختبار قائم.
+
+---
+
+## مرجع ثلاثة وأربعون — 2026-09-08: توحيد (المهمة ب)
+
+ثلاثة تنظيفات من `docs/FULL_REVIEW.md` §3، بلا مساس بمنطق المحرّك.
+
+### ب.1 — `ui2/paie/_common.py` → `ui2/alerts.py`
+
+محتواه عام لكل شاشات `ui2/` لا خاصّ بالأجور (`warn` · `confirm` · `clean`
+· `info_label` · `fmt_rate` · `actif_*` · `ACTIF_CHOICES`). نُقل بـ`git mv`
+قبل أن تُبنى شاشات أخرى وتستورده من مكان خاطئ. المستوردون حُدِّثوا:
+`ui2/paie/bulletin.py` · `ui2/paie/companies.py` · `demos/ui2_paie_gallery.py`.
+
+### ب.2 — توحيد تنسيق المبالغ في مصدر واحد
+
+كانت `calc.fmt_montant()` و `_common.fmt_money()` تُنتجان صيغاً مختلفة في
+نفس الشاشة (`25 000.00` مقابل `2 160,00`). حُذفت `fmt_money`، وصار
+**`programme.payroll.calc.fmt_montant` المصدر الوحيد** — تستعمله شاشة
+`ui2/paie` الجديدة والطبقة القديمة `ui/hr/paie/template_simple` معاً.
+`fmt_montant` استوعبت ضمان «صفر بلا إشارة سالبة» (`-0,00` → `0,00`)؛
+حُذف `try/except` ميت (‏`_d` لا يرفع استثناء). دالة عرض بحتة لا حساب —
+تُستورَد في `bulletin.py` مباشرةً كما في `template_simple.py`.
+
+### ب.3 — حذف كود ميت + إسقاط جدولين
+
+- **`programme/utils.py`**: حُذفت `generate_invoice_number` (تشير إلى
+  جدول `invoices` الميت) و `export_rows_to_csv` — كلتاهما غير مُستدعاة.
+  بقيت `open_path` (يستوردها `ui/cd/{tab,history}.py` و
+  `ui/common/file_explorer.py`).
+- **`programme/database.py`**: حُذف `CREATE TABLE invoices` و
+  `invoice_items` من `init_db`. `tasks` و `documents` **أُبقيا** مع تعليق
+  «⚠️ محجوزة» (0 صفّ، لا قارئ — تصميم مستقبلي محتمل؛ يُسقطان لاحقاً إن
+  تأكّد عدم الحاجة).
+- **الهجرة 4** (`programme/payroll/repository.py`): `_m4_drop_dead_invoice_tables`
+  — تُسقط `invoice_items` ثم `invoices`. **حارس**: إن كان أيّ منهما موجوداً
+  وفيه صفوف → `RuntimeError` بدل الإسقاط الصامت (إسقاط جدول فيه بيانات
+  قرار واعٍ). فُحص يدوياً قبل التنفيذ: الجدولان الأربعة (`invoices` ·
+  `invoice_items` · `tasks` · `documents`) **صفر صفّ** في `office_system.db`.
+  طُبِّقت على القاعدة الحقيقية: `schema_migrations = [1, 2, 3, 4]`،
+  الجدولان أُسقطا، `tasks`/`documents` باقيان.
+
+### التحقّق — بوّابة القبول كاملة خضراء
+
+- `python -m unittest discover -s programme/payroll/tests` → **Ran 40, OK**
+  (+2: إسقاط الهجرة 4 على قاعدة جديدة، وحارس الرفض على جدول مأهول).
+  `_fresh_db()` صار يؤكّد `applied == [1, 2, 3, 4]`.
+- `python -m unittest discover -s ui2/tests` → **Ran 10, OK**.
+- `python -m unittest discover -s ui2/paie/tests` → **Ran 8, OK** (تثبيت
+  السلوك، بلا تعديل — صيغة `fmt_montant` مطابقة لصيغة `fmt_money` السابقة).
+- `test_golden.py` → **14/14**.
+- `demos/ui2_paie_gallery.py --selftest` → `ALLOK` (تأكيدات `#10/#11`
+  حُوِّلت إلى `fmt_montant`).
+- `python -m ui2.paie` → `main() → 0` · `import main` / `ui.home.app_window`
+  / `ui.cd.tab` / `ui.common.file_explorer` / `demos.ui2_paie_gallery` → سليمة.
+
+### الملفات المتأثرة
+
+منقول: `ui2/paie/_common.py` → `ui2/alerts.py` (بلا `fmt_money`).
+معدَّل: `programme/payroll/calc.py` (فقط `fmt_montant` — مُنسِّق عرض، لا
+محرّك) · `programme/utils.py` · `programme/database.py` ·
+`programme/payroll/repository.py` (هجرة 4) ·
+`programme/payroll/tests/test_repository.py` · `ui2/paie/bulletin.py` ·
+`ui2/paie/companies.py` · `demos/ui2_paie_gallery.py` · `CLAUDE.md`.
+لا مساس بـ`compute_sequence` ولا `irg.py` ولا `lignes.py`.

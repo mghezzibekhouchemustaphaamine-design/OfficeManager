@@ -41,27 +41,13 @@ def init_db():
             created_at TEXT DEFAULT (datetime('now','localtime'))
         );
 
-        CREATE TABLE IF NOT EXISTS invoices (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            invoice_number TEXT UNIQUE NOT NULL,
-            client_id INTEGER,
-            date TEXT NOT NULL,
-            due_date TEXT,
-            status TEXT NOT NULL DEFAULT 'غير مدفوعة',
-            notes TEXT,
-            created_at TEXT DEFAULT (datetime('now','localtime')),
-            FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL
-        );
+        -- جدولا invoices و invoice_items حُذفا (لم يُستعملا قطّ — 0 صفّ) —
+        -- انظر هجرة الأجور رقم 4 (DROP) في programme/payroll/repository.py.
 
-        CREATE TABLE IF NOT EXISTS invoice_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            invoice_id INTEGER NOT NULL,
-            description TEXT NOT NULL,
-            quantity REAL NOT NULL DEFAULT 1,
-            unit_price REAL NOT NULL DEFAULT 0,
-            FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
-        );
-
+        -- ⚠️ محجوزة: tasks و documents لم يُستعملا بعد (0 صفّ، لا قارئ في
+        -- الكود). أُبقيا عمداً — تصميم مستقبلي محتمل (مهام/أرشيف مستندات
+        -- عام). إن تأكّد أنهما غير مطلوبين، يُسقطان في هجرة لاحقة كما فُعل
+        -- بـ invoices.
         CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,

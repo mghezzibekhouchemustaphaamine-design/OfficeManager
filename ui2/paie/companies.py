@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QLineEdit, QVBoxLayout, QWidget
 from programme.payroll import repository
 from ui2.dialog import FormDialog
 from ui2.form import Field
-from ui2.paie._common import (
+from ui2.alerts import (
     ACTIF_CHOICES, actif_to_text, clean, info_label, text_to_actif, warn,
 )
 from ui2.table import Column, DataTable

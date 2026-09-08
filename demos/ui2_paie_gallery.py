@@ -286,13 +286,13 @@ def _selftest() -> int:
     print("[selftest] #4: سطر بلا قيمة → غير محتسَب + تنبيه «أدخل القيمة»")
 
     # ===== الكوميت 2 — عرض وتصميم =====
-    from ui2.paie._common import fmt_money
+    from programme.payroll.calc import fmt_montant       # المصدر الوحيد
 
     # #10 — صيغة عربية موحّدة: فاصل آلاف مسافة، فاصلة عشرية
-    assert fmt_money(Decimal("25000")) == "25 000,00", fmt_money(Decimal("25000"))
+    assert fmt_montant(Decimal("25000")) == "25 000,00", fmt_montant(Decimal("25000"))
     # #11 — صفرٌ بلا إشارة سالبة
-    assert fmt_money(Decimal("0")) == "0,00"
-    assert fmt_money(Decimal("-0.00")) == "0,00"
+    assert fmt_montant(Decimal("0")) == "0,00"
+    assert fmt_montant(Decimal("-0.00")) == "0,00"
 
     scr8 = BulletinScreen(conn=conn)
     scr8._rows[0].form.set_values({"montant": "25000"})   # [C] < 30 000 → [D]=0

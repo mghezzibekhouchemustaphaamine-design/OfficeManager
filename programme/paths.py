@@ -14,10 +14,13 @@
 import os
 
 _TRAVAIL_ENV_OVERRIDE = "OFFICEMANAGER_TRAVAIL_ROOT"
+_LOCAL_STATE_ENV_OVERRIDE = "OFFICEMANAGER_LOCAL_STATE_DIR"
 
 # جذر حزمة "المحرّك" (programme/) — يُشتق منه مسار البيانات المشحونة مع
 # الكود (data/)، لا يُكتب حرفياً في أي وحدة أخرى.
 _PROGRAMME_DIR = os.path.dirname(os.path.abspath(__file__))
+# جذر المشروع (مستوى فوق programme/).
+_PROJECT_ROOT = os.path.dirname(_PROGRAMME_DIR)
 
 
 def get_real_desktop_dir():
@@ -52,6 +55,24 @@ def get_travail_root():
 def get_screen_dir(name):
     """مجلد شاشة معيّنة جوا travail (زي travail/CD)."""
     return os.path.join(get_travail_root(), name)
+
+
+def get_local_state_dir():
+    """مجلد الحالة المحلية الخاصة بالجهاز — مسوّدات الشاشات وتفضيلات
+    العرض (ملفات JSON صغيرة، مستثناة من git، ليست "شغل مستخدم" ولا مرجعاً
+    قانونياً). اليوم = جذر المشروع (حيث ``cd_draft.json`` / ``cd_settings.json``
+    تاريخياً). قابل للتجاوز بمتغيّر بيئة (OFFICEMANAGER_LOCAL_STATE_DIR) —
+    للاختبارات الآلية حتى لا تكتب في جذر المستودع.
+
+    يرجّع المسار فقط (بلا os.makedirs) — نفس اصطلاح باقي دوال هذا الملف.
+
+    TODO (المهمة د / التحزيم بـPyInstaller): تنتقل إلى
+    %APPDATA%\\OfficeManager\\ مع ترحيل تلقائي من المكان القديم، حتى تعمل
+    الكتابة بعد التثبيت في Program Files (مجلد للقراءة فقط)."""
+    override = os.environ.get(_LOCAL_STATE_ENV_OVERRIDE)
+    if override:
+        return override
+    return _PROJECT_ROOT
 
 
 # --- تصميم "قاعدة البيانات كمصدر الحقيقة" (راجع

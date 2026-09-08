@@ -1927,3 +1927,71 @@ Tkinter معدوماً عملياً: `ui/` لا يستورد `ui2/` ولا `PySi
 جديد: `ui2/paie/tests/__init__.py` · `ui2/paie/tests/test_bulletin_screen.py`.
 معدَّل: `CLAUDE.md` (أمر تشغيل الاختبار) · `docs/CHANGELOG.md`.
 لا مساس بأي كود إنتاج.
+
+---
+
+## مرجع اثنان وأربعون — 2026-09-08: `ui2/screen.py` — قاعدة الشاشة المشتركة (المهمة أ)
+
+المهمة أ من `docs/FULL_REVIEW.md`. **الغرض:** شاشات HR و CD ستُرحَّل فوق
+هذه القاعدة — الواجهة مُصمَّمة لما سيرث منها، لا لتقليص `bulletin.py`. (في
+الطبقة القديمة كانت دورة حياة الاختصارات وحفظ المسوّدة في
+`ui/hr/base.py:HRDocScreen` مجرّد `pass` فارغة، والتطبيق الحقيقي مكرَّراً
+في `ui/cd/tab.py` و `ui/hr/bulletin_paie.py` — هنا مصدر واحد.)
+
+### `ui2/screen.py` (جديد) — `Screen(QWidget)`
+
+| توفّره القاعدة | التفصيل |
+|---|---|
+| هيكل موحّد | شريط أدوات + ترويسة (اختيارية) + شريط تحذير (`warnbar`) + محتوى (يتمدّد) + شريط حالة، يُجمَّع في `build_ui()` بعد أن يهيّئ الوارث حالته |
+| دورة حياة الاختصارات | `on_activate()` → `ShortcutManager(self).register_many(shortcuts())` · `on_deactivate()` → `unregister_all()` + `flush_draft()` (بروتوكول `ui2/tabs.TabHost`) — لا `bind_all` |
+| حفظ المسوّدة | `mark_dirty()` → `schedule_draft_save()` (debounce 800ms) → `_save_draft_now()` يكتب `{"draft_version": N, "state": …}` · `flush_draft()` · `load_draft()` · `maybe_restore_draft(ask)` · `clear_draft()` — نمط `cd_draft.json` |
+| **رقم إصدار المسوّدة** | `DRAFT_VERSION` صنفي. إصدار مختلف أو ملف تالف → `load_draft()` تُرجِع `None` **وتمسح الملف** — لا محاولة تفسير بنية قديمة (تُسقط الشاشة أو تُطبَّق خطأً) |
+| تغييرات غير محفوظة | `has_unsaved_changes() = self._dirty` — مستقلّ عن `is_empty()` (شاشة فيها أسطر محفوظة ليست فارغة لكن بلا تغييرات معلّقة). `is_empty()` للمسوّدة فقط |
+| `on_close()` | خطّاف تنظيف يُستدعى قبل آخر `on_deactivate` عبر `close_screen()` (ستحتاجه CD/HR عند إغلاق تبويب) |
+| سياق الزبون | إشارة `companySelected` · `set_company(id)` |
+| خطاطيف الوارث | `build_toolbar` · `build_header` · `build_body` (إلزامي) · `shortcuts` · `draft_state` · `apply_draft` · `is_empty` · `on_close` |
+
+`programme/paths.py`: دالة `get_local_state_dir()` — مكان ملفات المسوّدة
+(جذر المشروع اليوم؛ تنتقل إلى `%APPDATA%` في المهمة د). قابلة للتجاوز
+بمتغيّر بيئة `OFFICEMANAGER_LOCAL_STATE_DIR` (للاختبارات).
+
+### `ui2/paie/bulletin.py` — أُعيد بناؤه فوق `Screen`
+
+`BulletinScreen(Screen)`: بناء الهيكل انتقل إلى `build_toolbar` /
+`build_header` / `build_body` (نقل، لا إعادة كتابة). `shortcuts()` →
+`{"Ctrl+S": save}` (بدل `shortcut=` على الفعل، مع `on_activate()` في
+`__init__` فيبقى Ctrl+S يعمل مستقلّاً). `_on_client_changed` يبثّ
+`companySelected` عبر `set_company`. شريط التحذير صار `self.warnbar`
+(القاعدة) مع اسم بديل `self._warnbar`.
+
+خطاطيف المسوّدة (`draft_state`/`apply_draft`/`is_empty`) **معرَّفة لكن
+خاملة** — تفعيلها (تعديلات المستخدم → `mark_dirty`، حفظ ناجح →
+`mark_clean`، مطالبة الاسترجاع في `__main__`) هو المهمة ج/5. فلا تغيّر
+سلوك في هذه الدفعة: `has_unsaved_changes()` تُرجِع `False` دائماً (كما
+كانت الحال — لا دالة أصلاً)، ولا تُكتب ملفات مسوّدة.
+
+**الحساب والحفظ/التثبيت وحرّاس V2/V3/V7/V15/V16 و`_render` وترتيب
+المناطق ومنطق IEP/السطر الحرّ — دون أيّ تغيير.** `bulletin.py`: 727 →
+763 سطراً (+36: كلفة الوصلة؛ الشاشات القادمة تدفع ~0 وترث كل شيء).
+
+### التحقّق — بوّابة القبول كاملة خضراء
+
+- `python -m unittest discover -s ui2/tests` → **Ran 10, OK** (اختبار
+  `Screen` نفسه: تتبّع dirty، جولة المسوّدة، عدم تطابق الإصدار، ملف تالف،
+  دورة حياة الاختصارات، `on_close` قبل `on_deactivate`، بثّ `companySelected`).
+- `python -m unittest discover -s ui2/paie/tests` → **Ran 8, OK** (تثبيت
+  السلوك من مرجع 41، بلا تعديل).
+- `python -m unittest discover -s programme/payroll/tests` → **Ran 38, OK**
+  · `test_golden.py` → **14/14**.
+- `demos/ui2_paie_gallery.py --selftest` → `ALLOK`.
+- `python -m ui2.paie` → `main() → 0` · `import main` / `ui.home.app_window`
+  / `demos.ui2_paie_gallery` → سليمة.
+
+### الملفات المتأثرة
+
+جديد: `ui2/screen.py` · `ui2/tests/__init__.py` · `ui2/tests/test_screen.py` ·
+`docs/FULL_REVIEW.md` (مراجعة شاملة يدوية من المستخدم).
+معدَّل: `ui2/paie/bulletin.py` · `programme/paths.py` · `CLAUDE.md` ·
+`docs/CHANGELOG.md`.
+لا مساس بمحرّك الحساب (`programme/payroll/{calc,irg,lignes}.py`) ولا بأي
+اختبار قائم.

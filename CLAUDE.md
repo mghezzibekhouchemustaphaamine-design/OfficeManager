@@ -31,6 +31,7 @@
 
 ```
 python -m unittest discover -s programme/payroll/tests      # النواة — 38 اختباراً
+python -m unittest discover -s ui2/tests                    # قاعدة الشاشة Screen — 10
 python -m unittest discover -s ui2/paie/tests               # شاشة الكشف (pinning) — 8
 python programme/payroll/tests/test_golden.py               # تقرير IRG المقروء
 QT_QPA_PLATFORM=offscreen python demos/ui2_paie_gallery.py --selftest
@@ -39,7 +40,9 @@ QT_QPA_PLATFORM=offscreen python demos/ui2_paie_gallery.py --selftest
 ## واجهتان متعايشتان
 
 - `ui/` (Tkinter، ~8 200 سطر) — التطبيق الحيّ: CD + وثائق HR.
-- `ui2/` (PySide6، ~1 800 سطر) — الجديدة: مكتبة مكوّنات + شاشة كشف الراتب.
+- `ui2/` (PySide6) — الجديدة: مكتبة مكوّنات + `screen.py` (قاعدة شاشة
+  مشتركة: هيكل + دورة حياة اختصارات + مسوّدة + سياق زبون — سترث منها HR
+  و CD) + `paie/` (شاشة كشف الراتب، مبنيّة فوق `Screen`).
 - شاشة الكشف الجديدة تُطلَق كعملية منفصلة: `python -m ui2.paie`، أو من
   الشاشة الرئيسية عبر بطاقة «كشف راتب (PySide6)» (`OfficeApp.open_paie_v2`).
 

@@ -24,8 +24,9 @@ from programme.payroll import config_loader, lignes, repository
 from ui2 import theme
 from ui2.form import Field, Form
 from ui2.paie._common import fmt_money, info_label, warn
+from ui2.screen import Screen
 from ui2.table import Column, DataTable
-from ui2.toolbar import ToolAction, ToolBar
+from ui2.toolbar import ToolAction
 
 _RECOMPUTE_MS = 400
 
@@ -154,8 +155,20 @@ class _TwoColForm(QWidget):
             return self._r.widget(key)
 
 
-class BulletinScreen(QWidget):
-    """توليد كشف. ``conn`` اختياري (تمرّره الشاشة المضيفة/المعرض)."""
+class BulletinScreen(Screen):
+    """توليد كشف — مبنيّة فوق :class:`ui2.screen.Screen`. ``conn`` اختياري
+    (تمرّره الشاشة المضيفة / ``ui2/paie/__main__`` / المعرض).
+
+    الهيكل يأتي من القاعدة (شريط أدوات + ترويسة + شريط تحذير + محتوى +
+    شريط حالة) عبر الخطاطيف ``build_toolbar`` / ``build_header`` /
+    ``build_body``. الحساب والحفظ/التثبيت وحرّاس V2/V3/V7/V15/V16 دون
+    تغيير. خطاطيف المسوّدة (``draft_state`` / ``apply_draft`` / ``is_empty``)
+    معرَّفة لكنها **خاملة** حتى تُوصَل (تعديلات المستخدم → ``mark_dirty``)
+    في مهمة لاحقة."""
+
+    TITLE = "توليد كشف"
+    DRAFT_NAME = "paie"
+    DRAFT_VERSION = 1
 
     bulletinSaved = Signal(int)
 
@@ -193,26 +206,39 @@ class BulletinScreen(QWidget):
         self._view: Optional[lignes.BulletinView] = None
         self._cfg: Optional[Dict] = None
         self._rows: List[_LineRow] = []
-
-        # ---------- شريط الأدوات ----------
-        self.toolbar = ToolBar(self)
         self._menu = QMenu(self)
+
+        # مؤقّت إعادة الحساب (400ms بعد توقّف الكتابة)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(_RECOMPUTE_MS)
+        self._timer.timeout.connect(self.recompute)
+
+        self.build_ui()                       # ← يبني الهيكل ويستدعي الخطاطيف
+        # شريط التحذير: القاعدة توفّره باسم ``warnbar`` — نُبقي الاسم
+        # القديم ``_warnbar`` كاسم بديل (بقيّة الكود والاختبارات تستعمله).
+        self._warnbar = self.warnbar
+        self.on_activate()                    # اختصارات الشاشة (Ctrl+S) تعمل مستقلّةً
+        self.reload_clients()
+        self.new_bulletin()
+
+    # ======================= خطاطيف ui2.screen.Screen =======================
+    def build_toolbar(self, toolbar):
         self._build_menu()
         add_btn = QToolButton(self)
         add_btn.setText("＋ إضافة سطر ▾")
         add_btn.setPopupMode(QToolButton.InstantPopup)
         add_btn.setMenu(self._menu)
-        self.toolbar.add_widget(add_btn)
-        self.toolbar.addSeparator()
-        self._act_promote = self.toolbar.add(ToolAction(
+        toolbar.add_widget(add_btn)
+        toolbar.addSeparator()
+        self._act_promote = toolbar.add(ToolAction(
             "ترقية إلى زبون مسجَّل", self._promote))
-        self.toolbar.add_stretch()
-        self._act_save = self.toolbar.add(ToolAction("حفظ", self.save,
-                                                     shortcut="Ctrl+S"))
-        self._act_fige = self.toolbar.add(ToolAction("تثبيت", self.fige))
-        self._act_pdf = self.toolbar.add(ToolAction("طباعة PDF", self._print_pdf))
+        toolbar.add_stretch()
+        self._act_save = toolbar.add(ToolAction("حفظ", self.save))
+        self._act_fige = toolbar.add(ToolAction("تثبيت", self.fige))
+        self._act_pdf = toolbar.add(ToolAction("طباعة PDF", self._print_pdf))
 
-        # ---------- الترويسة: الزبون / العامل / الفترة ----------
+    def build_header(self):
         #  لا قيم افتراضية موحِية: تاريخ الدخول فارغ (فيبقى اقتراح
         #  الأقدمية «حدّد تاريخ الدخول»)، والفترة = الشهر الحالي المحسوب.
         self._header = _TwoColForm(
@@ -228,20 +254,18 @@ class BulletinScreen(QWidget):
         self._header.widget("client_registered").currentTextChanged.connect(
             self._on_client_changed)
         self._header.widget("periode").textChanged.connect(self._schedule)
+        return self._header
 
-        # ---------- شريط تحذير دائم ----------
-        self._warnbar = QLabel("")
-        self._warnbar.setWordWrap(True)
-        self._warnbar.setStyleSheet(
-            f"background:{theme.FIELD_EMPTY}; color:{theme.WARNING}; "
-            f"border:1px solid {theme.WARNING}; border-radius:4px; padding:6px;")
-        self._warnbar.hide()
+    def build_body(self):
+        host = QWidget()
+        lay = QVBoxLayout(host)
+        lay.setContentsMargins(0, 0, 0, 0)
 
         # ---------- منطقة الأسطر الديناميكية ----------
         self._lines_host = QWidget()
         self._lines_lay = QVBoxLayout(self._lines_host)
         self._lines_lay.setAlignment(Qt.AlignTop)
-        scroll = QScrollArea(self)
+        scroll = QScrollArea(host)
         scroll.setWidgetResizable(True)
         scroll.setWidget(self._lines_host)
         scroll.setMinimumHeight(150)          # ارتفاع متكيّف بين حدّين
@@ -262,25 +286,36 @@ class BulletinScreen(QWidget):
         self._result.setMinimumHeight(240)
         self._info = info_label("")
 
-        # ---------- التخطيط ----------
-        lay = QVBoxLayout(self)
-        lay.addWidget(self.toolbar)
-        lay.addWidget(self._header)
-        lay.addWidget(self._warnbar)
         lay.addWidget(QLabel("الأسطر:"))
         lay.addWidget(scroll, 2)
         lay.addWidget(QLabel("الكشف:"))
         lay.addWidget(self._result, 3)
         lay.addWidget(self._info)
+        return host
 
-        # مؤقّت إعادة الحساب (400ms بعد توقّف الكتابة)
-        self._timer = QTimer(self)
-        self._timer.setSingleShot(True)
-        self._timer.setInterval(_RECOMPUTE_MS)
-        self._timer.timeout.connect(self.recompute)
+    def shortcuts(self):
+        return {"Ctrl+S": self.save}
 
-        self.reload_clients()
-        self.new_bulletin()
+    # ---------- المسوّدة: معرَّفة، خاملة حتى تُوصَل mark_dirty لاحقاً ----------
+    def draft_state(self):
+        return {"header": self._header.values(),
+                "lines": [r.entry() for r in self._rows]}
+
+    def apply_draft(self, data):
+        self._header.set_values(data.get("header", {}))
+        self._clear_lines()
+        for e in data.get("lines", []):
+            self.add_line(e.get("type"))
+            if self._rows:
+                self._rows[-1].form.set_values(e.get("values", {}))
+        self.recompute()
+
+    def is_empty(self):
+        if self._header.values().get("employe_nom", "").strip():
+            return False
+        return (len(self._rows) == 1
+                and self._rows[0].type_key == "salaire_base"
+                and not self._rows[0].is_filled())
 
     # =============================== دورة الحياة ===============================
     def reload_clients(self):
@@ -309,6 +344,7 @@ class BulletinScreen(QWidget):
         self._client_id = match["id"] if match else None
         is_transient = bool(match and match.get("transient"))
         self._act_promote.setEnabled(is_transient)
+        self.set_company(self._client_id)        # يبثّ companySelected للمضيف
         self._refresh_warnbar()
 
     def _active_client_row(self) -> Optional[dict]:

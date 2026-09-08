@@ -156,6 +156,76 @@ class TestZones(unittest.TestCase):
         self.assertEqual(zones, sorted(zones, key=lignes.ZONE_ORDER.get))
 
 
+class TestCatalogueClassification(unittest.TestCase):
+    """تصنيف السلة/النقل يُقرأ من كتالوج الزبون النشط، لا من ثابت في
+    LINE_TYPES — رُصد كشفان حقيقيان (SNAX / DATA NEWS) بنفس المنحتين
+    بتصنيفين ضريبيين متعارضين."""
+
+    _ENTRIES = [
+        {"type": "salaire_base", "values": {"montant": "40000"}},
+        {"type": "panier", "values": {"montant_mensuel": "3000"}},
+    ]
+
+    def test_meme_panier_deux_catalogues_zones_differentes_sans_fuite(self):
+        # زبون A (SNAX): السلة خاضعة للضريبة → Z2 (المسار الافتراضي)
+        va = lignes.compute_bulletin(
+            self._ENTRIES, CFG, {"confirme": 1},
+            catalogue={"2000": {"cotisable": False, "imposable": True}})
+        pa = next(l for l in va.lignes if l.key == "panier")
+        self.assertEqual(pa.zone, "Z2")
+        self.assertEqual((pa.cotisable, pa.imposable), (0, 1))
+
+        # زبون B (DATA NEWS): نفس السلة غير خاضعة للضريبة → Z3، خارج [C]
+        vb = lignes.compute_bulletin(
+            self._ENTRIES, CFG, {"confirme": 1},
+            catalogue={"2000": {"cotisable": False, "imposable": False}})
+        pb = next(l for l in vb.lignes if l.key == "panier")
+        self.assertEqual(pb.zone, "Z3")
+        self.assertEqual((pb.cotisable, pb.imposable), (0, 0))
+
+        # لا تسرّب بين التشغيلتين: نفس الإدخال، نتيجتان مستقلّتان مختلفتان
+        self.assertLess(vb.c, va.c)                     # السلة خارج وعاء IRG عند B
+        self.assertEqual(va.a, vb.a)                    # [A] لا يتأثّر (كلاهما غير cotisable)
+
+    def test_panier_cotisable_via_catalogue_entre_dans_A(self):
+        v = lignes.compute_bulletin(
+            self._ENTRIES, CFG, {"confirme": 1},
+            catalogue={"2000": {"cotisable": True, "imposable": True}})
+        p = next(l for l in v.lignes if l.key == "panier")
+        self.assertEqual(p.zone, "Z1")
+        base = lignes.compute_bulletin(self._ENTRIES, CFG, {"confirme": 1},
+                                       catalogue={})   # افتراضي Z2
+        self.assertGreater(v.a, base.a)                 # السلة صارت داخل [A]
+
+    def test_code_sans_ligne_catalogue_defaut_plus_avertissement_une_fois(self):
+        entries = [
+            {"type": "salaire_base", "values": {"montant": "40000"}},
+            {"type": "avance", "values": {"montant": "1000"}},
+            {"type": "avance", "values": {"montant": "500"}},   # نوع قابل للتكرار
+        ]
+        # كتالوج فيه رموز أخرى لكن ليس "5010" (التسبيق)
+        v = lignes.compute_bulletin(
+            entries, CFG, {"confirme": 1},
+            catalogue={"1000": {"cotisable": True, "imposable": True}})
+        av = next(l for l in v.lignes if l.key == "avance")
+        self.assertEqual(av.zone, "Z4")                 # الثابت مستعمَل كافتراضي
+        warns = [w for w in v.avertissements
+                 if "تصنيفاً افتراضياً" in w and "5010" in w]
+        self.assertEqual(len(warns), 1)                 # مرّة واحدة رغم سطرَي تسبيق
+
+    def test_catalogue_none_identique_au_constant(self):
+        v_none = lignes.compute_bulletin(self._ENTRIES, CFG, {"confirme": 1})
+        v_match = lignes.compute_bulletin(
+            self._ENTRIES, CFG, {"confirme": 1},
+            catalogue={"1000": {"cotisable": True, "imposable": True},
+                       "2000": {"cotisable": False, "imposable": True}})
+        self.assertEqual([(l.key, l.zone, l.montant) for l in v_none.lignes],
+                         [(l.key, l.zone, l.montant) for l in v_match.lignes])
+        self.assertEqual((v_none.a, v_none.c, v_none.e),
+                         (v_match.a, v_match.c, v_match.e))
+        self.assertEqual(v_match.avertissements, [])    # كل الرموز مطابقة
+
+
 class TestFreeLine(unittest.TestCase):
     def test_v7_rejette_sans_classification(self):
         with self.assertRaises(lignes.FreeLineError):

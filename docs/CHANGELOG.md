@@ -2264,3 +2264,87 @@ PyInstaller في Program Files. نُقلتا إلى `%APPDATA%\OfficeManager\` �
 (‏`get_employe_by_nom` + الهجرة 5) · `programme/payroll/tests/test_repository.py`
 · `ui2/paie/tests/test_bulletin_screen.py` · `CLAUDE.md` · `docs/CHANGELOG.md`.
 لا مساس بمحرّك الحساب.
+
+---
+
+## مرجع سبعة وأربعون — 2026-09-08: تصنيف السلة/النقل من كتالوج الزبون
+
+تحديث يدوي من المستخدم على `SPEC_PAIE_DZ.md §2.2` و `params_2026.json`
+(مفتاح `panier_transport_irg`): السلة والنقل لم تعودا رُبريكتين بتصنيف
+ضريبي ثابت — رُصد كشفان حقيقيان (SNAX / DATA NEWS) بنفس المنحتين بتصنيفين
+متعارضين تماماً (`imposable` مختلف). القرار: `cotisable`/`imposable`
+تُضبطان **مرة واحدة في كتالوج كل زبون** (`rubrique_catalogue`)، لا عالمياً
+ولا لكل كشف.
+
+### الحالة قبل التنفيذ (أُبلِغ بها المستخدم)
+
+الكتالوج الديناميكي **لم يكن مربوطاً بالحساب**: `compute_bulletin` لا
+يأخذ كتالوجاً، و`LINE_TYPES["panier"]/["transport"]` بتصنيف ثابت
+`(cotisable=0, imposable=1)` مكتوب في الكود. توقّفتُ وأبلغت، ثم نُفِّذ
+الربط بحسم المستخدم على ست نقاط.
+
+### `programme/payroll/lignes.py` (لا يستورد `repository` — الخط الأحمر باقٍ)
+
+- `compute_bulletin(entries, cfg, convention=None, catalogue=None)` —
+  وسيط جديد `catalogue: {code: {"cotisable": bool, "imposable": bool}} | None`.
+- `_effective_class(lt, catalogue)` → `(cot, imp, matched)`: كتالوج الزبون
+  يُعلو على الثابت لكل نوع له `code` مطابق. السطر الحرّ (‏`cotisable=None`)
+  لا يمسّه الكتالوج (V7). `catalogue=None` → الثابت، بلا تحذير.
+- **المنطقة تُشتقّ من التصنيف الفعلي** عبر `zone_of` ثم تُقفَل — لا تُستنتَج
+  من موضع السطر (نفس مبدأ V7).
+- **الطيّ**: `_ENGINE_PRIME_KEYS = {nuit, conge_paye, panier, transport}`
+  تُطوى كـ`Prime` عامّ بتصنيف الكتالوج. الاستثناء: `panier`/`transport`
+  بالتصنيف الافتراضي `(0,1)` يمرّان عبر مسارهما الخاصّ في المحرّك
+  (`si.panier_mensuel`) للحفاظ على **تنسيب §1.2.3**.
+- **قيد موثَّق:** `panier`/`transport` المُعاد تصنيفهما (غير `(0,1)`)
+  يُطويان بلا تنسيب §1.2.3 — التنسيب مقصور على المسار الخاصّ في `calc.py`،
+  وتوسيعه يمسّ المحرّك (خارج نطاق هذه المهمة).
+- **تحذير غير حاجب**: رمز بلا صفّ في كتالوج الزبون → «الرُبريكة «X»
+  تستعمل تصنيفاً افتراضياً — لا كتالوج مخصَّص لهذا الزبون لهذا الرمز
+  (code)». **مرّة واحدة لكل رمز** غير مطابق، لا لكل سطر ولا لكل إعادة حساب.
+
+### `ui2/paie/bulletin.py`
+
+- `_catalogue()` — كاش الكتالوج بنفس منطق كاش الاتفاقية (مرجع 46):
+  يُبنى من `repository.list_rubriques(client_id)` → `{code: {cotisable,
+  imposable}}`، يُمرَّر إلى `compute_bulletin`.
+- `invalidate_convention_cache()` صار يُبطِل **الكاشَين معاً** (الاتفاقية
+  والكتالوج — كلاهما مرتبط بالزبون النشط): تغيير الزبون · `reload_clients`
+  · الحفظ الناجح · `on_activate` (تعديل من شاشة أخرى). `_refresh_warnbar`
+  يمسح نصّه عند الإخفاء (من مرجع 46).
+- **لا واجهة تحرير كتالوج** في هذه المهمة — التعديل عبر `repository.update_rubrique`.
+
+### التحقّق — بوّابة القبول كاملة خضراء + تشغيل يدوي فعلي
+
+**تشغيل حقيقي** (شاشة + repository، سيناريو SNAX/DATA NEWS): زبونان،
+قاعدي 50 000 + سلة 4 000 + نقل 3 000، تصنيف الكتالوج الوحيد المختلف
+`imposable` —
+- SNAX (`imposable=1`): سلة/نقل → **Z2**، `[C]=52 500` · `[D]=6 475`.
+- DATA NEWS (`imposable=0`): نفس المنحتين → **Z3**، خارج وعاء IRG →
+  `[C]=45 500` · `[D]=4 585`. `[A]=50 000` للاثنين (غير cotisable).
+- الرجوع إلى SNAX → Z2 / `[C]=52 500` — **لا تسرّب كاش**.
+- SNAX بكتالوج كامل → **لا تحذيرات**.
+
+**الاختبارات:**
+- `programme/payroll/tests` → **Ran 46, OK** (+4: `TestCatalogueClassification`
+  — نفس panier بتصنيفين → منطقتان بلا تسرّب · panier cotisable عبر الكتالوج
+  يدخل `[A]` · رمز بلا صفّ → افتراضي + تحذير مرّة واحدة · `catalogue=None`
+  مطابق تماماً للثابت). `test_golden.py` → **14/14** (المحرّك غير مُلموس).
+- `ui2/paie/tests` → **Ran 17, OK** (+3: لا تسرّب كاش بين زبونين · التحذير
+  مرّة واحدة لا لكل إعادة حساب · تعديل الكتالوج أثناء الجلسة + `on_activate`
+  → القيمة الجديدة فوراً).
+- `programme/tests` → 6 · `ui2/tests` → 10.
+- `demos/ui2_paie_gallery.py` + `demos/ui2_gallery.py` `--selftest` → `ALLOK`
+  (كتالوج الزبون الافتراضي = الثوابت → سلوك مطابق).
+- `python -m ui2.paie` → `main() → 0` · `import main` / `ui.home` /
+  `ui.cd.tab` → سليمة.
+
+### الملفات المتأثرة
+
+معدَّل: `programme/payroll/lignes.py` (وسيط `catalogue` + `_effective_class`
++ طيّ الـ prime المصنَّف) · `ui2/paie/bulletin.py` (كاش الكتالوج) ·
+`programme/payroll/tests/test_lignes.py` · `ui2/paie/tests/test_bulletin_screen.py`
+· `CLAUDE.md` · `docs/CHANGELOG.md`. تحديث يدوي من المستخدم:
+`docs/specs/SPEC_PAIE_DZ.md` · `programme/data/params_paie/params_2026.json`.
+**لا مساس بـ`calc.py` / `irg.py` / `compute_sequence`** (`lignes.py` لا
+يستورد `repository`).

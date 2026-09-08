@@ -120,5 +120,10 @@
     ],
     "note": "TAUX_10 (retenue libératoire 10% sur primes à périodicité non mensuelle) réservé, non supporté : doit être refusé explicitement."
   },
-  "couche": "LEGALE — ce fichier ne contient que ce qui est identique pour toute l'Algérie. Les règles propres à chaque entreprise vivent dans la table convention (voir §1.2 de la spec)."
+  "couche": "LEGALE — ce fichier ne contient que ce qui est identique pour toute l'Algérie. Les règles propres à chaque entreprise vivent dans la table convention (voir §1.2 de la spec).",
+  "panier_transport_irg": {
+    "seuil_exoneration_irg_journalier": null,
+    "statut": "A_VERIFIER_DGI",
+    "note": "Exonération CNAS totale et inconditionnelle (Ord. 95-01). Exonération IRG conditionnée à un plafond journalier/mensuel (~150 DA/jour évoqué en pratique, non confirmé par texte) ET à la nature du poste (travail posté, absence de cantine/transport d'entreprise). Constaté sur bulletins réels : imposable=True chez une entreprise, imposable=False chez une autre pour la même prime. DÉCISION : classification binaire (cotisable/imposable) au niveau du catalogue de CHAQUE client, pas de règle nationale unique. Le dépassement partiel de seuil (excédent seul imposable) n'est PAS modélisé dans cette version."
+  }
 }

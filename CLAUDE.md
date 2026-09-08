@@ -37,10 +37,10 @@
 ## الاختبارات
 
 ```
-python -m unittest discover -s programme/payroll/tests      # النواة — 42 اختباراً
+python -m unittest discover -s programme/payroll/tests      # النواة — 46 اختباراً
 python -m unittest discover -s programme/tests              # ترحيل بيانات المستخدم — 6
 python -m unittest discover -s ui2/tests                    # قاعدة الشاشة Screen — 10
-python -m unittest discover -s ui2/paie/tests               # شاشة الكشف (pinning + مسوّدة + كاش) — 14
+python -m unittest discover -s ui2/paie/tests               # شاشة الكشف (pinning + مسوّدة + كاش) — 17
 python programme/payroll/tests/test_golden.py               # تقرير IRG المقروء
 QT_QPA_PLATFORM=offscreen python demos/ui2_paie_gallery.py --selftest
 ```
@@ -60,22 +60,21 @@ QT_QPA_PLATFORM=offscreen python demos/ui2_paie_gallery.py --selftest
 
 ### ربط البند الدائم (rubrique_catalogue ↔ شاشة الكشف)
 
-**الحالة:** الطبقة التحتية موجودة وتخدم، الواجهة ما تستعملهاش.
+**تمّ جزئياً (مرجع سبعة وأربعون):** الحساب يقرأ الكتالوج الآن.
+`compute_bulletin(entries, cfg, convention, catalogue)` تقبل
+`{code: {cotisable, imposable}}`؛ `bulletin.py::_catalogue()` تبنيه من
+`list_rubriques(client_id)` (مُخزَّن مؤقتاً، يُبطَل مثل كاش الاتفاقية).
+تصنيف الرمز المطابق يُعلو على الثابت في `LINE_TYPES`، والمنطقة تُشتقّ منه
+ثم تُقفَل. رمز بلا صفّ كتالوج → الثابت + تحذير غير حاجب.
 
-- جدول `rubrique_catalogue` لكل شركة موجود؛ `programme/payroll/repository.py`
-  فيه `create_rubrique` / `update_rubrique` / `list_rubriques` /
-  `seed_catalogue` (يعبّي ~19 بنداً افتراضياً عند إنشاء شركة).
-- **لكن** `ui2/paie/bulletin.py` يبني قائمة «＋ إضافة سطر» من
-  `programme/payroll/lignes.py::LINE_TYPES` الثابتة فقط
-  (`_MENU_BASE` / `_MENU_AUTRES` / `_MENU_LIBRE`) — لا يقرأ
-  `list_rubriques` إطلاقاً. يستدعي `seed_catalogue` عند أول حفظ فقط.
-- `ui2/paie/companies.py` تدير الشركات (إضافة/تعديل) فقط — لا واجهة CRUD
-  للبنود.
-
-**النتيجة:** المستخدم يقدر يزيد **سطراً حرّاً** لمرّة واحدة (نوع `libre`:
-تسمية + مبلغ + تصنيف cotisable/imposable إلزامي)، لكن **ما يقدرش يعرّف
-بنداً دائماً جديداً** بمنطق حسابه الخاص يظهر في قائمة كل كشف.
-
-**المطلوب لاحقاً:** ربط قائمة شاشة الكشف بـ`list_rubriques(entreprise_id)`
-إلى جانب `LINE_TYPES`، + واجهة إدارة البنود (على الأرجح توسيع
-`companies.py` أو شاشة مستقلّة خلف `SHOW_ADMIN_SCREENS`).
+**لا يزال ناقصاً:**
+- **قائمة «＋ إضافة سطر»** لا تزال من `LINE_TYPES` الثابتة فقط
+  (`_MENU_BASE`/`_MENU_AUTRES`/`_MENU_LIBRE`) — لا رُبريكات مخصَّصة جديدة
+  في القائمة.
+- **واجهة إدارة الكتالوج**: `ui2/paie/companies.py` تدير الشركات فقط، لا
+  CRUD للرُبريكات. تعديل تصنيف رُبريكة اليوم = `repository.update_rubrique`
+  مباشرة أو سكربت. (على الأرجح توسيع `companies.py` أو شاشة خلف
+  `SHOW_ADMIN_SCREENS`.)
+- **قيد موثَّق:** `panier`/`transport` المُعاد تصنيفهما عبر الكتالوج
+  (غير `(cotisable=0, imposable=1)`) يُطويان كـ Prime عامّ **بلا تنسيب
+  §1.2.3** — تنسيب السلة/النقل مقصور على مسارهما الخاصّ في `calc.py`.

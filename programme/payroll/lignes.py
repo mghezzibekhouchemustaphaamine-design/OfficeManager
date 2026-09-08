@@ -490,13 +490,52 @@ def _convention_kwargs(convention: Dict) -> Dict:
 
 _RATE_PRIMES = ("iep", "pri")
 
+#  أنواع تُطوى كـ:class:`Prime` عامّ مصنَّف (``soumis_cotisation`` /
+#  ``imposable`` حرّان يقرآن من كتالوج الزبون). ``panier``/``transport``
+#  ضمنها، لكن لهما مسار خاصّ في المحرّك (``si.panier_mensuel``) يُستعمل
+#  **فقط** عند التصنيف الافتراضي ``(0, 1)`` (غير خاضع اشتراك / خاضع ضريبة
+#  → Z2) للحفاظ على تنسيب §1.2.3؛ عند إعادة تصنيفهما من الكتالوج يُطويان
+#  كـ Prime عامّ **بلا تنسيب §1.2.3** (قيد موثَّق — تنسيب §1.2.3 مقصور
+#  على المسار الخاصّ في المحرّك، وتغييره يمسّ calc.py).
+_ENGINE_PRIME_KEYS = {"nuit", "conge_paye", "panier", "transport"}
+_PT_KEYS = {"panier", "transport"}
+_PT_DEFAULT_CLASS = (0, 1)
+
+# نوع الكتالوج المُمرَّر: ``{code: {"cotisable": bool, "imposable": bool}}``
+CatalogueClass = Optional[Dict[str, Dict[str, bool]]]
+
+
+def _effective_class(lt: LineType, catalogue: CatalogueClass):
+    """تصنيف السطر الفعلي: ``(cotisable, imposable, matched)``.
+
+    كتالوج الزبون (``rubrique_catalogue``) يُعلو على الثابت في
+    :data:`LINE_TYPES` لكلّ نوع له ``code`` مطابق — سياسة مؤسسة ثابتة
+    (§2.1 من المواصفة)، لا تُعاد كل كشف. السطر الحرّ (‏``cotisable`` =
+    ``None``) لا يمسّه الكتالوج (مصدره تصنيف السطر نفسه، V7). ``matched``
+    = «لا حاجة لتحذير» (وُجد في الكتالوج، أو سطر حرّ، أو لا كتالوج أصلاً)."""
+    if lt.cotisable is None:                          # سطر حرّ
+        return None, None, True
+    if catalogue is None:                             # لا زبون / لم يُحمَّل
+        return lt.cotisable, lt.imposable, True
+    row = catalogue.get(lt.code)
+    if row is not None:
+        return (int(bool(row.get("cotisable"))),
+                int(bool(row.get("imposable"))), True)
+    return lt.cotisable, lt.imposable, False          # لا صفّ لهذا الرمز → تحذير
+
 
 def compute_bulletin(entries: List[Dict], cfg: Dict,
-                     convention: Optional[Dict] = None) -> BulletinView:
+                     convention: Optional[Dict] = None,
+                     catalogue: CatalogueClass = None) -> BulletinView:
     """``entries`` = ``[{"type": <clé>, "values": {...}}, …]``.
 
     يطوي كل الأسطر في :class:`SequenceInput` واحد، يستدعي المحرّك، ثم
     يبني عرضاً مُصنَّفاً بالمناطق + ‎[A]…[E]‎ + التحذيرات.
+
+    ``catalogue`` (اختياري): ``{code: {"cotisable", "imposable"}}`` —
+    تصنيف كل رمز حسب كتالوج الزبون النشط. حين يُمرَّر، تصنيف الرمز المطابق
+    يُعلو على الثابت في :data:`LINE_TYPES` (المنطقة تُشتقّ منه ثم تُقفَل)؛
+    رمز بلا صفّ في الكتالوج → الثابت + تحذير غير حاجب.
 
     تمريرتان فقط عندما تكون قاعدة IEP/PRI = ``SAL_BASE_APRES_ABSENCES``
     (نحتاج ``retenue_absence`` أولاً)؛ وإلا تمريرة واحدة."""
@@ -516,6 +555,7 @@ def compute_bulletin(entries: List[Dict], cfg: Dict,
         if lt.key == "libre" and not free_line_classified(v):
             continue
         parsed.append((lt, v))
+    eff = [_effective_class(lt, catalogue) for lt, _ in parsed]
     kw = _convention_kwargs(convention)
     sb_total = sum((_v(v, "montant") for lt, v in parsed
                     if lt.key == "salaire_base"), _ZERO)
@@ -529,12 +569,23 @@ def compute_bulletin(entries: List[Dict], cfg: Dict,
     def build(include_rate: bool, ctx: _Ctx):
         si = SequenceInput()
         metas: List[Dict] = []
-        for lt, v in parsed:
+        for (lt, v), (cot, imp, _matched) in zip(parsed, eff):
             m: Dict = {}
             metas.append(m)
             if lt.key in _RATE_PRIMES and not include_rate:
                 continue
-            lt.fold(si, v, ctx, m)
+            # نوع «prime عامّ مصنَّف» — يُطوى بتصنيف الكتالوج/الثابت،
+            # ما لم يكن panier/transport بالتصنيف الافتراضي (0,1) فيمرّ
+            # عبر مساره الخاصّ في المحرّك (تنسيب §1.2.3).
+            if lt.key in _ENGINE_PRIME_KEYS and not (
+                    lt.key in _PT_KEYS and (cot, imp) == _PT_DEFAULT_CLASS):
+                montant = _v(v, lt.primary_key())
+                si.primes.append(Prime(
+                    code=lt.code, libelle=lt.libelle, montant=montant,
+                    soumis_cotisation=bool(cot), imposable=bool(imp)))
+                m["prime_montant"] = da(montant)
+            else:
+                lt.fold(si, v, ctx, m)
         return si, metas
 
     ctx0 = _Ctx(cfg, convention, sb_total, sb_total)
@@ -552,23 +603,39 @@ def compute_bulletin(entries: List[Dict], cfg: Dict,
     res = compute_sequence(si, cfg, **kw)
 
     views: List[LineView] = []
-    for (lt, v), m in zip(parsed, metas):
+    for (lt, v), m, (cot, imp, _matched) in zip(parsed, metas, eff):
         sens = lt.sens or (
             "RETENUE" if _truthy(v.get("est_retenue")) else "GAIN")
         libelle = lt.libelle
         if lt.key == "libre" and v.get("libelle"):
             libelle = str(v["libelle"])
-        cot = lt.cotisable if lt.cotisable is not None else int(
-            _truthy(v.get("cotisable")))
-        imp = lt.imposable if lt.imposable is not None else int(
-            _truthy(v.get("imposable")))
+        if cot is None:                              # سطر حرّ → من قيَم السطر
+            zone = lt.zone(v)
+            cot = int(_truthy(v.get("cotisable")))
+            imp = int(_truthy(v.get("imposable")))
+        else:
+            # §2.3.2: المنطقة تُشتقّ من التصنيف الفعلي (كتالوج أو ثابت)
+            # ثم تُقفَل — لا تُستنتَج من موضع السطر (نفس مبدأ V7).
+            zone = zone_of(sens=sens, cotisable=bool(cot), imposable=bool(imp))
+        montant = m["prime_montant"] if "prime_montant" in m else lt.resolve(
+            res, v, m)
         views.append(LineView(
-            key=lt.key, libelle=libelle, zone=lt.zone(v), sens=sens,
-            montant=lt.resolve(res, v, m), code=lt.code,
-            cotisable=cot, imposable=imp))
+            key=lt.key, libelle=libelle, zone=zone, sens=sens,
+            montant=montant, code=lt.code, cotisable=cot, imposable=imp))
     views.sort(key=lambda x: ZONE_ORDER.get(x.zone, 9))
+
+    # تحذير غير حاجب: رمز لا صفّ له في كتالوج الزبون → تصنيف افتراضي.
+    # مرّة واحدة لكل رمز غير مطابق (لا لكل سطر ولا لكل إعادة حساب).
+    avertissements = list(res.avertissements)
+    warned: set = set()
+    for (lt, _v0), (_c, _i, matched) in zip(parsed, eff):
+        if not matched and lt.code not in warned:
+            warned.add(lt.code)
+            avertissements.append(
+                f"الرُبريكة «{lt.libelle}» تستعمل تصنيفاً افتراضياً — لا "
+                f"كتالوج مخصَّص لهذا الزبون لهذا الرمز ({lt.code}).")
 
     return BulletinView(
         lignes=views, a=res.assiette_cnas, b=res.retenue_cnas,
         c=res.assiette_irg, d=res.irg, e=res.net_a_payer,
-        avertissements=list(res.avertissements), result=res)
+        avertissements=avertissements, result=res)

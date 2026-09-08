@@ -378,6 +378,80 @@ class BulletinScreenPin(unittest.TestCase):
         self.scr.on_activate()                            # العودة للتبويب
         self.assertNotIn("لم تُراجَع", self.scr._warnbar.text())
 
+    # ============ تصنيف السلة/النقل من كتالوج الزبون ============
+    def _panier_zone(self):
+        return next((l.zone for l in self.scr._view.lignes
+                     if l.key == "panier"), None)
+
+    def _make_client(self, nom):
+        cid = repository.create_entreprise(
+            {"raison_sociale": nom, "transient": 0}, conn=self.conn)
+        repository.seed_catalogue(cid, conn=self.conn)
+        repository.create_convention(cid, {"confirme": 1}, conn=self.conn)
+        return cid
+
+    def _select_client(self, nom):
+        combo = self.scr._header.widget("client_registered")
+        combo.setCurrentText(nom)                         # يُطلق _on_client_changed
+
+    def test_catalogue_classification_no_bleed_between_two_clients(self):
+        """نفس نوع panier، تصنيفان مختلفان لزبونين، في نفس التشغيلة →
+        منطقة مختلفة لكلٍّ، بلا تسرّب كاش."""
+        a = self._make_client("شركة أ (سلة خاضعة)")
+        b = self._make_client("شركة ب (سلة معفاة)")
+        rub_b = next(r for r in repository.list_rubriques(b, conn=self.conn)
+                     if r["code"] == "2000")
+        repository.update_rubrique(rub_b["id"], {"imposable": 0}, conn=self.conn)
+        self.scr.reload_clients()
+
+        self._select_client("شركة أ (سلة خاضعة)")
+        self._line(0, montant="40000")
+        self._add("panier", montant_mensuel="3000")
+        self.scr.recompute()
+        self.assertEqual(self._panier_zone(), "Z2")       # خاضعة → Z2
+
+        self._select_client("شركة ب (سلة معفاة)")
+        self.scr.recompute()
+        self.assertEqual(self._panier_zone(), "Z3")       # معفاة → Z3، لا تسرّب
+
+        self._select_client("شركة أ (سلة خاضعة)")
+        self.scr.recompute()
+        self.assertEqual(self._panier_zone(), "Z2")       # رجعت صحيحة
+
+    def test_missing_catalogue_row_warns_once_not_per_recompute(self):
+        cid = self.scr._client_id
+        rub = next(r for r in repository.list_rubriques(cid, conn=self.conn)
+                   if r["code"] == "5010")               # التسبيق
+        repository.update_rubrique(rub["id"], {"actif": 0}, conn=self.conn)
+        self.scr.invalidate_convention_cache()
+
+        self._line(0, montant="40000")
+        self._add("avance", montant="1000")
+        self._add("avance", montant="500")               # سطر تسبيق ثانٍ
+        self.scr.recompute()
+        self.scr.recompute()                             # إعادة حساب ثانية
+        warns = [w for w in self.scr._view.avertissements
+                 if "تصنيفاً افتراضياً" in w and "5010" in w]
+        self.assertEqual(len(warns), 1)                  # لا تراكم
+
+    def test_catalogue_change_mid_session_reflected_after_on_activate(self):
+        cid = self.scr._client_id
+        self._line(0, montant="40000")
+        self._add("panier", montant_mensuel="3000")
+        self.scr.recompute()
+        self.assertEqual(self._panier_zone(), "Z2")
+
+        # تعديل تصنيف السلة في الكتالوج مباشرة عبر repository
+        rub = next(r for r in repository.list_rubriques(cid, conn=self.conn)
+                   if r["code"] == "2000")
+        repository.update_rubrique(rub["id"], {"imposable": 0}, conn=self.conn)
+
+        self.scr.recompute()                             # الكاش لا يزال قديماً
+        self.assertEqual(self._panier_zone(), "Z2")
+
+        self.scr.on_activate()                           # → إبطال + إعادة حساب
+        self.assertEqual(self._panier_zone(), "Z3")      # القيمة الجديدة فوراً
+
 
 if __name__ == "__main__":
     unittest.main()

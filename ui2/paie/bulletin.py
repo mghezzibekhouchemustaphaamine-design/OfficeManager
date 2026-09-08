@@ -226,11 +226,13 @@ class BulletinScreen(Screen):
         self._readonly = False
         self._view: Optional[lignes.BulletinView] = None
         self._cfg: Optional[Dict] = None
-        # الاتفاقية النشطة — تُقرأ مرّة وتُخزَّن مؤقتاً (كانت 3 قراءات في كل
-        # إعادة حساب، أي كل 400ms أثناء الكتابة). تُبطَل عند: تغيير الزبون،
-        # إعادة تحميل القائمة، الحفظ، وتفعيل التبويب (قد تكون أُكِّدت من
-        # شاشة أخرى). راجع _convention / invalidate_convention_cache.
+        # الاتفاقية وكتالوج الرُبريكات النشطان — يُقرآن مرّة ويُخزَّنان
+        # مؤقتاً (كانت الاتفاقية 3 قراءات في كل إعادة حساب، أي كل 400ms
+        # أثناء الكتابة). يُبطَلان معاً عند: تغيير الزبون، إعادة تحميل
+        # القائمة، الحفظ، وتفعيل التبويب. راجع _convention / _catalogue /
+        # invalidate_convention_cache.
         self._conv_cache = _CONV_UNSET
+        self._cat_cache = _CONV_UNSET
         self._rows: List[_LineRow] = []
         self._menu = QMenu(self)
 
@@ -360,7 +362,7 @@ class BulletinScreen(Screen):
                 and self._rows[0].type_key == "salaire_base"
                 and not self._rows[0].is_filled())
 
-    # ===================== الاتفاقية — قراءة واحدة مُخزَّنة =====================
+    # ============= الاتفاقية والكتالوج — قراءة واحدة مُخزَّنة =============
     def _convention(self) -> Optional[dict]:
         """الاتفاقية النشطة للزبون الحالي، مقروءة مرّة وتُخزَّن مؤقتاً حتى
         تُبطَل. تُستدعى عدّة مرّات في كل إعادة حساب (المحرّك + العرض +
@@ -372,15 +374,33 @@ class BulletinScreen(Screen):
                 if self._client_id is not None else None)
         return self._conv_cache
 
+    def _catalogue(self) -> Optional[dict]:
+        """كتالوج رُبريكات الزبون النشط بشكل ``{code: {"cotisable",
+        "imposable"}}`` — مقروء مرّة ومُخزَّن حتى يُبطَل (نفس منطق كاش
+        الاتفاقية). يُمرَّر إلى :func:`lignes.compute_bulletin` فتقرأ منه
+        تصنيف كل رمز بدل الثابت في ``LINE_TYPES``."""
+        if self._cat_cache is _CONV_UNSET:
+            if self._client_id is None:
+                self._cat_cache = None
+            else:
+                self._cat_cache = {
+                    r["code"]: {"cotisable": bool(r["cotisable"]),
+                                "imposable": bool(r["imposable"])}
+                    for r in repository.list_rubriques(self._client_id,
+                                                       conn=self._conn)}
+        return self._cat_cache
+
     def invalidate_convention_cache(self):
-        """يُبطِل كاش الاتفاقية — يُستدعى عند تغيير الزبون، وأيضاً **فور
-        أيّ تغيير في الاتفاقية نفسها أثناء الجلسة** (تأكيد اتفاقية معلَّقة
-        من شاشة أخرى مثلاً)؛ وإلا يعرض شريط التحذير حالة قديمة."""
+        """يُبطِل كاشَي **الاتفاقية والكتالوج** (كلاهما مرتبط بالزبون
+        النشط) — يُستدعى عند تغيير الزبون، وأيضاً **فور أيّ تغيير في
+        الاتفاقية أو الكتالوج أثناء الجلسة** (تأكيد اتفاقية معلَّقة، أو
+        تعديل تصنيف رُبريكة من شاشة أخرى)؛ وإلا يعرض الشريط/الحساب حالة قديمة."""
         self._conv_cache = _CONV_UNSET
+        self._cat_cache = _CONV_UNSET
 
     def on_activate(self):
-        # قد يكون المستخدم أكّد الاتفاقية من شاشة أخرى بين مغادرة هذا
-        # التبويب والعودة إليه → أعد قراءتها وأعد الحساب.
+        # قد يكون المستخدم عدّل الاتفاقية أو كتالوج الرُبريكات من شاشة
+        # أخرى بين مغادرة هذا التبويب والعودة إليه → أعد القراءة والحساب.
         super().on_activate()
         self.invalidate_convention_cache()
         if getattr(self, "_rows", None):
@@ -622,7 +642,8 @@ class BulletinScreen(Screen):
 
         convention = self._convention()
         entries = [r.entry() for r in self._rows]
-        self._view = lignes.compute_bulletin(entries, cfg, convention)
+        self._view = lignes.compute_bulletin(
+            entries, cfg, convention, self._catalogue())
         self._render(self._view, convention)
 
     _SYS_LABELS = {

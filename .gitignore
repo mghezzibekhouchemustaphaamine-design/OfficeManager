@@ -12,6 +12,8 @@ output/
 cd_settings.json
 cd_draft.json
 cd_ui_prefs.json
+paie_draft.json
+paie_template_draft.json
 
 # نفس المبدأ: تفضيلات محلية بحتة (آخر مسار فتحه المستخدم بالشريط
 # الجانبي، إعدادات/تاريخ النسخ الاحتياطي) — خاصة بجهاز المستخدم، مو كود

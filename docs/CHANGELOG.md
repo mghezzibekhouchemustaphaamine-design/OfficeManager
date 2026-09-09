@@ -2579,3 +2579,82 @@ PySide6 6.11.2 على ويندوز يوفّر `windows11` و `windowsvista` أص
 معدَّل: `ui2/theme.py` (لوحة الألوان + `SPACE` + ثوابت الخط الجديدة —
 `_qss()`/`apply_theme()` بلا تغيير) · `docs/CHANGELOG.md`.
 لا مساس بأي شيء آخر.
+
+## مرجع اثنان وخمسون — 2026-09-09: إعادة بناء استمارة كشف الراتب فوق PySide6 (المرحلة 3-أ)
+
+المرحلة 3-أ من `docs/MIGRATION_PLAN_PYSIDE6.md`: إعادة رسم استمارة الأجور
+(`ui/hr/paie/template_simple.py` + شاشة `ui/hr/bulletin_paie.py`) فوق
+PySide6 **حرفياً** — نفس ورقة A4 المرسومة بالمليمتر فوق لوحة رمادية،
+حقولٌ مطلقة الموضع فوقها، شريط جانبي وزوم. الفرق الوحيد: الإطار PySide6،
+والحساب من `programme.payroll.calc.compute` بدل منطق Tkinter.
+
+### ما بُني
+
+- **`ui2/hr/paie/bulletin_template.py`** (جديد):
+  - `_SheetCanvas` (`QWidget` بـ`paintEvent`) — نقلٌ لـ`template_simple.paint_form`:
+    ظلّ الورقة + الورقة البيضاء + الجزء الثابت (تسميات، شريط أسود، صندوق
+    الهوية، ترويسة الجدول ستّة أعمدة `CODE/LIBELLÉ/N-BASE/TAUX/GAIN/RETENUE`،
+    أكواد/تسميات الأسطر الثابتة) + القيَم المحسوبة زرقاء (`theme.COMPUTED`)
+    + سطر `TOTAL` + شريط `NET À PAYER` الأسود.
+  - `BulletinTemplateScreen(ui2.screen.Screen)` — نقلٌ لـ`bulletin_paie.py`:
+    زوم (−/100%/+/ملاءمة)، شريط جانبي (الموديل، وضع الزبون، منح CNAS،
+    توليد Word/PDF/سجلّ/مسح، وسيلة الإيضاح)، حقول `QLineEdit`/`QDateEdit`
+    مطلقة الموضع فوق اللوحة، خلفية كريمية/أبيض حسب الملء، حقول الشهر/السنة
+    على الشريط الأسود.
+  - **صفوف ثابتة** (`PAIE_DEFAULT_CODES`) — لا كتالوج ديناميكي في هذه
+    المرحلة (قرار المالك).
+- **`ui2/hr/paie/__main__.py`** (جديد) — `python -m ui2.hr.paie` (تشغيل مستقلّ).
+- **`ui2/hr/paie/tests/test_bulletin_template.py`** (جديد) — 5 اختبارات
+  تثبيت: الموصِّل الأمين (حقول → `PaieInput` → نتيجة == استدعاء المحرّك
+  مباشرةً)، رسم كل خانات `FIELD_SLOTS` بلا استثناء، خانة المنحة تغيّر الوعاء،
+  مسح، ذهاب/إياب المسوّدة.
+- **`ui2/theme.py`** — 3 tokens مستخرَجة بمصدرها: `PAGE_SHADOW = #5f6368`
+  (`bulletin_paie.py:696`) · `PAGE_BORDER = #3c4043` (`:697`) ·
+  `GRID_LINE = #c8c8c8` (`template_simple.py:299`).
+
+### قرارات تقنية
+
+- **مُصيِّر Word/PDF لم يُعَد كتابته** — يُستدعى كما هو من
+  `template_simple.get_renderer().build_docx/build_pdf` (لا تلمسان tkinter).
+  الملف يستورد `ui.hr.paie.template_simple` (يجرّ `tkinter.font` عند
+  التحميل، بلا جذر Tk) — **استيراد انتقالي** يُنقَل إلى وحدة بلا إطار في
+  المرحلة 4 عند حذف `ui/`.
+- **الحساب عبر `calc.compute(PaieInput, cfg)`** — نفس مُهايئ الشاشة القديمة
+  ونفس الافتراضات، لا `compute_sequence` مباشرةً — لضمان أرقام مطابقة تماماً.
+- **`Qt.LeftToRight` مفروض** على اللوحة والرسّام والمقسّم — الاستمارة
+  فرنسية بالكامل؛ بدونه تنعكس التسميات (`: NOM`) والمبالغ (`922,90 46`)
+  تحت اتجاه التطبيق RTL.
+- **شريط أدوات `Screen` مُخفى** (`toolbar.setVisible(False)`) — لا شريط
+  في التصميم القديم.
+- **معايرة عمودية لمنطقة الهوية في الشاشة الجديدة فقط** — `_IDENT_ROW_EXTRA_PX
+  = theme.SPACE["sm"]` يوسّع فجوة كل صفّ هوية وتُزاح كتلة الجدول أسفلها
+  بالمجموع؛ الثابت المشترك في `template_simple` **لم يُلمَس**.
+- **`setMaxLength` لا يُطبَّق على `num_ss`/`adherent`** — قيَم مجمَّعة
+  بمسافات ومفتاح `/XX` تتجاوز `maxlen` الخام.
+- **لون نصّ الحقول موحّد** على `theme.TEXT` (QSS + `QPalette` +
+  `selection-color` + `deselect`).
+
+### بوّابة القبول البصري
+
+مقارنة جنباً إلى جنب (`docs/baseline_screenshots/3a_*.png`) بنفس بيانات
+DATA NEWS: `TOTAL 58 500,00 / 11 577,10` · `NET À PAYER 46 922,90` —
+مطابقة للشاشة القديمة. **اعتُمدت من المالك** بعد تصحيحين (لون النصّ +
+الإيقاع العمودي).
+
+### الحالة
+
+الشاشة **غير مربوطة بأي زرّ** — الربط الدائم بعد اجتياز بوّابة الكشوف
+السبعة الحقيقية (BOUCETTA، MEHANI، SEBA، TOUATI، DATA NEWS×3). القديم
+(`ui/hr/`) باقٍ كما هو.
+
+### الاختبارات
+
+`programme/payroll/tests` **49 OK** · `programme/tests` **6 OK** ·
+`ui2/tests` **10 OK** · `ui2/paie/tests` **17 OK** ·
+`ui2/hr/paie/tests` **5 OK** · `test_golden.py` **14/14**.
+
+### الملفات المتأثرة
+
+جديد: `ui2/hr/__init__.py` · `ui2/hr/paie/{__init__,__main__,bulletin_template}.py`
+· `ui2/hr/paie/tests/{__init__,test_bulletin_template}.py`.
+معدَّل: `ui2/theme.py` (3 tokens) · `docs/CHANGELOG.md`.

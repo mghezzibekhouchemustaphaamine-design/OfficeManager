@@ -37,6 +37,11 @@ COMPUTED     = "#1a56b0"   # [ui] hr/paie/template_simple.py:45 COMPUTED_COLOR (
 CANVAS_BG_CD = "#c9c9c9"   # [ui] cd/tab.py:1159,1178,1182
 CANVAS_BG_HR = "#9aa0a6"   # [ui] hr/a4_canvas.py:34 · hr/bulletin_paie.py:201
 
+# ورقة A4 في شاشة الكشف (استمارة فوق لوحة) — مستخرَجة من الكود القديم:
+PAGE_SHADOW = "#5f6368"    # [ui] hr/bulletin_paie.py:696 (ظلّ الورقة) · hr/a4_canvas.py
+PAGE_BORDER = "#3c4043"    # [ui] hr/bulletin_paie.py:697 (حدّ الورقة)
+GRID_LINE   = "#c8c8c8"    # [ui] hr/paie/template_simple.py:299 (خطوط أسطر الجدول الأفقية)
+
 # ------------------------- المسافات (px) -------------------------
 # القيَم المستعملة فعلياً في ui/ (hr/base.py، cd/tab.py): 4·6·8·10·12·14.
 # المفاتيح كما هي (لا يُلمَس أيّ مستدعٍ) — القيَم فقط صُحِّحت.

@@ -20,12 +20,12 @@ import os
 import re
 from datetime import date
 
-from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPalette
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QRadioButton, QScrollArea, QSplitter,
-    QVBoxLayout, QWidget,
+    QLabel, QLineEdit, QMenu, QPushButton, QRadioButton, QScrollArea,
+    QSplitter, QVBoxLayout, QWidget,
 )
 
 from programme import database, paths
@@ -37,7 +37,7 @@ from ui.hr.paie import template_simple as T
 from ui.hr.render import TemplateNotReady
 from ui2 import theme
 from ui2.alerts import confirm
-from ui2.form import DateField
+from ui2.form import DateField, GroupedNumberEdit, resolve_month
 from ui2.screen import Screen
 
 logger = logging.getLogger(__name__)
@@ -47,12 +47,42 @@ _ENTRY_FONT = T.FORM_FONT                       # "Helvetica" — نفس خط ا
 # أكثر انفراجاً؛ نزيد إيقاع صفوف الهوية بمقدار SPACE["sm"] لكل فجوة،
 # وتُزاح كتلة الجدول أسفلها بنفس المجموع (بلا تداخل مع ترويسة الجدول).
 _IDENT_ROW_EXTRA_PX = theme.SPACE["sm"]
-# فرق كروم QLineEdit العمودي (حدّ + حشو QSS) من أعلى الإطار إلى خط أساس
-# نصّه — نظير ``_ENTRY_TOP_CHROME`` في ui/hr/bulletin_paie.py (كان 2 لـ
-# tk.Entry). يُضبط بصرياً بمقارنة الصورة.
-_ENTRY_TOP_CHROME = 4
+# ---- إحداثيات الوثيقة → إحداثيات اللوحة: تحويلٌ واحد لكل شيء (Phase 55) ----
+_FONT_K = 0.62                # مليمتر ارتفاع الخط × scale × K = نقاط الخط
+_ENTRY_CHROME_MM = 1.2       # كروم QLineEdit العمودي (حدّ+حشو) — بالمليمتر فيتبع الزوم
+_FIT_PAD_MM = 3.0           # هامش عرض حقل «يتّسع لمحتواه»
+_DATE_BTN_MM = 6.0         # عرض زرّ التقويم داخل DateField
 _MOIS_UP = [m.upper() for m in MOIS_FR]
 _FAMILLE_CODES = {"C", "D", "V", "M"}
+_FAMILLE_CHOICES = (("C", "Célibataire"), ("D", "Divorcé(e)"),
+                    ("V", "Veuf(ve)"), ("M", "Marié(e)"))
+
+
+class _DocView:
+    """التحويل الوحيد من إحداثيات الوثيقة (مليمتر ورقة A4) إلى إحداثيات
+    اللوحة (بكسل). كلّ عنصر — رسمٌ أو ودجت — يمرّ عبره، فلا يحسب أيّ حقل
+    موضعه/مقياسه مستقلًّا. ``scale`` = بكسل لكلّ مليمتر."""
+
+    __slots__ = ("x0", "y0", "scale", "sheet_w", "sheet_h", "cw", "ch")
+
+    def __init__(self, x0, y0, scale, sheet_w, sheet_h, cw, ch):
+        self.x0, self.y0, self.scale = x0, y0, scale
+        self.sheet_w, self.sheet_h, self.cw, self.ch = sheet_w, sheet_h, cw, ch
+
+    def x(self, mm):
+        return self.x0 + (T.MARGIN_L + mm) * self.scale
+
+    def y(self, mm):
+        return self.y0 + mm * self.scale
+
+    def px(self, mm):
+        return mm * self.scale
+
+    def font(self, mm_h, bold=False):
+        f = QFont(_ENTRY_FONT)
+        f.setPointSizeF(max(mm_h * self.scale * _FONT_K, 0.5))   # لا أرضية 6pt
+        f.setBold(bool(bold))
+        return f
 
 
 def _titlecase(s: str) -> str:
@@ -115,8 +145,9 @@ class _SheetCanvas(QWidget):
 
     # -- أدوات رسم بوحدة المليمتر (نفس دوال template_simple.paint_form) --
     def paintEvent(self, _e):                                  # noqa: N802
-        box, scale, _cw, _ch = self._screen._page_box()
-        x0, y0, x1, y1 = box
+        v = self._screen._view()
+        x0, y0 = v.x0, v.y0
+        x1, y1 = v.x0 + v.sheet_w, v.y0 + v.sheet_h
         p = QPainter(self)
         p.setLayoutDirection(Qt.LeftToRight)          # نصّ فرنسي — لا bidi
         p.setRenderHint(QPainter.Antialiasing, True)
@@ -130,32 +161,29 @@ class _SheetCanvas(QWidget):
         p.drawRect(int(x0), int(y0), int(x1 - x0), int(y1 - y0))
 
         try:
-            self._paint_form(p, box, scale)
+            self._paint_form(p, v)
         except Exception:                                     # noqa: BLE001
             logger.warning("رسم الاستمارة فشل", exc_info=True)
         p.end()
 
-    def _paint_form(self, p: QPainter, box, scale):
-        x0, y0, _x1, _y1 = box
+    def _paint_form(self, p: QPainter, v: "_DocView"):
+        scale = v.scale
         sc = self._screen
         res = sc._calc_result
         ink = QColor(theme.TEXT)
         cc = QColor(theme.COMPUTED)
 
         def X(mm):
-            return x0 + (T.MARGIN_L + mm) * scale
+            return v.x(mm)
 
         def Y(mm):
-            return y0 + mm * scale
+            return v.y(mm)
 
         def col_x(frac):
-            return x0 + (T.MARGIN_L + frac * T.CONTENT_W) * scale
+            return v.x(frac * T.CONTENT_W)
 
         def font(mm_h, bold=False):
-            f = QFont(_ENTRY_FONT)
-            f.setPointSize(max(int(mm_h * scale * 0.62), 6))
-            f.setBold(bold)
-            return f
+            return v.font(mm_h, bold)
 
         def base_text(mm_x, baseline_mm, s, f, color=ink):
             p.setFont(f)
@@ -321,8 +349,9 @@ class BulletinTemplateScreen(Screen):
         self._band_keys = {s.key for s in T.FIELD_SLOTS if s.on_band}
         self._ident_row = {f"id_{k}": row
                            for k, _l, _xl, _xv, _wv, row, _ml, _kd in T.IDENT_FIELDS}
-        self._widgets = {}                     # key -> QLineEdit / _DateEdit
+        self._widgets = {}                     # key -> QLineEdit / DateField / GroupedNumberEdit
         self._suspend = set()
+        self._prev_text = {}                   # آخر نصّ لكلّ حقل (لتمييز الكتابة عن التحرير)
         self._prime_soumis = [True, True, True]
 
         self._calc_input = calc.PaieInput()
@@ -480,18 +509,27 @@ class BulletinTemplateScreen(Screen):
                 # DateField الموحّد: عرض dd/MM/yyyy، تخزين ISO، مسطّح،
                 # خطأ سطري، ولا تاريخ مستقبلي (max = اليوم لكلا الحقلين §8).
                 w = DateField(display_format="dd/MM/yyyy", nullable=True,
-                              flat=True, max_date=today, parent=self._canvas)
+                              flat=True, max_date=today, inline_error=False,
+                              parent=self._canvas)
                 w.dateChanged.connect(lambda _d, k=slot.key: self._on_slot_write(k))
-                w.errorChanged.connect(lambda _m: self._relayout())
+                w.errorChanged.connect(self._refresh_date_errors)
+                w.completed.connect(lambda k=slot.key: self._focus_rel(k, +1))
+            elif slot.kind == "adherent":
+                # رقم الانتساب: حقلٌ رقميّ مجمَّع reusable «xx xxx xxx xx».
+                w = GroupedNumberEdit([2, 3, 3, 2], parent=self._canvas)
+                al = {"r": Qt.AlignRight, "c": Qt.AlignHCenter,
+                      "l": Qt.AlignLeft}[slot.align]
+                w.setAlignment(al | Qt.AlignVCenter)
+                w.textEdited.connect(lambda _t, k=slot.key: self._on_slot_write(k))
+                w.completed.connect(lambda k=slot.key: self._focus_rel(k, +1))
             else:
                 w = QLineEdit(defaults.get(slot.key, ""), self._canvas)
                 w.setFrame(False)
                 al = {"r": Qt.AlignRight, "c": Qt.AlignHCenter,
                       "l": Qt.AlignLeft}[slot.align]
                 w.setAlignment(al | Qt.AlignVCenter)
-                # القيَم المجمَّعة (N° SS / N° ADHÉRENT) تُدخَل بمسافات وربّما
-                # مفتاح «/XX» فتتجاوز maxlen الخام — لا نقصّها بـ setMaxLength.
-                if slot.kind not in ("num_ss", "adherent"):
+                # القيَم المجمَّعة (N° SS) تُدخَل بمسافات فتتجاوز maxlen الخام.
+                if slot.kind != "num_ss":
                     w.setMaxLength(slot.maxlen)
                 w.textChanged.connect(lambda _t, k=slot.key: self._on_slot_write(k))
                 w.returnPressed.connect(lambda k=slot.key: self._focus_rel(k, +1))
@@ -503,6 +541,48 @@ class BulletinTemplateScreen(Screen):
         # §8: تاريخ بداية العمل > تاريخ الميلاد (وكلاهما ≤ اليوم — مضبوط
         # عبر max_date). القاعدة على حقل الدخول؛ تغيّر الميلاد يُعيد فحصه.
         self._widgets["id_date_embauche"].set_extra_check(self._check_entree)
+        # Ctrl+عجلة يعمل حتى فوق أيّ حقل (لا يبتلعه الحقل) + حدّ تركيز واضح.
+        self._canvas.installEventFilter(self)
+        self._scroll.viewport().installEventFilter(self)
+        for w in self._canvas.findChildren(QWidget):
+            w.installEventFilter(self)
+
+    def _refresh_date_errors(self, *_a):
+        msgs = []
+        for k, lbl in (("id_date_naissance", "تاريخ الميلاد"),
+                       ("id_date_embauche", "تاريخ بداية العمل")):
+            w = self._widgets.get(k)
+            txt = w.error_text() if isinstance(w, DateField) else ""
+            if txt:
+                msgs.append(f"{lbl}: {txt}")
+        if msgs:
+            self.warnbar.setText(" • ".join(msgs))
+            self.warnbar.show()
+        else:
+            self.warnbar.setText("")
+            self.warnbar.hide()
+        self._relayout()
+
+    # ----------------------- الحالة العائلية (Hybrid) -----------------------
+    def _popup_famille(self, key, widget):
+        menu = QMenu(self)
+        for code, label in _FAMILLE_CHOICES:
+            menu.addAction(f"{code} — {label}",
+                           lambda c=code, k=key: self._pick_famille(k, c))
+        menu.addSeparator()
+        menu.addAction("—  (تفريغ)", lambda k=key: self._pick_famille(k, ""))
+        menu.exec(widget.mapToGlobal(widget.rect().bottomLeft()))
+
+    def _pick_famille(self, key, code):
+        w = self._widgets[key]
+        self._suspend.add(key)
+        w.setText(code)
+        self._suspend.discard(key)
+        self._style_field(key)
+        self.mark_dirty()
+        self._recompute()
+        if code:
+            self._focus_rel(key, +1)
 
     def _birth_pydate(self):
         iso = self._widgets["id_date_naissance"].iso()
@@ -518,27 +598,30 @@ class BulletinTemplateScreen(Screen):
         return None
 
     # ----------------------- الزوم والتخطيط -----------------------
-    def _page_box(self):
-        cw = max(self._scroll.viewport().width(), 1) if hasattr(self, "_scroll") else 1
-        ch = max(self._scroll.viewport().height(), 1) if hasattr(self, "_scroll") else 1
+    def _view(self) -> _DocView:
+        """التحويل الحالي وثيقة→لوحة (يُعاد حسابه عند كلّ رسم/تخطيط)."""
+        vp = self._scroll.viewport() if hasattr(self, "_scroll") else None
+        cw = max(vp.width(), 1) if vp is not None else 1
+        ch = max(vp.height(), 1) if vp is not None else 1
         sheet_w = self.TARGET_W * self.zoom / 100.0
         scale = sheet_w / 210.0
         sheet_h = scale * 297.0
         x0 = max((cw - sheet_w) / 2, self.MARGIN)
         y0 = self.MARGIN
-        return (x0, y0, x0 + sheet_w, y0 + sheet_h), scale, cw, ch
+        return _DocView(x0, y0, scale, sheet_w, sheet_h, cw, ch)
+
+    def _page_box(self):
+        v = self._view()
+        return ((v.x0, v.y0, v.x0 + v.sheet_w, v.y0 + v.sheet_h),
+                v.scale, v.cw, v.ch)
 
     def _row1_layout(self, scale):
-        """موضعا «à» وحقل المكان في سطر تاريخ الميلاد — نظير
-        ``template_simple.row1_layout`` بقياس خط Qt."""
-        fs = max(int(3.2 * scale * 0.62), 6)
-        f = QFont(_ENTRY_FONT, fs)
-        f.setBold(True)
-        fm = QFontMetricsF(f)
-        date_w_mm = fm.horizontalAdvance("00/00/0000") / scale + 1.8
-        sp = fm.horizontalAdvance(" ") / scale
-        a_x = T._VAL_L + date_w_mm + 2 * sp
-        lieu_x = a_x + fm.horizontalAdvance("à") / scale + 2 * sp
+        """موضعا «à» وحقل المكان في سطر تاريخ الميلاد — **بالمليمتر خالصاً**
+        (لا قياس خطّ بكسل يتسرّب إلى تخطيط الوثيقة). حقل التاريخ = عرض نصّه
+        + زرّ التقويم، ثمّ «à»، ثمّ حقل المكان."""
+        date_w_mm = 20.0 + _DATE_BTN_MM          # عرض DateField لسطر الميلاد
+        a_x = T._VAL_L + date_w_mm + 3.0
+        lieu_x = a_x + 3.0 + 3.0
         return a_x, lieu_x
 
     # --- معايرة الإيقاع العمودي لمنطقة الهوية (الشاشة الجديدة فقط) ---
@@ -580,57 +663,95 @@ class BulletinTemplateScreen(Screen):
         super().resizeEvent(e)
         self._relayout()
 
+    # ---- زوم بعجلة الفأرة + Ctrl (يشارك نفس zoom state ومؤشّره) ----
+    def _zoom_wheel(self, ev):
+        step = self.ZOOM_STEP if ev.angleDelta().y() > 0 else -self.ZOOM_STEP
+        new_zoom = max(self.ZOOM_MIN, min(self.ZOOM_MAX, self.zoom + step))
+        if new_zoom == self.zoom:
+            return
+        gp = ev.globalPosition().toPoint()
+        v0 = self._view()
+        # نقطة الوثيقة (مليمتر) تحت المؤشّر قبل الزوم
+        cpt = self._canvas.mapFromGlobal(gp)
+        mm_x = (cpt.x() - v0.x0) / v0.scale - T.MARGIN_L
+        mm_y = (cpt.y() - v0.y0) / v0.scale
+        cur_vp = self._scroll.viewport().mapFromGlobal(gp)
+        self._set_zoom(new_zoom)                          # يعيد التخطيط
+        v1 = self._view()
+        # اجعل نفس نقطة الوثيقة تبقى تحت المؤشّر (Cursor-anchored)
+        new_cx = v1.x0 + (T.MARGIN_L + mm_x) * v1.scale
+        new_cy = v1.y0 + mm_y * v1.scale
+        self._scroll.horizontalScrollBar().setValue(int(new_cx - cur_vp.x()))
+        self._scroll.verticalScrollBar().setValue(int(new_cy - cur_vp.y()))
+
+    def _key_of_edit(self, obj):
+        for k, w in self._widgets.items():
+            if w is obj or getattr(w, "_edit", None) is obj:
+                return k
+        return None
+
+    def eventFilter(self, obj, ev):                       # noqa: N802 (Qt)
+        t = ev.type()
+        if t == QEvent.Wheel:
+            if ev.modifiers() & Qt.ControlModifier:
+                self._zoom_wheel(ev)                      # Ctrl+عجلة → زوم الوثيقة
+                return True
+            return False                                  # عجلة عادية → تمرير طبيعي
+        if t in (QEvent.FocusIn, QEvent.FocusOut) and isinstance(obj, QLineEdit):
+            k = self._key_of_edit(obj)
+            if k:
+                self._style_field(k)                      # حدّ التركيز واضح (B)
+        if t == QEvent.MouseButtonPress:
+            k = self._key_of_edit(obj)
+            if k and self._slots_by_key.get(k) and \
+                    self._slots_by_key[k].kind == "famille":
+                self._popup_famille(k, obj)
+        return super().eventFilter(obj, ev)
+
     def _relayout(self):
         if not hasattr(self, "_canvas"):
             return
-        box, scale, cw, ch = self._page_box()
-        x0, y0, x1, y1 = box
-        self._canvas.setFixedSize(int(max(x1 + self.MARGIN, cw)),
-                                  int(max(y1 + self.MARGIN, ch)))
+        v = self._view()
+        self._canvas.setFixedSize(
+            int(max(v.x0 + v.sheet_w + self.MARGIN, v.cw)),
+            int(max(v.y0 + v.sheet_h + self.MARGIN, v.ch)))
+        chrome = v.px(_ENTRY_CHROME_MM)
         for slot in T.FIELD_SLOTS:
             w = self._widgets[slot.key]
-            fs = max(6, int(slot.font_mm * scale * 0.62))
-            f = QFont(_ENTRY_FONT, fs)
-            f.setBold(bool(slot.bold))
+            f = v.font(slot.font_mm, slot.bold)
             w.setFont(f)
             fm = QFontMetricsF(f)
 
-            slot_x_mm = slot.x_mm
+            x_mm = slot.x_mm
             if slot.key == "id_lieu_naissance":
-                slot_x_mm = self._row1_layout(scale)[1]
+                x_mm = self._row1_layout(v.scale)[1]
 
-            px = x0 + (T.MARGIN_L + slot_x_mm) * scale
-            if isinstance(w, DateField):                        # حقل التاريخ الموحّد
-                base_mm = self._ident_row_y(self._ident_row[slot.key], scale)
-                py = y0 + base_mm * scale - fm.ascent() - _ENTRY_TOP_CHROME
-                w.setFixedWidth(int(fm.horizontalAdvance("00/00/0000") + 34))
-                w.setMinimumHeight(0)
-                w.setMaximumHeight(16777215)
-                w.adjustSize()
-                w.move(int(px), int(py))
-                continue
-            if slot.key in self._ident_row:                     # صفّ هوية — إيقاع مُعاير
-                base_mm = self._ident_row_y(self._ident_row[slot.key], scale)
-                py = y0 + base_mm * scale - fm.ascent() - _ENTRY_TOP_CHROME
-                h = int(fm.height() + 2 * _ENTRY_TOP_CHROME)
-            elif slot.baseline_mm is not None:                  # رأس المكتب / الشريط
-                py = y0 + slot.baseline_mm * scale - fm.ascent() - _ENTRY_TOP_CHROME
-                h = int(fm.height() + 2 * _ENTRY_TOP_CHROME)
-            else:                                              # خانة جدول — مُزاحة لأسفل
-                py = y0 + (slot.y_mm + self._y_shift(scale)) * scale
-                h = int((T.ROW_H - 0.8) * scale)
+            # ---- عمودياً ----
+            if slot.key in self._ident_row:
+                ref_mm = self._ident_row_y(self._ident_row[slot.key], v.scale)
+                top_px = v.y(ref_mm) - fm.ascent() - chrome
+                h_px = int(fm.height() + 2 * chrome)
+            elif slot.baseline_mm is not None:
+                top_px = v.y(slot.baseline_mm) - fm.ascent() - chrome
+                h_px = int(fm.height() + 2 * chrome)
+            else:                                          # خانة جدول — مُزاحة لأسفل
+                top_px = v.y(slot.y_mm + self._y_shift(v.scale))
+                h_px = int(v.px(T.ROW_H - 0.8))
 
-            if getattr(slot, "fit_maxlen", False):
-                # قدر أوسع من: maxlen حرفاً عريضاً، أو المحتوى الحالي
-                # (قيَم مجمَّعة بمسافات أطول من maxlen الخام — N° SS مثلاً).
-                cur = w.iso() if isinstance(w, DateField) else w.text()
-                wpx = int(max(fm.horizontalAdvance("0" * slot.maxlen),
-                              fm.horizontalAdvance(cur)) + 10)
+            # ---- عرضاً (كلّه بالمليمتر ثمّ يُحوَّل — لا ثابت بكسل) ----
+            if isinstance(w, DateField):
+                w_px = int(v.px(slot.w_mm + _DATE_BTN_MM))
+            elif getattr(slot, "fit_maxlen", False) or isinstance(
+                    w, GroupedNumberEdit):
+                cur = w.text()
+                w_px = int(max(fm.horizontalAdvance("0" * max(slot.maxlen, 10)),
+                               fm.horizontalAdvance(cur)) + v.px(_FIT_PAD_MM))
             else:
-                wpx = int(slot.w_mm * scale)
-            w.setFixedWidth(max(wpx, 12))
-            w.setFixedHeight(max(h, 12))
-            w.move(int(px), int(py))
+                w_px = int(v.px(slot.w_mm))
+
+            w.setFixedWidth(max(w_px, 12))
+            w.setFixedHeight(max(h_px, 12))
+            w.move(int(v.x(x_mm)), int(top_px))
         self._canvas.update()
 
     # ----------------------- المظهر (كريمي/أبيض/شريط) -----------------------
@@ -744,28 +865,60 @@ class BulletinTemplateScreen(Screen):
             self._cfg = None
         w = self._widgets[key]
         slot = self._slots_by_key[key]
-        # تحويلات نصّ بسيطة (نظير _on_key_release في الشاشة القديمة)
+        prev = self._prev_text.get(key, "")
+        cur = w.text()
+        self._prev_text[key] = cur
+        growing = len(cur.replace(" ", "")) > len(prev.replace(" ", ""))
+
+        def _set(txt, cursor_end=True):
+            self._suspend.add(key)
+            pos = w.cursorPosition()
+            w.setText(txt)
+            w.setCursorPosition(len(txt) if cursor_end else min(pos, len(txt)))
+            self._suspend.discard(key)
+            self._prev_text[key] = txt
+
+        # ---- تحويلات نصّ بسيطة ----
         if slot.kind in ("upper", "upper_alpha") and isinstance(w, QLineEdit):
-            up = w.text().upper()
-            if up != w.text():
-                self._suspend.add(key); pos = w.cursorPosition()
-                w.setText(up); w.setCursorPosition(pos); self._suspend.discard(key)
+            if cur.upper() != cur:
+                _set(cur.upper(), cursor_end=False)
         elif slot.kind == "titlecase" and isinstance(w, QLineEdit):
-            tc = _titlecase(w.text())
-            if tc != w.text():
-                self._suspend.add(key); pos = w.cursorPosition()
-                w.setText(tc); w.setCursorPosition(pos); self._suspend.discard(key)
-        elif slot.kind == "famille" and isinstance(w, QLineEdit):
-            up = w.text().upper()
-            if up != w.text():
-                self._suspend.add(key); w.setText(up); self._suspend.discard(key)
-        # §8: تغيّر تاريخ الميلاد قد يُبطِل صلاحية تاريخ بداية العمل — أعِد
-        # فحصه بلا مسحه ولا تعديله (يظهر عليه خطأ سطري إن لزم).
+            tc = _titlecase(cur)
+            if tc != cur:
+                _set(tc, cursor_end=False)
+        # ---- إدخال ذكي completion-driven (لا يقفز أثناء تحرير قيمة قائمة) ----
+        elif slot.kind == "famille":
+            if cur.upper() != cur:
+                _set(cur.upper())
+                cur = cur.upper()
+            if growing and len(cur) == 1 and cur in _FAMILLE_CODES:
+                self._advance_after(key)
+        elif slot.kind == "month":
+            idx, unamb = resolve_month(cur, MOIS_FR)
+            if growing and unamb:
+                canon = _MOIS_UP[idx]
+                if cur.upper() != canon:
+                    _set(canon)
+                self._advance_after(key)
+        elif slot.kind == "year":
+            digs = re.sub(r"\D", "", cur)
+            if digs != cur:
+                _set(digs, cursor_end=False)
+                digs = re.sub(r"\D", "", w.text())
+            if growing and len(digs) == 4:
+                self._advance_after(key)
+
+        # §8: تغيّر تاريخ الميلاد قد يُبطِل صلاحية تاريخ بداية العمل.
         if key == "id_date_naissance":
             self._widgets["id_date_embauche"].revalidate()
         self._style_field(key)
         self.mark_dirty()
         self._recompute()
+
+    def _advance_after(self, key):
+        """انتقال مؤجَّل للحقل التالي — بعد أن ينتهي حدث الكتابة الحالي
+        (يمنع تعارض إعادة الضبط مع تغيير التركيز)."""
+        QTimer.singleShot(0, lambda: self._focus_rel(key, +1))
 
     def _focus_rel(self, key, direction):
         try:
@@ -773,9 +926,9 @@ class BulletinTemplateScreen(Screen):
         except ValueError:
             return
         nkey = self._nav_order[(i + direction) % len(self._nav_order)]
-        self._widgets[nkey].setFocus()
         w = self._widgets[nkey]
-        if isinstance(w, QLineEdit):
+        w.setFocus()
+        if hasattr(w, "selectAll"):
             w.selectAll()
 
     def _recompute(self):

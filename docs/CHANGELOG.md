@@ -2780,3 +2780,99 @@ OK** · `programme/tests` **6 OK** · `test_golden.py` **14/14** ·
 معدَّل: `ui2/form.py` · `ui2/hr/paie/bulletin_template.py` ·
 `docs/CHANGELOG.md` · `docs/baseline_screenshots/3a_new_pyside6.png`.
 جديد: `ui2/tests/test_date_field.py`.
+
+## Phase 55 — 2026-09-09: Smart Form UX & Unified Zoom (كشف الراتب PySide6)
+
+معالجة مشاكل تجربة الإدخال والزوم في `ui2/hr/paie/bulletin_template.py`
+بإصلاح **الأسباب المشتركة** لا حلولاً لكلّ حقل.
+
+### سبب مشكلة الزوم (الجذر)
+
+الشاشة تملك تحويلاً صحيحاً «وثيقة→لوحة» (`scale = TARGET_W·zoom/100/210`
+مع `x0`,`y0`) يستعمله رسم `QPainter` بأمانة، **لكن** الحقول التفاعلية
+(ودجات أبناء اللوحة) كانت تُوضَع/تُقاس بذلك التحويل **مضافاً إليه ثوابت
+بكسل غير متناسبة** (`_ENTRY_TOP_CHROME=4`, `+10` لعرض «يتّسع لمحتواه»,
+`+34` لعرض DateField) **وحجم خطّ مُقيَّد بأرضية 6pt** (`max(int(mm·scale·
+0.62), 6)` في الرسم و`_relayout` معاً). فدون ~100%:
+- النصّ يتوقّف عن التصغّر (يبقى 6pt) فيتضخّم نسبةً للورقة ويتداخل.
+- الحقول لا تصغر بنفس نسبة الورقة (الثوابت البكسلية تصير كسراً كبيراً)
+  فتخرج من حدود الورقة.
+أي: الورقة ومحتواها التفاعلي لم يكونا وحدة إحداثيات واحدة.
+
+### ما أُصلح
+
+- **`_DocView`** (تحويل واحد `x()/y()/px()/font()`): يمرّ عبره **كلّ**
+  عنصر — الرسم و`_relayout` معاً. لا حساب مستقلّ لأيّ حقل.
+- **إزالة أرضية 6pt**: `font.setPointSizeF(mm·scale·0.62)` (min 0.5) في
+  الرسم و`_relayout`. النصّ يتبع الورقة على كامل مدى الزوم.
+- **هندسة الحقول بالمليمتر خالصاً**: العرض من `slot.w_mm` (‏+ `_DATE_BTN_MM`
+  لـ DateField، + `_FIT_PAD_MM` للمتّسع)، الكروم `_ENTRY_CHROME_MM` يتبع
+  الزوم. `_row1_layout` صار مليمترات خالصة (لا `QFontMetrics` تتسرّب).
+- **`Ctrl + عجلة` = زوم الوثيقة، متمركزٌ حول المؤشّر** (Cursor-anchored):
+  نقطة الوثيقة تحت المؤشّر تبقى تحته بعد الزوم (تعديل أشرطة التمرير).
+  عبر `eventFilter` على اللوحة + كلّ أبنائها + viewport — فيعمل **حتى
+  فوق أيّ حقل** (لا يبتلعه الحقل)؛ العجلة بلا `Ctrl` تبقى تمريراً عادياً.
+  يشارك نفس `self.zoom` ومؤشّره مع أزرار `−/+/ملاءمة`.
+- **UI chrome لا يتبع الزوم** (الشريط الجانبي، الأزرار) — خارج `_DocView`.
+
+### الإدخال الذكي (primitives صغيرة في `ui2/form.py`، لا Framework)
+
+- `group_digits(digits, widths, sep)` — تنسيق مقنَّع تصاعدي مشترك
+  (تاريخ `[2,2,4]/` · انتساب `[2,3,3,2]`).
+- `day_complete` / `month_num_complete` — «مكتمل حين لا امتداد أطول
+  صالح»: يوم `4..9` أو شهر `2..9` (رقم واحد) ⇒ مكتمل؛ `1/2/3` لليوم
+  و`1` للشهر ⇒ انتظار.
+- `resolve_month(text, months)` — أرقام + بادئات/اختصارات فرنسية بلا
+  حساسية لحالة/أكسنت؛ البادئة الملتبسة (`j`,`ju`,`a`,`m`,`ma`) ⇒ انتظار؛
+  `jun`→Juin، `jui`→Juillet، `s`→Septembre…
+- **`GroupedNumberEdit(QLineEdit)`** reusable — أرقام فقط، `group_digits`
+  مع مؤشّر مستقرّ، لصق ذكي (خام/منسَّق)، إشارة `completed`.
+- **DateField**: `_format_digits` عبر `group_digits`؛ **إكمال ذكي للمقطع**
+  (كتابة `9` في خانة اليوم ⇒ `09` + تقدّم؛ `1` ⇒ انتظار)؛ إشارة
+  `completed` عند اكتمال تاريخ صالح بالكتابة المتسلسلة (للانتقال).
+
+### DateField — تناسق بصري وتركيز
+
+- **زرّ التقويم**: رمزٌ **مرسوم** (`_CalIcon.paintEvent`) بدل إيموجي
+  `📅` غير الموثوق — ظاهر، داخل حدود الحقل، لا اقتصاص/تداخل.
+- **A1 (الارتفاع)**: رسالة الخطأ صارت **طبقة عائمة** لا عنصراً في
+  التخطيط، فارتفاع DateField = ارتفاع خانة الكتابة فقط ولا يتغيّر بالحالة.
+  في `_relayout` يأخذ نفس معادلة ارتفاع/محاذاة بقيّة حقول الصفّ.
+- **A2 (الخطّ)**: نفس `_DocView.font(slot.font_mm)` لكلّ الحقول — بلا حجم
+  خاصّ بـ DateField (رسالة الخطأ من `theme.FONT_SIZES['status']`).
+- **B (التركيز)**: `focusIn/Out` (DateField داخلياً، وبقيّة الحقول عبر
+  `eventFilter`) ⇒ حدّ `theme.HOVER` واضح؛ الحدّ 1px في كلّ الحالات فلا
+  تتغيّر الهندسة.
+
+### الشاشة — تطبيق
+
+- `emp_cnas` (N° adhérent) ⇒ `GroupedNumberEdit([2,3,3,2])`؛ 10 أرقام
+  ⇒ انتقال. `_on_slot_write`: شهر ذكي (تطبيع للاسم الموحّد + انتقال عند
+  الحسم، لا يقفز أثناء تحرير قيمة قائمة عبر حارس `growing`)؛ سنة (أرقام
+  فقط، 4 ⇒ انتقال)؛ الحالة العائلية Hybrid (قائمة منبثقة بالنقر + كتابة
+  `c/m/d/v` ⇒ حرف كبير + انتقال). `_advance_after` يؤجّل الانتقال خارج
+  حدث الكتابة.
+
+### الاختبارات
+
+جديد: `ui2/tests/test_smart_input.py` — **11 اختباراً** (day/month
+completion، resolve_month أرقام/بادئات/التباس/اختصارات/أكسنت،
+group_digits، GroupedNumberEdit كتابة/لصق/إكمال، DateField day-pad +
+completed). صور: `docs/baseline_screenshots/55_zoom_{45,100,220}.png`.
+
+`ui2/tests` **38 OK** · `ui2/paie/tests` **17 OK** (محميّة) ·
+`ui2/hr/paie/tests` **5 OK** · `programme/payroll/tests` **49 OK** ·
+`programme/tests` **6 OK** · `test_golden.py` **14/14** · galleries
+`--selftest` → `ALLOK`.
+
+### لم يُمَسّ
+
+`programme/payroll/**` · `ui2/paie/bulletin.py` · `ui2/paie/tests/**` ·
+Legacy Tkinter (`ui/common/widgets.py`, `ui/hr/blocks.py`, `ui/cd/**`،
+`ui/hr/bulletin_paie.py`, `ui/hr/paie/template_simple.py`) · مخطّط القاعدة.
+
+### الملفات المتأثرة
+
+معدَّل: `ui2/form.py` · `ui2/hr/paie/bulletin_template.py` ·
+`docs/CHANGELOG.md`. جديد: `ui2/tests/test_smart_input.py` ·
+`docs/baseline_screenshots/55_zoom_*.png`.

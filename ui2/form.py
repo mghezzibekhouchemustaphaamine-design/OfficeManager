@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from datetime import date as _pydate, datetime as _pydatetime
 from typing import Any, Callable, Dict, List, Optional
 
-from PySide6.QtCore import QDate, QEvent, Qt, Signal
-from PySide6.QtGui import QDoubleValidator, QIntValidator
+from PySide6.QtCore import QDate, QEvent, QRect, Qt, Signal
+from PySide6.QtGui import QDoubleValidator, QIntValidator, QPainter, QPen
 from PySide6.QtWidgets import (
     QCalendarWidget, QComboBox, QFormLayout, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QPlainTextEdit, QPushButton, QToolButton, QVBoxLayout, QWidget,
@@ -52,6 +52,156 @@ def _parse_display_format(fmt: str):
     return kind, sep, seg
 
 
+# ============================================================================
+#  primitives مشتركة صغيرة للإدخال الذكي — «مكتمل حين لا امتداد أطول صالح»
+#  (Phase 55). لا Framework: دوال نقيّة + ودجت مقنَّع واحد. تُستعمَل من
+#  DateField ومن شاشة كشف الراتب (الشهر/السنة/الحالة العائلية/رقم الانتساب).
+# ============================================================================
+
+_ACCENTS = str.maketrans(
+    "àâäáéèêëíîïóôöúùûüýÿçñ", "aaaaeeeeiiiooouuuuyycn")
+
+
+def strip_accents(s: str) -> str:
+    return s.lower().translate(_ACCENTS)
+
+
+def group_digits(digits: str, widths, sep: str = " ") -> str:
+    """يجمّع سلسلة أرقام إلى مجموعات بأحجام ``widths`` مفصولة بـ``sep`` —
+    تصاعدياً وبلا فاصل ذيلي (إدخال جزئي مسموح). أساس التنسيق المقنَّع
+    المشترك (تاريخ ``[2,2,4]/`` · رقم انتساب ``[2,3,3,2]``)."""
+    digits = re.sub(r"\D", "", digits)[:sum(widths)]
+    out, i = [], 0
+    for w in widths:
+        if i >= len(digits):
+            break
+        out.append(digits[i:i + w])
+        i += w
+    return sep.join(out)
+
+
+def day_complete(d: str) -> bool:
+    """خانة اليوم مكتملة لا لبس فيها: رقمان (01..31)، أو رقمٌ واحد
+    4..9 (لا يوم من رقمين يبدأ به). ``1``/``2``/``3`` وحدها ⇒ لا."""
+    return len(d) >= 2 or d in ("4", "5", "6", "7", "8", "9")
+
+
+def month_num_complete(m: str) -> bool:
+    """خانة الشهر رقمياً: رقمان (01..12)، أو رقمٌ واحد 2..9. ``1`` وحده
+    ⇒ لا (قد تصير 1/10/11/12)."""
+    return len(m) >= 2 or m in ("2", "3", "4", "5", "6", "7", "8", "9")
+
+
+# اختصارات فرنسية غير بادئة حرفية / تفكّ اللبس (الباقي يُحسَم بمطابقة البادئة):
+#  «jun» = juin (بحرف i داخلي) · «jui» = juillet (وإلا لالتبست مع juin).
+_MONTH_ABBR = {"jun": 5, "jui": 6}
+
+
+def resolve_month(text: str, months):
+    """``(index 0..11 | None, unambiguous: bool)`` — يقبل الأرقام
+    والبادئات/الاختصارات الفرنسية بلا حساسية لحالة الأحرف أو الأكسنت.
+    البادئة الملتبسة أو غير المطابِقة ⇒ ``(None, False)``. ``months`` قائمة
+    أسماء الأشهر الاثني عشر بالترتيب."""
+    t = strip_accents(str(text)).strip()
+    if not t:
+        return None, False
+    if t.isdigit():
+        if len(t) == 1:
+            return (int(t) - 1, True) if t in "23456789" else (None, False)
+        return ((int(t) - 1, True)
+                if t in ("01", "02", "03", "04", "05", "06",
+                         "07", "08", "09", "10", "11", "12") else (None, False))
+    if t in _MONTH_ABBR:
+        return _MONTH_ABBR[t], True
+    norm = [strip_accents(m) for m in months]
+    hits = [i for i, m in enumerate(norm) if m.startswith(t)]
+    return (hits[0], True) if len(hits) == 1 else (None, False)
+
+
+class _CalIcon(QToolButton):
+    """زرّ تقويم برمز مرسوم (لا يعتمد على خطّ إيموجي غير موثوق)."""
+
+    def paintEvent(self, _e):                             # noqa: N802 (Qt)
+        super().paintEvent(_e)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        r = self.rect()
+        s = min(r.width(), r.height()) - 6
+        s = max(s, 8)
+        box = QRect(r.center().x() - s // 2, r.center().y() - s // 2, s, s)
+        col = self.palette().color(self.foregroundRole())
+        p.setPen(QPen(col, 1.2))
+        p.drawRect(box)
+        top = box.top() + s // 3
+        p.drawLine(box.left(), top, box.right(), top)          # شريط الترويسة
+        p.drawLine(box.left() + s // 3, box.top() - 1,
+                   box.left() + s // 3, box.top() + 2)          # حلقتان
+        p.drawLine(box.right() - s // 3, box.top() - 1,
+                   box.right() - s // 3, box.top() + 2)
+        p.end()
+
+
+class GroupedNumberEdit(QLineEdit):
+    """حقل رقمي مُقنَّع reusable: أرقام فقط، عرضٌ مجمَّع (``group_digits``)،
+    مؤشّر مستقرّ أثناء التحرير، لصق ذكي، وإشارة :attr:`completed` عند بلوغ
+    كامل الأرقام (للانتقال التلقائي). ``value()`` = الأرقام الخام،
+    ``text()`` = العرض المنسَّق."""
+
+    completed = Signal()
+
+    def __init__(self, widths, sep: str = " ", parent=None):
+        super().__init__(parent)
+        self._widths = list(widths)
+        self._sep = sep
+        self._total = sum(self._widths)
+        self.setLayoutDirection(Qt.LeftToRight)
+        self.textEdited.connect(self._reformat)
+
+    # -- تنسيق مع الحفاظ على موضع المؤشّر بعدد الأرقام --
+    def _reformat(self, _txt: str) -> None:
+        raw = self.text()
+        pos = self.cursorPosition()
+        before = len(re.sub(r"\D", "", raw[:pos]))
+        new = group_digits(raw, self._widths, self._sep)
+        if new != raw:
+            self.blockSignals(True)
+            self.setText(new)
+            self.blockSignals(False)
+            if before <= 0:
+                self.setCursorPosition(0)
+            else:
+                cnt, npos = 0, len(new)
+                for i, ch in enumerate(new):
+                    if ch.isdigit():
+                        cnt += 1
+                        if cnt == before:
+                            npos = i + 1
+                            break
+                self.setCursorPosition(min(npos, len(new)))
+        if len(self.value()) == self._total:
+            self.completed.emit()
+
+    def insertFromMimeData(self, source):                 # noqa: N802 (Qt)
+        txt = (source.text() if source is not None and source.hasText()
+               else "")
+        digs = re.sub(r"\D", "", txt)
+        if digs:
+            self.set_value(digs)
+            if len(self.value()) == self._total:
+                self.completed.emit()
+
+    def value(self) -> str:
+        return re.sub(r"\D", "", self.text())[:self._total]
+
+    def set_value(self, digits) -> None:
+        self.blockSignals(True)
+        self.setText(group_digits(str(digits or ""), self._widths, self._sep))
+        self.blockSignals(False)
+
+    def is_complete(self) -> bool:
+        return len(self.value()) == self._total
+
+
 class _MaskLineEdit(QLineEdit):
     """``QLineEdit`` يوجّه اللصق إلى :class:`DateField` (تطبيع تاريخ صالح
     بأي فاصل معقول، ورفض صامت لغير الصالح)."""
@@ -65,6 +215,14 @@ class _MaskLineEdit(QLineEdit):
                else "").strip()
         if not self._owner._try_paste(txt):
             pass                                          # لصق غير صالح → تجاهُل
+
+    def focusInEvent(self, e):                            # noqa: N802 (Qt)
+        super().focusInEvent(e)
+        self._owner._refresh_style()
+
+    def focusOutEvent(self, e):                           # noqa: N802 (Qt)
+        super().focusOutEvent(e)
+        self._owner._refresh_style()
 
 
 class DateField(QWidget):
@@ -88,6 +246,7 @@ class DateField(QWidget):
     dateChanged = Signal(QDate)
     errorChanged = Signal(str)                            # "" = لا خطأ
     stateChanged = Signal(str)
+    completed = Signal()                                  # تاريخ كامل صالح كُتب للتوّ
 
     NEUTRAL, INCOMPLETE, VALID, ERROR = (
         "neutral", "incomplete", "valid", "error")
@@ -120,8 +279,7 @@ class DateField(QWidget):
         self._edit.editingFinished.connect(lambda: self._apply_state())
         self._edit.installEventFilter(self)
 
-        self._btn = QToolButton(self)
-        self._btn.setText("📅")
+        self._btn = _CalIcon(self)
         self._btn.setToolTip("تقويم")
         self._btn.setFocusPolicy(Qt.NoFocus)
         self._btn.setAutoRaise(True)
@@ -129,23 +287,20 @@ class DateField(QWidget):
         self._btn.setFixedWidth(22)
         self._btn.clicked.connect(self._open_calendar)
 
+        # رسالة الخطأ السطرية: طبقةٌ عائمة فوق ما تحت الحقل — **ليست** في
+        # التخطيط، فلا تُغيّر ارتفاع DateField ولا محاذاته (Phase 55 / A1).
         self._err_lbl = QLabel("", self)
         self._err_lbl.setWordWrap(True)
         self._err_lbl.setStyleSheet(
-            f"color:{theme.DANGER}; font-size:11px; background:transparent;")
+            f"color:{theme.DANGER}; font-size:{theme.FONT_SIZES['status']}pt; "
+            f"background:transparent;")
         self._err_lbl.hide()
 
-        row = QHBoxLayout()
+        row = QHBoxLayout(self)                           # صفٌّ واحد فقط
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
         row.addWidget(self._edit, 1)
         row.addWidget(self._btn, 0)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(1)
-        outer.addLayout(row)
-        if inline_error:
-            outer.addWidget(self._err_lbl)
 
         self.setLayoutDirection(Qt.LeftToRight)
         self._refresh_style()
@@ -171,14 +326,7 @@ class DateField(QWidget):
         return re.sub(r"\D", "", self._edit.text())[:self._total_digits]
 
     def _format_digits(self, digits: str) -> str:
-        digits = re.sub(r"\D", "", digits)[:self._total_digits]
-        out, i = [], 0
-        for _name, w in self._segs:
-            if i >= len(digits):
-                break
-            out.append(digits[i:i + w])
-            i += w
-        return self._sep.join(out)
+        return group_digits(digits, [w for _n, w in self._segs], self._sep)
 
     def _parsed(self):
         """``(pydate|None, complete)`` — ``complete`` إذا كل الأرقام موجودة."""
@@ -220,11 +368,27 @@ class DateField(QWidget):
         changed = (st != self._state) or (msg != self._error)
         self._state, self._error = st, msg
         self._refresh_style()
-        self._err_lbl.setText(msg)
-        self._err_lbl.setVisible(bool(msg) and self._inline_error)
+        if self._inline_error:
+            self._err_lbl.setText(msg)
+            if msg:
+                self._position_err_lbl()
+                self._err_lbl.raise_()
+                self._err_lbl.show()
+            else:
+                self._err_lbl.hide()
         if changed and not silent:
             self.stateChanged.emit(st)
             self.errorChanged.emit(msg)
+
+    def _position_err_lbl(self) -> None:
+        self._err_lbl.setFixedWidth(max(self.width(), 200))
+        self._err_lbl.adjustSize()
+        self._err_lbl.move(0, self._edit.height())
+
+    def resizeEvent(self, e):                             # noqa: N802 (Qt)
+        super().resizeEvent(e)
+        if self._err_lbl.isVisible():
+            self._position_err_lbl()
 
     def _refresh_style(self) -> None:
         if self._state == self.NEUTRAL:
@@ -233,8 +397,14 @@ class DateField(QWidget):
             bg = theme.FIELD_INVALID
         else:
             bg = theme.SURFACE
-        border = (theme.DANGER if self._state == self.ERROR
-                  else ("#ffffff" if self._flat else theme.BORDER))
+        if self._state == self.ERROR:
+            border = theme.DANGER
+        elif self._edit.hasFocus():
+            border = theme.HOVER                          # حالة التركيز واضحة
+        elif self._flat:
+            border = "#ffffff"
+        else:
+            border = theme.BORDER
         self._edit.setStyleSheet(
             f"QLineEdit{{background:{bg}; color:{theme.TEXT}; "
             f"border:1px solid {border}; border-radius:0; padding:0 1px; "
@@ -254,8 +424,30 @@ class DateField(QWidget):
         le = self._edit
         raw = le.text()
         pos = le.cursorPosition()
+        digits = re.sub(r"\D", "", raw)[:self._total_digits]
         digits_before = len(re.sub(r"\D", "", raw[:pos]))
-        new = self._format_digits(raw)
+
+        # ---- إكمال ذكي للمقطع (typing متسلسل فقط: المؤشّر في نهاية الأرقام) ----
+        # رقمٌ واحد في خانة اليوم/الشهر لا امتداد أطول صالح له (4..9 لليوم،
+        # 2..9 للشهر) ⇒ صفرٌ بادئ + تقدّم للمقطع التالي. لا نلمس التحرير
+        # في وسط القيمة.
+        if 0 < len(digits) < self._total_digits and digits_before == len(digits):
+            acc, seg_idx = 0, len(self._segs) - 1
+            for si, (_nm, sw) in enumerate(self._segs):
+                if len(digits) <= acc + sw:
+                    seg_idx = si
+                    break
+                acc += sw
+            nm = self._segs[seg_idx][0]
+            in_seg = digits[acc:]
+            if len(in_seg) == 1 and nm in ("d", "m"):
+                done = (day_complete(in_seg) if nm == "d"
+                        else month_num_complete(in_seg))
+                if done:
+                    digits = digits[:acc] + "0" + in_seg
+                    digits_before += 1
+
+        new = self._format_digits(digits)
         if new != raw:
             le.blockSignals(True)
             le.setText(new)
@@ -273,6 +465,10 @@ class DateField(QWidget):
                 le.setCursorPosition(min(npos, len(new)))
         self.dateChanged.emit(self.date())
         self._apply_state()
+        # اكتمل التاريخ كاملاً صالحاً بالكتابة المتسلسلة → انتقال تلقائي
+        if (digits_before >= self._total_digits
+                and self._state == self.VALID):
+            self.completed.emit()
 
     def eventFilter(self, obj, ev):                       # noqa: N802 (Qt)
         if obj is self._edit and ev.type() == QEvent.KeyPress:

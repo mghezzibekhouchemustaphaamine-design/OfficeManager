@@ -471,7 +471,9 @@ class DateField(QWidget):
             border = theme.BORDER
         self._edit.setStyleSheet(
             f"QLineEdit{{background:{bg}; color:{theme.TEXT}; "
-            f"border:1px solid {border}; border-radius:0; padding:0 1px;}}")
+            f"border:1px solid {border}; border-radius:0; padding:0 1px; "
+            f"selection-background-color:{theme.PRIMARY}; "
+            f"selection-color:#ffffff;}}")   # تظليل ويندوز المعتاد
         self._btn.setStyleSheet(
             "QToolButton{border:none; background:transparent;}")
 

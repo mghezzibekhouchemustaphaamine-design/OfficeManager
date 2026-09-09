@@ -2915,3 +2915,20 @@ galleries `ALLOK`.
 
 معدَّل: `ui2/form.py` · `ui2/hr/paie/bulletin_template.py` ·
 `ui2/tests/test_smart_input.py` · `docs/CHANGELOG.md`.
+
+## Phase 55-ج — 2026-09-09: مراجعة (لون التحديد + حقلا الفترة يبدآن فارغين)
+
+- **لون تظليل التحديد = أزرق ويندوز المعتاد**: `selection-background-color:
+  {theme.PRIMARY}` (‏`#0078d7`) + `selection-color:#ffffff` صريحاً في QSS
+  لكلّ حقول الاستمارة و DateField (بدل الاعتماد على palette وحده الذي كان
+  يبدو باهتاً).
+- **الشهر والسنة يبدآن فارغين**: حُذف الافتراض التلقائي بشهر/سنة اليوم من
+  `_build_fields` و`_on_clear` — `jours` وحده يبقى «30».
+- **المسوّدة**: `draft_state`/`apply_draft` تتعاملان مع `GroupedNumberEdit`
+  (‏`value()`/`set_value()`) و`DateField` (ISO) صراحةً؛ `_on_clear` يمسح
+  `GroupedNumberEdit` عبر `set_value("")` و`_prev_text`. رُفِع
+  `DRAFT_VERSION` إلى **2** فتُهمَل مسوّدات البنية القديمة تلقائياً.
+
+الاختبارات: `ui2/tests` **42 OK** · 17 + 5 + 49 + 6 + 14 ذهبياً + galleries
+`ALLOK`. معدَّل: `ui2/form.py` · `ui2/hr/paie/bulletin_template.py` ·
+`docs/CHANGELOG.md`.

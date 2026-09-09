@@ -327,7 +327,7 @@ class BulletinTemplateScreen(Screen):
     DOC_LABEL = "Bulletin de paie"
     OUTPUT_DIRNAME = "Bulletins de paie"
     DRAFT_NAME = "paie_template"
-    DRAFT_VERSION = 1
+    DRAFT_VERSION = 2          # Phase 55: بنية حقول جديدة (تاريخ/مجمَّع/شهر فارغ)
 
     TARGET_W = 720
     ZOOM_MIN, ZOOM_MAX, ZOOM_STEP, ZOOM_DEFAULT = 30, 260, 20, 100
@@ -471,8 +471,15 @@ class BulletinTemplateScreen(Screen):
 
     # المسوّدة
     def draft_state(self):
-        return {k: (w.iso() if isinstance(w, DateField) else w.text())
-                for k, w in self._widgets.items()}
+        out = {}
+        for k, w in self._widgets.items():
+            if isinstance(w, DateField):
+                out[k] = w.iso()                 # ISO
+            elif isinstance(w, GroupedNumberEdit):
+                out[k] = w.value()               # مضغوط (أرقام + «/» إن وُجد)
+            else:
+                out[k] = w.text()
+        return out
 
     def apply_draft(self, data):
         self._suspend = set(self._widgets)
@@ -483,8 +490,11 @@ class BulletinTemplateScreen(Screen):
                     continue
                 if isinstance(w, DateField):
                     w.set_iso(v)
+                elif isinstance(w, GroupedNumberEdit):
+                    w.set_value(v)
                 else:
                     w.setText(str(v or ""))
+            self._prev_text.clear()
         finally:
             self._suspend = set()
         for k in self._widgets:
@@ -499,8 +509,9 @@ class BulletinTemplateScreen(Screen):
     # ----------------------- بناء الحقول -----------------------
     def _build_fields(self):
         today = date.today()
-        defaults = {"mois": _MOIS_UP[today.month - 1],
-                    "annee": str(today.year), "jours": "30"}
+        # الشهر والسنة يبدآن **فارغين** (لا تعبئة تلقائية بتاريخ اليوم)؛
+        # jours وحده افتراضٌ معنوي (30 يوماً).
+        defaults = {"jours": "30"}
         for slot in T.FIELD_SLOTS:
             if slot.kind == "date_masked":
                 # DateField الموحّد: عرض dd/MM/yyyy، تخزين ISO، مسطّح،
@@ -787,9 +798,10 @@ class BulletinTemplateScreen(Screen):
             bd = theme.HOVER if w.hasFocus() else "#ffffff"
         w.setStyleSheet(
             f"QLineEdit {{ background:{bg}; color:{fg}; border:1px solid {bd}; "
-            f"border-radius:0; padding:0 1px; }}")
-        # لون النصّ صريح من QPalette، وتظليل التحديد أزرق (نشط) — Qt يعتّمه
-        # تلقائياً عند فقد التركيز، فلا يبقى بلوك أزرق بعد المغادرة.
+            f"border-radius:0; padding:0 1px; "
+            f"selection-background-color:{theme.PRIMARY}; "
+            f"selection-color:#ffffff; }}")            # تظليل ويندوز المعتاد
+        # لون النصّ صريح من QPalette، والتحديد يُعتّمه Qt عند فقد التركيز.
         pal = w.palette()
         pal.setColor(QPalette.Text, QColor(fg))
         pal.setColor(QPalette.WindowText, QColor(fg))
@@ -1048,16 +1060,17 @@ class BulletinTemplateScreen(Screen):
     def _on_clear(self):
         if not confirm(self, "تأكيد", "مسح كل الحقول في هذه الشاشة؟"):
             return
-        today = date.today()
-        defaults = {"mois": _MOIS_UP[today.month - 1],
-                    "annee": str(today.year), "jours": "30"}
+        defaults = {"jours": "30"}          # الشهر/السنة يبقيان فارغين
         self._suspend = set(self._widgets)
         try:
             for k, w in self._widgets.items():
                 if isinstance(w, DateField):
                     w.set_iso("")
+                elif isinstance(w, GroupedNumberEdit):
+                    w.set_value("")
                 else:
                     w.setText(defaults.get(k, ""))
+            self._prev_text.clear()
         finally:
             self._suspend = set()
         for cb in self._prime_boxes:

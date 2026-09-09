@@ -2658,3 +2658,45 @@ DATA NEWS: `TOTAL 58 500,00 / 11 577,10` · `NET À PAYER 46 922,90` —
 جديد: `ui2/hr/__init__.py` · `ui2/hr/paie/{__init__,__main__,bulletin_template}.py`
 · `ui2/hr/paie/tests/{__init__,test_bulletin_template}.py`.
 معدَّل: `ui2/theme.py` (3 tokens) · `docs/CHANGELOG.md`.
+
+## مرجع ثلاثة وخمسون — 2026-09-09: ربط اختبار مؤقت لاستمارة PySide6
+
+**مؤقّت — للاختبار فقط.** بطاقة «كشف راتب شهري» تفتح الآن إعادة بناء
+PySide6 (مرجع 52، `ui2/hr/paie/bulletin_template.py`) بدل الشاشة القديمة
+(`ui/hr/bulletin_paie.py` / `template_simple.py`)، عبر **النافذة المملوكة
+الجاهزة من مرجع 49** (`GWLP_HWNDPARENT`): عملية ابنة `python -m ui2.hr.paie
+--owner-hwnd <HWND>`، تتبع OfficeManager تصغيراً/إغلاقاً وتُخفى عند القفل.
+
+الغرض: تمكين المالك من إدخال الكشوف السبعة الحقيقية (BOUCETTA، MEHANI،
+SEBA، TOUATI، DATA NEWS×3) ومقارنة النتائج. **إن اعتُمدت → يصير الربط
+دائماً؛ وإلا يُفَكّ ويُعاد** `open_handler` إلى `owner.open_hr("hr_bulletin_paie")`
+و`argv` إلى `-m ui2.paie`.
+
+### التغييرات
+
+- **`ui/home/services.py`** — بطاقة `hr_bulletin_paie`:
+  `open_handler = lambda owner: owner.open_paie_v2()` (كان `owner.open_hr(...)`).
+- **`ui/home/app_window.py`** — `open_paie_v2`: `argv = [sys.executable,
+  "-m", "ui2.hr.paie"]` (كان `"ui2.paie"`). بقيّة الآلية (التقاط HWND،
+  إخفاء عند القفل، اقتراع الإغلاق) دون تغيير.
+- **`ui2/hr/paie/__main__.py`** — أُضيف دعم `--owner-hwnd` (تملّك النافذة +
+  تتبّع التصغير + اقتراع إغلاق المالك + سؤال استعادة المسوّدة) — نسخة مطابقة
+  لمنطق `ui2/paie/__main__.py` (تُوحَّد في وحدة مشتركة عند تثبيت الربط).
+
+### الأمر لتشغيل الشاشة الجديدة مباشرة
+
+```
+python -m ui2.hr.paie
+```
+
+(أو من داخل البرنامج: تشغيل `python main.py` ← الرئيسية ← بطاقة «كشف راتب شهري».)
+
+### الاختبارات
+
+`ui2/hr/paie/tests` **5 OK** · بقيّة المجموعات دون تغيير (49 + 6 + 10 + 17
++ 14 ذهبياً). `python -m ui2.hr.paie --owner-hwnd 0` يُقلع ويبقى مستقرّاً.
+
+### الملفات المتأثرة
+
+معدَّل: `ui/home/services.py` · `ui/home/app_window.py` ·
+`ui2/hr/paie/__main__.py` · `docs/CHANGELOG.md`.

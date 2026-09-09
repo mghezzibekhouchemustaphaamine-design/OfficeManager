@@ -405,7 +405,10 @@ class OfficeApp(tk.Tk):
             self._set_status("كشف الراتب مفتوح أصلاً")
             self._show_paie_v2()
             return
-        argv = [sys.executable, "-m", "ui2.paie"]
+        # ربط اختبار مؤقت (مرجع 53): تفتح إعادة بناء template_simple على
+        # PySide6 (ui2.hr.paie) بدل شاشة التشخيص (ui2.paie) — يُثبَّت أو
+        # يُفَكّ حسب بوّابة الكشوف السبعة.
+        argv = [sys.executable, "-m", "ui2.hr.paie"]
         hwnd = self._own_hwnd()
         if hwnd:
             argv += ["--owner-hwnd", str(hwnd)]

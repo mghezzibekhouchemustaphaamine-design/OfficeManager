@@ -2987,3 +2987,85 @@ galleries `ALLOK`.
 
 معدَّل: `ui2/hr/paie/bulletin_template.py` ·
 `ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.
+
+## Phase A2 — 2026-09-10: جدول Rubriques ديناميكي داخل الورقة
+
+جسم جدول الكشف تحوّل من 10 خانات ثابتة بالمليمتر إلى **نموذج صفوف
+ديناميكيّ**، مع بقاء الورقة نفسها هي مساحة العمل وبقاء كل عنصر تابعاً
+لتحويل `_DocView` الوحيد (Phase 55). المسار المعتمَد: (أ) جدول داخل الوثيقة.
+
+### نموذج الصفوف
+
+- `_Row` + `_ROW_SPECS`: abstraction صغير خاصّ بجدول هذا الكشف يفصل «ما
+  الصفوف؟» عن «كيف تُرسم؟». كل صف يعرف: نوعه الدلاليّ، دوره
+  (`basic`/`optional`/`system`)، خلاياه القابلة للتحرير (widgetات مسجَّلة
+  في `_widgets` بمفتاح `r{rid}_{cell}`)، وكيف يتحوّل إلى `entry` لـ
+  `lignes.compute_bulletin`. **لا حساب في الصف** — المحرّك هو المصدر.
+- **النواة الافتراضية** (`_init_default_rows`): `salaire · prime · panier
+  · transport · cnas · irg` بترتيبها الدلاليّ الثابت (§13، `_SEMANTIC_ORDER`).
+  `salaire/panier/transport` أساسية لا تُحذف؛ `cnas/irg` نظام — بلا
+  widgetات ⇒ ليست Tab stops ولا قابلة للتحرير/اللصق؛ `prime` اختيارية
+  واحدة افتراضياً.
+- **هندسة ديناميكية**: `_body_bottom_mm/_total_y_mm/_net_y_mm` تُحسب من
+  عدد الصفوف الفعليّ (`BODY_TOP + i·ROW_H`)؛ خطوط الجدول وTOTAL/NET
+  تنتقل تلقائياً أسفل آخر صف. `_relayout` يضع خلايا الصفوف بنفس تحويل
+  `_DocView` (مليمتر → بكسل، `setPointSizeF` بلا أرضية) — الورقة
+  والصفوف والنصّ والقيَم المحسوبة **وحدة واحدة** عند الزوم (تُحقّق بصرياً
+  عند 45%/100%/200% — `docs/baseline_screenshots/A2_*.png`).
+
+### + Ajouter / حذف / تنقّل
+
+- زرّ **«＋ Ajouter»** في الشريط الجانبي بقائمة منتَج مبسَّطة فوق الـ
+  domain — A2: `Prime / Indemnité · Avance / Retenue · Autre` (لا تعرض
+  أنواع `lignes.LINE_TYPES` التقنية). حدّ عمليّ 18 صفاً (لا pagination) —
+  عند البلوغ يُمنع الإضافة برسالة خفيفة.
+- **الحذف**: الأساسية/النظام لا تُحذف؛ الاختيارية الفارغة تُحذف مباشرة،
+  والممتلئة بحمايةٍ خفيفة (تأكيد واحد).
+- **`_rebuild_nav`**: Tab/Enter يُعاد بناؤه من النموذج الفعليّ — خانات
+  الترويسة ثم خلايا الصفوف بترتيبها الدلاليّ، بلا مرور على CODE/CNAS/IRG/
+  TOTAL/NET، وبلا references ميتة بعد الحذف. `select=False` للانتقال
+  التلقائي محفوظ (Phase 55).
+
+### المحرّك والمُصيِّر
+
+- `_build_entries` من الصفوف → `lignes.compute_bulletin` (بلا Convention/
+  Catalogue). `_calc_result` (للمُصيِّر) يُشتقّ من `BulletinView` عبر
+  `_view_to_paieresult` فتظهر في Word/PDF **نفس مبالغ المحرّك**.
+- **قرار موثَّق**: `Avance / Retenue` و`Autre` = اقتطاع Z4 صافٍ (غير خاضع
+  CNAS ولا IRG) — لا نطلب تصنيفاً من المستخدم ولا نخمّن تصنيفاً خاضعاً
+  صامتاً؛ للاقتطاع/الكسب الخاضع تُستعمَل رُبريكة مخصَّصة لاحقاً.
+- `Prime / Indemnité`: تصنيف افتراضيّ خاضع للاشتراك والضريبة؛ خيار واحد
+  في الشريط الجانبي («المنح خاضعة لاشتراك CNAS») يطبَّق على كلّ صفوف
+  المنح (بدل ثلاث خانات).
+
+### مؤجَّل (A2.3)
+
+الأنواع المتكيّفة: **IEP/Ancienneté · Absence (jours/heures) · Retard ·
+Heures supplémentaires (50/100)** — تحتاج محدِّد نوع/معامل داخل السطر
+وخلية مبلغ محسوبة (مرسومة). البنية التحتية (نموذج الصفوف + الهندسة +
+النقل + `_build_entries`) جاهزة لها؛ `lignes` يغطّي أنواعها. autocomplete
+لـ Libellé المنح مؤجَّل أيضاً.
+
+### Gap مع مُصيِّر Word/PDF (§18)
+
+`template_simple.build_docx/pdf` يسرد أسطر المنح/الاقتطاعات من
+`pin.primes/autres_retenues`، والمجاميع من `_calc_result` (= المحرّك).
+للأسطر التي تخفض [A] (Absence/Retard في A2.3) سيظهرها المستند في عمود
+RETENUE بينما مجموع RETENUE من المحرّك لا يشملها (Z1) — قد لا يتزن
+العمودان بصرياً؛ المجاميع والصافي تبقى صحيحة. يُعالَج عند إعادة تصميم
+المُصيِّر (Phase C). لا يُوحى بأن PDF يحتوي رُبريكة لا يدعمها.
+
+### الاختبارات
+
+`ui2/hr/paie/tests` **18 OK** (ترتيب افتراضيّ، prime واحدة، panier/
+transport دائمة و0 صالح، صفوف النظام غير قابلة للتحرير، إضافة/حذف/ترتيب
+حتميّ، هندسة NET تتحرك مع العدد، لا widgetات ميتة، حماية حذف الممتلئ،
+سطرا HS/prime، تطابق المحرّك، false-0، مسح، مسوّدة v3). `ui2/tests` 42 ·
+`ui2/paie/tests` 17 (محميّة) · `programme/payroll/tests` 49 ·
+`programme/tests` 6 · golden 14/14 · galleries `ALLOK`.
+
+### الملفات المتأثرة
+
+معدَّل: `ui2/hr/paie/bulletin_template.py` ·
+`ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md` ·
+`docs/baseline_screenshots/A2_{45,100,200}.png` (جديدة).

@@ -85,6 +85,145 @@ class _DocView:
         return f
 
 
+# ======================= نموذج صفوف جدول الكشف (Phase A2) =======================
+#  abstraction صغير خاصّ بجدول هذا الكشف: يفصل «ما الصفوف؟» عن «كيف تُرسم؟».
+#  كل صف يعرف نوعه الدلاليّ، دوره (أساسي/اختياري/نظام)، خلاياه القابلة
+#  للتحرير، وكيف يتحوّل إلى entry لـ ``lignes.compute_bulletin``. الحساب
+#  كلّه في المحرّك — الصفوف لا تحسب.
+
+_YES, _NO = "نعم", "لا"
+
+# محاذاة widget كل خلية داخل عمودها
+_CELL_ALIGN = {"code": Qt.AlignHCenter, "libelle": Qt.AlignLeft,
+               "nbase": Qt.AlignRight, "taux": Qt.AlignRight,
+               "gain": Qt.AlignRight, "retenue": Qt.AlignRight}
+
+#  الترتيب الدلاليّ الثابت (§13). صفوف نفس النوع تحافظ على ترتيب الإضافة
+#  داخل حزمتها.
+_SEMANTIC_ORDER = {"salaire": 0, "iep": 10, "prime": 20, "hs": 30,
+                   "absence": 40, "retard": 50, "panier": 60, "transport": 70,
+                   "cnas": 80, "irg": 90, "avance": 100, "autre": 110}
+
+_C = T.PAIE_DEFAULT_CODES
+
+
+def _prime_entry(r):
+    return {"type": "libre", "values": {
+        "libelle": r.val("libelle") or "PRIME / INDEMNITÉ",
+        "montant": r.val("gain"), "est_retenue": _NO,
+        "cotisable": _YES if r.screen._prime_soumis else _NO,
+        "imposable": _YES}}
+
+
+def _retenue_entry(default_lbl):
+    #  Avance / Retenue / Autre → اقتطاع Z4 صافٍ (غير خاضع CNAS ولا IRG).
+    #  قرار موثَّق: لا نطلب تصنيفاً من المستخدم؛ للاقتطاع الخاضع تُستعمَل
+    #  رُبريكة مخصَّصة لاحقاً. لا تخمين صامت — هذا سلوك النوع المُعلَن.
+    def _f(r):
+        return {"type": "libre", "values": {
+            "libelle": r.val("libelle") or default_lbl,
+            "montant": r.val("retenue"), "est_retenue": _YES,
+            "cotisable": _NO, "imposable": _NO}}
+    return _f
+
+
+_ROW_SPECS = {
+    "salaire": dict(
+        role="basic", code=_C["salaire_base"], lib="SALAIRE DE BASE",
+        cells=("nbase", "gain"), primary="gain",
+        to_entry=lambda r: {"type": "salaire_base",
+                            "values": {"montant": r.val("gain")}}),
+    "prime": dict(
+        role="optional", code="", lib="", cells=("code", "libelle", "gain"),
+        primary="gain", to_entry=_prime_entry),
+    "panier": dict(
+        role="basic", code=_C["panier"], lib="PANIER", cells=("gain",),
+        primary="", to_entry=lambda r: {"type": "panier",
+                                        "values": {"montant_mensuel": r.val("gain")}}),
+    "transport": dict(
+        role="basic", code=_C["transport"], lib="(R+) TRANSPORT",
+        cells=("gain",), primary="",
+        to_entry=lambda r: {"type": "transport",
+                            "values": {"montant_mensuel": r.val("gain")}}),
+    "avance": dict(
+        role="optional", code="", lib="", cells=("code", "libelle", "retenue"),
+        primary="retenue", to_entry=_retenue_entry("AVANCE / RETENUE")),
+    "autre": dict(
+        role="optional", code="", lib="", cells=("code", "libelle", "retenue"),
+        primary="retenue", to_entry=_retenue_entry("AUTRE")),
+    "cnas": dict(role="system", code=_C["cnas"],
+                 lib="RETENUE SÉCU. SOCIALE", cells=(), primary=""),
+    "irg": dict(role="system", code=_C["irg"], lib="RETENUE IRG",
+                cells=(), primary=""),
+}
+
+#  قائمة «+ Ajouter» — منتَج مبسَّط فوق الـ domain (لا تعرض أنواع
+#  ``lignes.LINE_TYPES`` التقنية). A2.1/A2.2: الأنواع البسيطة فقط.
+_AJOUTER_MENU = (("Prime / Indemnité", "prime"),
+                 ("Avance / Retenue", "avance"),
+                 ("Autre", "autre"))
+
+_MAX_BODY_ROWS = 18          # حدّ عمليّ (لا pagination في A2) — §14
+
+
+class _Row:
+    """صفّ واحد في جدول الكشف. يملك widgetات خلاياه القابلة للتحرير
+    (مسجَّلة أيضاً في ``screen._widgets`` بمفتاح ``r{rid}_{cell}``)."""
+
+    def __init__(self, screen: "BulletinTemplateScreen", kind: str, rid: int):
+        self.screen = screen
+        self.kind = kind
+        self.rid = rid
+        self.seq = screen._row_seq
+        screen._row_seq += 1
+        spec = _ROW_SPECS[kind]
+        self.role = spec["role"]
+        self.code = spec["code"]
+        self.libelle = spec["lib"]
+        self.widgets = {}
+        for cell in spec["cells"]:
+            w = QLineEdit(screen._canvas)
+            w.setFrame(False)
+            w.setAlignment(_CELL_ALIGN[cell] | Qt.AlignVCenter)
+            w.setLayoutDirection(Qt.LeftToRight)
+            k = self.cell_key(cell)
+            w.textChanged.connect(lambda _t, kk=k: screen._on_row_edit(kk))
+            w.returnPressed.connect(lambda kk=k: screen._focus_rel(kk, +1))
+            w.installEventFilter(screen)          # Ctrl+عجلة + حدّ التركيز
+            self.widgets[cell] = w
+            screen._widgets[k] = w
+            w.show()
+
+    def cell_key(self, cell: str) -> str:
+        return f"r{self.rid}_{cell}"
+
+    def val(self, cell: str) -> str:
+        w = self.widgets.get(cell)
+        return w.text().strip() if w is not None else ""
+
+    def is_empty(self) -> bool:
+        pk = _ROW_SPECS[self.kind].get("primary")
+        if pk:
+            return not self.val(pk)
+        return not any(self.val(c) for c in self.widgets)
+
+    def can_delete(self) -> bool:
+        return self.role == "optional"
+
+    def sort_key(self):
+        return (_SEMANTIC_ORDER.get(self.kind, 999), self.seq)
+
+    def entry(self):
+        return _ROW_SPECS[self.kind].get("to_entry", lambda _r: None)(self)
+
+    def dispose(self):
+        for cell, w in list(self.widgets.items()):
+            self.screen._widgets.pop(self.cell_key(cell), None)
+            w.setParent(None)
+            w.deleteLater()
+        self.widgets.clear()
+
+
 def _titlecase(s: str) -> str:
     return re.sub(r"(^|[ \-])([^\W\d_])",
                   lambda m: m.group(1) + m.group(2).upper(), s.lower())
@@ -217,89 +356,85 @@ class _SheetCanvas(QWidget):
         def Yt(mm):
             return Y(mm + ys)
 
-        # ترويسة الجدول + الأعمدة
+        # ---- جسم الجدول: صفوف ديناميكية (Phase A2) ----
+        rows = sc._visible_body_rows()
+        nb = len(rows)
+        bottom_mm = T.BODY_TOP + nb * T.ROW_H
+        total_mm = bottom_mm + 1.0
+        net_mm = total_mm + T.ROW_H + 4.0
+
+        # ترويسة الجدول + الأعمدة (تمتدّ لآخر صفّ فعليّ)
         hy0, hy1 = Yt(T.TABLE_HEAD_Y), Yt(T.TABLE_HEAD_Y + T.ROW_H + 1)
         p.setPen(ink)
         p.drawRect(int(X(0)), int(hy0), int(X(T.CONTENT_W) - X(0)), int(hy1 - hy0))
         for _key, f0, _f1, _al, title in T.COLS:
             p.setPen(ink)
-            p.drawLine(int(col_x(f0)), int(hy0), int(col_x(f0)), int(Yt(T.FORM_TABLE_BOTTOM)))
+            p.drawLine(int(col_x(f0)), int(hy0), int(col_x(f0)), int(Yt(bottom_mm)))
             p.setFont(font(3.0, True))
             fm = QFontMetricsF(p.font())
             p.drawText(QPoint(int(col_x(f0) + 2.5 * scale),
                               int((hy0 + hy1) / 2 + fm.ascent() / 2 - fm.descent() / 2)),
                        title)
         p.setPen(ink)
-        p.drawLine(int(X(T.CONTENT_W)), int(hy0),
-                   int(X(T.CONTENT_W)), int(Yt(T.FORM_TABLE_BOTTOM)))
+        p.drawLine(int(X(T.CONTENT_W)), int(hy0), int(X(T.CONTENT_W)), int(Yt(bottom_mm)))
 
-        # خطوط الأسطر الأفقية
         p.setPen(QColor(theme.GRID_LINE))
-        for r in range(T.N_BODY_ROWS + 1):
+        for r in range(nb + 1):
             yy = Yt(T.BODY_TOP + r * T.ROW_H)
             p.drawLine(int(X(0)), int(yy), int(X(T.CONTENT_W)), int(yy))
 
-        def row_mid(r):
-            return T.BODY_TOP + r * T.ROW_H + T.ROW_H / 2
+        def row_mid(i):
+            return T.BODY_TOP + i * T.ROW_H + T.ROW_H / 2
 
-        def cell_center(col_key, r, s, color=ink, bold=False):
+        def cell(col_key, i, s, anchor, color=ink, bold=False):
             f0, f1, _al = T._colf(col_key)
-            self._cell(p, (col_x(f0) + col_x(f1)) / 2, Yt(row_mid(r)), s,
-                       "center", font(3.2, bold), color)
+            if anchor == "c":
+                px = (col_x(f0) + col_x(f1)) / 2
+            elif anchor == "e":
+                px = col_x(f1) - 2.5 * scale
+            else:
+                px = col_x(f0) + 2.5 * scale
+            self._cell(p, px, Yt(row_mid(i)),
+                       s, {"c": "center", "e": "e", "w": "w"}[anchor],
+                       font(3.2, bold), color)
 
-        def cell_left(col_key, r, s, color=ink, bold=False):
-            f0, _f1, _al = T._colf(col_key)
-            self._cell(p, col_x(f0) + 2.5 * scale, Yt(row_mid(r)), s,
-                       "w", font(3.2, bold), color)
+        computed = res is not None and getattr(sc, "_computed", False)
+        for i, row in enumerate(rows):
+            if row.role in ("basic", "system"):
+                if row.code:
+                    cell("code", i, row.code, "c")
+                if row.libelle:
+                    cell("libelle", i, row.libelle, "w")
+            if row.kind == "cnas" and computed:
+                cell("nbase", i, fmt_montant(res.base_cnas), "e", cc)
+                cell("taux", i, "9,00", "e", cc)
+                cell("retenue", i, fmt_montant(res.retenue_cnas), "e", cc)
+            elif row.kind == "irg" and computed:
+                cell("nbase", i, fmt_montant(res.base_irg), "e", cc)
+                cell("retenue", i, fmt_montant(res.retenue_irg), "e", cc)
 
-        def cell_right(col_key, r, s, color=ink, bold=False):
-            _f0, f1, _al = T._colf(col_key)
-            self._cell(p, col_x(f1) - 2.5 * scale, Yt(row_mid(r)), s,
-                       "e", font(3.2, bold), color)
-
-        c = T.PAIE_DEFAULT_CODES
-        cell_center("code", T.ROW_SALAIRE, c["salaire_base"])
-        cell_left("libelle", T.ROW_SALAIRE, "SALAIRE DE BASE")
-        cell_center("code", T.ROW_CNAS, c["cnas"])
-        cell_left("libelle", T.ROW_CNAS, "RETENUE SÉCU. SOCIALE")
-        cell_center("code", T.ROW_IRG, c["irg"])
-        cell_left("libelle", T.ROW_IRG, "RETENUE IRG")
-        cell_center("code", T.ROW_PANIER, c["panier"])
-        cell_left("libelle", T.ROW_PANIER, "PANIER")
-        cell_center("code", T.ROW_TRANSPORT, c["transport"])
-        cell_left("libelle", T.ROW_TRANSPORT, "(R+) TRANSPORT")
-
-        # لا تُرسَم CNAS/IRG/TOTAL/NET كـ«0,00» إذا كان الحساب غير ممكن أصلاً
-        # (لا أجر قاعديّ / لا معاملات) — «نتيجة غير محسوبة» ≠ «صفر حقيقي».
-        if res is not None and getattr(sc, "_computed", False):
-            cell_right("nbase", T.ROW_CNAS, fmt_montant(res.base_cnas), cc)
-            cell_right("taux", T.ROW_CNAS, "9,00", cc)
-            cell_right("retenue", T.ROW_CNAS, fmt_montant(res.retenue_cnas), cc)
-            cell_right("nbase", T.ROW_IRG, fmt_montant(res.base_irg), cc)
-            cell_right("retenue", T.ROW_IRG, fmt_montant(res.retenue_irg), cc)
-
-            ty0 = Yt(T.FORM_TOTAL_Y)
+        # لا تُرسَم TOTAL/NET كـ«0,00» إذا كان الحساب غير ممكن — «غير محسوبة»
+        # ≠ «صفر حقيقي».
+        if computed:
+            ty0 = Yt(total_mm)
             p.setPen(ink)
             p.drawLine(int(X(0)), int(ty0), int(X(T.CONTENT_W)), int(ty0))
-            p.drawLine(int(X(0)), int(Yt(T.FORM_TOTAL_Y + T.ROW_H)),
-                       int(X(T.CONTENT_W)), int(Yt(T.FORM_TOTAL_Y + T.ROW_H)))
-            self._cell(p, col_x(T._colf("taux")[1]) - 3 * scale,
-                       Yt(T.FORM_TOTAL_Y + T.ROW_H / 2), "TOTAL", "e",
-                       font(3.4, True), ink)
-            self._cell(p, col_x(T._colf("gain")[1]) - 2.5 * scale,
-                       Yt(T.FORM_TOTAL_Y + T.ROW_H / 2), fmt_montant(res.total_gain),
-                       "e", font(3.4, True), cc)
-            self._cell(p, col_x(T._colf("retenue")[1]) - 2.5 * scale,
-                       Yt(T.FORM_TOTAL_Y + T.ROW_H / 2), fmt_montant(res.total_retenue),
-                       "e", font(3.4, True), cc)
+            p.drawLine(int(X(0)), int(Yt(total_mm + T.ROW_H)),
+                       int(X(T.CONTENT_W)), int(Yt(total_mm + T.ROW_H)))
+            mid = Yt(total_mm + T.ROW_H / 2)
+            self._cell(p, col_x(T._colf("taux")[1]) - 3 * scale, mid, "TOTAL",
+                       "e", font(3.4, True), ink)
+            self._cell(p, col_x(T._colf("gain")[1]) - 2.5 * scale, mid,
+                       fmt_montant(res.total_gain), "e", font(3.4, True), cc)
+            self._cell(p, col_x(T._colf("retenue")[1]) - 2.5 * scale, mid,
+                       fmt_montant(res.total_retenue), "e", font(3.4, True), cc)
 
-            ny = T.FORM_NET_Y
-            self._cell(p, col_x(0.60), Yt(ny + 5), "NET À PAYER", "e",
+            self._cell(p, col_x(0.60), Yt(net_mm + 5), "NET À PAYER", "e",
                        font(4.2, True), ink)
-            p.fillRect(int(col_x(0.62)), int(Yt(ny)),
-                       int(X(T.CONTENT_W) - col_x(0.62)), int(Yt(ny + 10) - Yt(ny)),
-                       QColor(theme.BAND_BLACK))
-            self._cell(p, X(T.CONTENT_W - 3), Yt(ny + 5),
+            p.fillRect(int(col_x(0.62)), int(Yt(net_mm)),
+                       int(X(T.CONTENT_W) - col_x(0.62)),
+                       int(Yt(net_mm + 10) - Yt(net_mm)), QColor(theme.BAND_BLACK))
+            self._cell(p, X(T.CONTENT_W - 3), Yt(net_mm + 5),
                        fmt_montant(res.net_a_payer), "e", font(4.8, True),
                        QColor("white"))
 
@@ -329,7 +464,7 @@ class BulletinTemplateScreen(Screen):
     DOC_LABEL = "Bulletin de paie"
     OUTPUT_DIRNAME = "Bulletins de paie"
     DRAFT_NAME = "paie_template"
-    DRAFT_VERSION = 2          # Phase 55: بنية حقول جديدة (تاريخ/مجمَّع/شهر فارغ)
+    DRAFT_VERSION = 3          # Phase A2: نموذج صفوف ديناميكيّ
 
     TARGET_W = 720
     ZOOM_MIN, ZOOM_MAX, ZOOM_STEP, ZOOM_DEFAULT = 30, 260, 20, 100
@@ -343,15 +478,29 @@ class BulletinTemplateScreen(Screen):
         self._cfg = None
         self._mode = "walkin"
 
-        self._slots_by_key = {s.key: s for s in T.FIELD_SLOTS}
-        self._nav_order = [s.key for s in T.FIELD_SLOTS]
-        self._band_keys = {s.key for s in T.FIELD_SLOTS if s.on_band}
         self._ident_row = {f"id_{k}": row
                            for k, _l, _xl, _xv, _wv, row, _ml, _kd in T.IDENT_FIELDS}
-        self._widgets = {}                     # key -> QLineEdit / DateField / GroupedNumberEdit
+        # خانات جسم الجدول القديمة (ثابتة) لم تعد تُبنى من FIELD_SLOTS —
+        # جسم الجدول الآن نموذج صفوف ديناميكي (_rows). نُبقي خانات
+        # الترويسة/الهوية/الشريط فقط.
+        self._body_slot_keys = (
+            {"jours", "salaire_base", "panier", "transport"}
+            | {f"prime{k}_{c}" for k in range(T.N_PRIME_SLOTS)
+               for c in ("code", "lib", "montant")}
+            | {f"autre{k}_{c}" for k in range(T.N_AUTRE_SLOTS)
+               for c in ("code", "lib", "montant")})
+        self._header_slots = [s for s in T.FIELD_SLOTS
+                              if s.key not in self._body_slot_keys]
+        self._slots_by_key = {s.key: s for s in self._header_slots}
+        self._band_keys = {s.key for s in self._header_slots if s.on_band}
+        self._nav_order = []                   # يُعاد بناؤه في _rebuild_nav
+        self._widgets = {}                     # key -> QLineEdit / DateField / GroupedNumberEdit / row cell
         self._suspend = set()
         self._prev_text = {}                   # آخر نصّ لكلّ حقل (لتمييز الكتابة عن التحرير)
-        self._prime_soumis = [True, True, True]
+        self._prime_soumis = True              # كل المنح خاضعة للاشتراك (خيار واحد مبسَّط)
+        self._rows = []                        # List[_Row] — جسم الجدول الديناميكي
+        self._row_seq = 0
+        self._next_rid = 1
 
         self._calc_input = calc.PaieInput()
         self._calc_result = calc.compute(self._calc_input, self._load_cfg())
@@ -361,9 +510,79 @@ class BulletinTemplateScreen(Screen):
         self.build_ui()
         self.toolbar.setVisible(False)         # لا شريط أدوات في التصميم القديم
         self._build_fields()
+        self._init_default_rows()
+        self._rebuild_nav()
         self.on_activate()
         QTimer.singleShot(0, self._relayout)
         self._recompute()
+
+    # ======================= نموذج الصفوف (Phase A2) =======================
+    def _init_default_rows(self):
+        for kind in ("salaire", "prime", "panier", "transport", "cnas", "irg"):
+            self._rows.append(_Row(self, kind, self._next_rid))
+            self._next_rid += 1
+        self._widgets["r%d_nbase" % self._rows[0].rid].setText("30")  # jours
+
+    def _ordered_rows(self):
+        return sorted(self._rows, key=lambda r: r.sort_key())
+
+    def _visible_body_rows(self):
+        """الصفوف بترتيبها الدلاليّ — CNAS/IRG دائماً بعد panier/transport."""
+        return self._ordered_rows()
+
+    def _row_index(self, row) -> int:
+        return self._visible_body_rows().index(row)
+
+    def _add_row(self, kind: str):
+        if len([r for r in self._rows if r.role != "system"]) + 2 >= _MAX_BODY_ROWS:
+            from ui2.alerts import warn
+            warn(self, self.TITLE,
+                 ["بلغ الجدول الحدّ الأقصى للصفوف — احذف صفاً قبل الإضافة."])
+            return
+        r = _Row(self, kind, self._next_rid)
+        self._next_rid += 1
+        self._rows.append(r)
+        self._rebuild_nav()
+        self._sync_row_styles()
+        self.mark_dirty()
+        self._recompute()
+        self._relayout()
+        # ركّز أوّل خلية قابلة للتحرير في الصف الجديد
+        for cell in _ROW_SPECS[kind]["cells"]:
+            self._widgets[r.cell_key(cell)].setFocus()
+            break
+
+    def _remove_row(self, row: "_Row"):
+        if not row.can_delete() or row not in self._rows:
+            return
+        if not row.is_empty() and not confirm(
+                self, "حذف السطر", "هذا السطر يحتوي بيانات — حذفه؟"):
+            return
+        row.dispose()
+        self._rows.remove(row)
+        self._rebuild_nav()
+        self.mark_dirty()
+        self._recompute()
+        self._relayout()
+
+    def _rebuild_nav(self):
+        """ترتيب Tab/Enter من النموذج الفعليّ: خانات الترويسة، ثم خلايا
+        صفوف الجسم القابلة للتحرير بترتيبها الدلاليّ. لا يمرّ على خلايا
+        النظام/المحسوبة."""
+        nav = [s.key for s in self._header_slots]
+        for r in self._visible_body_rows():
+            for cell in _ROW_SPECS[r.kind]["cells"]:
+                nav.append(r.cell_key(cell))
+        self._nav_order = nav
+        # سلسلة Tab أصلية مطابقة (بلا references ميتة)
+        prev = None
+        for k in nav:
+            w = self._widgets.get(k)
+            if w is None:
+                continue
+            if prev is not None:
+                self.setTabOrder(prev, w)
+            prev = w
 
     # ----------------------- خطاطيف Screen -----------------------
     def build_body(self):
@@ -437,17 +656,22 @@ class BulletinTemplateScreen(Screen):
         cl.addWidget(self._client_combo)
         lay.addWidget(cf)
 
+        # ---- + Ajouter (قائمة منتَج مبسَّطة فوق lignes) ----
+        add_btn = QPushButton("＋ Ajouter")
+        self._add_menu = QMenu(self)
+        for label, kind in _AJOUTER_MENU:
+            self._add_menu.addAction(label,
+                                     lambda k=kind: self._add_row(k))
+        add_btn.setMenu(self._add_menu)
+        lay.addWidget(add_btn)
+
         pf = QFrame()
         pf.setFrameShape(QFrame.StyledPanel)
         pl = QVBoxLayout(pf)
-        pl.addWidget(QLabel("منح خاضعة للاشتراك (CNAS)"))
-        self._prime_boxes = []
-        for k in range(T.N_PRIME_SLOTS):
-            cb = QCheckBox(f"منحة {k + 1}")
-            cb.setChecked(True)
-            cb.toggled.connect(lambda v, i=k: self._set_prime_soumis(i, v))
-            pl.addWidget(cb)
-            self._prime_boxes.append(cb)
+        self._prime_cb = QCheckBox("المنح خاضعة لاشتراك CNAS")
+        self._prime_cb.setChecked(True)
+        self._prime_cb.toggled.connect(self._set_prime_soumis)
+        pl.addWidget(self._prime_cb)
         lay.addWidget(pf)
 
         bf = QFrame()
@@ -473,22 +697,29 @@ class BulletinTemplateScreen(Screen):
     def shortcuts(self):
         return {}
 
-    # المسوّدة
+    # المسوّدة (DRAFT_VERSION = 3: نموذج صفوف ديناميكيّ)
+    def _hdr_val(self, w):
+        if isinstance(w, DateField):
+            return w.iso()
+        if isinstance(w, GroupedNumberEdit):
+            return w.value()
+        return w.text()
+
     def draft_state(self):
-        out = {}
-        for k, w in self._widgets.items():
-            if isinstance(w, DateField):
-                out[k] = w.iso()                 # ISO
-            elif isinstance(w, GroupedNumberEdit):
-                out[k] = w.value()               # مضغوط (أرقام + «/» إن وُجد)
-            else:
-                out[k] = w.text()
-        return out
+        return {
+            "header": {s.key: self._hdr_val(self._widgets[s.key])
+                       for s in self._header_slots},
+            "rows": [{"kind": r.kind,
+                      "cells": {c: r.val(c) for c in r.widgets}}
+                     for r in self._rows],
+            "prime_soumis": self._prime_soumis,
+        }
 
     def apply_draft(self, data):
+        data = data or {}
         self._suspend = set(self._widgets)
         try:
-            for k, v in (data or {}).items():
+            for k, v in data.get("header", {}).items():
                 w = self._widgets.get(k)
                 if w is None:
                     continue
@@ -498,25 +729,48 @@ class BulletinTemplateScreen(Screen):
                     w.set_value(v)
                 else:
                     w.setText(str(v or ""))
+            # إعادة بناء الصفوف من المسوّدة
+            for r in list(self._rows):
+                r.dispose()
+            self._rows.clear()
+            for spec in data.get("rows", []):
+                kind = spec.get("kind")
+                if kind not in _ROW_SPECS:
+                    continue
+                r = _Row(self, kind, self._next_rid)
+                self._next_rid += 1
+                self._rows.append(r)
+                for c, val in (spec.get("cells") or {}).items():
+                    if c in r.widgets:
+                        r.widgets[c].setText(str(val or ""))
+            for kind in ("salaire", "panier", "transport", "cnas", "irg"):
+                if not any(r.kind == kind for r in self._rows):
+                    self._rows.append(_Row(self, kind, self._next_rid))
+                    self._next_rid += 1
+            self._prime_soumis = bool(data.get("prime_soumis", True))
+            self._prime_cb.setChecked(self._prime_soumis)
             self._prev_text.clear()
         finally:
             self._suspend = set()
-        for k in self._widgets:
+        self._rebuild_nav()
+        for k in list(self._widgets):
             self._style_field(k)
         self._recompute()
+        self._relayout()
 
     def is_empty(self):
-        skip = {"mois", "annee", "jours"}
-        return not any(w.text().strip()
-                       for k, w in self._widgets.items() if k not in skip)
+        hdr = any(str(self._hdr_val(self._widgets[s.key])).strip()
+                  for s in self._header_slots if s.key not in ("mois", "annee"))
+        rows = any(not r.is_empty() for r in self._rows if r.role != "system")
+        return not (hdr or rows)
 
     # ----------------------- بناء الحقول -----------------------
     def _build_fields(self):
         today = date.today()
-        # الشهر والسنة يبدآن **فارغين** (لا تعبئة تلقائية بتاريخ اليوم)؛
-        # jours وحده افتراضٌ معنوي (30 يوماً).
-        defaults = {"jours": "30"}
-        for slot in T.FIELD_SLOTS:
+        # الشهر والسنة يبدآن **فارغين**. جسم الجدول لم يعد من FIELD_SLOTS
+        # (نموذج صفوف ديناميكي) — نبني خانات الترويسة/الهوية/الشريط فقط.
+        defaults = {}
+        for slot in self._header_slots:
             if slot.kind == "date_masked":
                 # DateField الموحّد: عرض dd/MM/yyyy، تخزين ISO، مسطّح،
                 # خطأ سطري، ولا تاريخ مستقبلي (max = اليوم لكلا الحقلين §8).
@@ -657,6 +911,23 @@ class BulletinTemplateScreen(Screen):
     def _ident_h(self, scale):
         return T.IDENT_H + self._y_shift(scale)
 
+    # --- هندسة جسم الجدول الديناميكي (تُحسب من عدد الصفوف الفعليّ) ---
+    def _n_body(self):
+        return len(self._visible_body_rows())
+
+    def _body_bottom_mm(self):
+        return T.BODY_TOP + self._n_body() * T.ROW_H
+
+    def _total_y_mm(self):
+        return self._body_bottom_mm() + 1.0
+
+    def _net_y_mm(self):
+        return self._total_y_mm() + T.ROW_H + 4.0
+
+    def _sheet_content_mm(self):
+        """أدنى امتداد رأسيّ يلزم لاحتواء الوثيقة (لضبط طول اللوحة)."""
+        return self._net_y_mm() + 14.0
+
     def _set_zoom(self, pct):
         self.zoom = max(self.ZOOM_MIN, min(self.ZOOM_MAX, int(round(pct))))
         self._zoom_lbl.setText(f"{self.zoom}%")
@@ -734,7 +1005,7 @@ class BulletinTemplateScreen(Screen):
             int(max(v.x0 + v.sheet_w + self.MARGIN, v.cw)),
             int(max(v.y0 + v.sheet_h + self.MARGIN, v.ch)))
         chrome = v.px(_ENTRY_CHROME_MM)
-        for slot in T.FIELD_SLOTS:
+        for slot in self._header_slots:
             w = self._widgets[slot.key]
             f = v.font(slot.font_mm, slot.bold)
             w.setFont(f)
@@ -775,6 +1046,19 @@ class BulletinTemplateScreen(Screen):
             w.setFixedWidth(max(w_px, 12))
             w.setFixedHeight(max(h_px, 12))
             w.move(int(v.x(x_mm)), int(top_px))
+
+        # ---- خلايا صفوف الجسم الديناميكية ----
+        ys = self._y_shift(v.scale)
+        f_row = v.font(3.2, True)
+        h_row = int(v.px(T.ROW_H - 0.8))
+        for i, row in enumerate(self._visible_body_rows()):
+            for cell, w in row.widgets.items():
+                x_mm, _y0, w_mm = T._cell_mm(cell, 0)
+                top_mm = T.BODY_TOP + i * T.ROW_H + 0.7 + ys
+                w.setFont(f_row)
+                w.setFixedWidth(max(int(v.px(w_mm)), 12))
+                w.setFixedHeight(max(h_row, 12))
+                w.move(int(v.x(x_mm)), int(v.y(top_mm)))
         self._canvas.update()
 
     # ----------------------- المظهر (كريمي/أبيض/شريط) -----------------------
@@ -857,66 +1141,67 @@ class BulletinTemplateScreen(Screen):
                 continue
         raise PayrollConfigError("لا يوجد ملف معاملات أجور متاح لأي تاريخ.")
 
-    def _build_input(self):
-        primes = []
-        for k in range(T.N_PRIME_SLOTS):
-            lib = self._w(f"prime{k}_lib")
-            mnt = self._w(f"prime{k}_montant")
-            if lib or mnt:
-                primes.append(calc.Prime(
-                    code=self._w(f"prime{k}_code"), libelle=lib,
-                    montant=_num(mnt),
-                    soumis_cotisation=bool(self._prime_soumis[k])))
-        autres = []
-        for k in range(T.N_AUTRE_SLOTS):
-            lib = self._w(f"autre{k}_lib")
-            mnt = self._w(f"autre{k}_montant")
-            if lib or mnt:
-                autres.append(calc.Retenue(
-                    code=self._w(f"autre{k}_code"), libelle=lib, montant=_num(mnt)))
-        return calc.PaieInput(
-            mois=self._w("mois"), annee=self._w("annee"),
-            jours=_num(self._w("jours")) or 30.0,
-            salaire_base=_num(self._w("salaire_base")),
-            panier=_num(self._w("panier")), transport=_num(self._w("transport")),
-            primes=primes, autres_retenues=autres)
-
-    _YES, _NO = "نعم", "لا"
+    def _salaire_row(self):
+        return next((r for r in self._rows if r.kind == "salaire"), None)
 
     def _build_entries(self):
         """أسطر الكشف بصيغة :func:`programme.payroll.lignes.compute_bulletin`
-        (‏``[{"type","values"}]``) — من الخانات الثابتة الحالية. المنح
-        وأسطر الاقتطاع الأخرى تُمرَّر كسطرٍ حرّ (``libre``) بتصنيف صريح
-        فيبقى المحرّك مصدر الحساب الوحيد. لا Convention ولا Catalogue."""
-        e = [{"type": "salaire_base",
-              "values": {"montant": self._w("salaire_base")}}]
-        for k in range(T.N_PRIME_SLOTS):
-            lib, mnt = self._w(f"prime{k}_lib"), self._w(f"prime{k}_montant")
-            if lib or mnt:
-                e.append({"type": "libre", "values": {
-                    "libelle": lib or "PRIME", "montant": mnt,
-                    "est_retenue": self._NO,
-                    "cotisable": self._YES if self._prime_soumis[k] else self._NO,
-                    "imposable": self._YES}})
-        if self._w("panier"):
-            e.append({"type": "panier",
-                      "values": {"montant_mensuel": self._w("panier")}})
-        if self._w("transport"):
-            e.append({"type": "transport",
-                      "values": {"montant_mensuel": self._w("transport")}})
-        for k in range(T.N_AUTRE_SLOTS):
-            lib, mnt = self._w(f"autre{k}_lib"), self._w(f"autre{k}_montant")
-            if lib or mnt:
-                e.append({"type": "libre", "values": {
-                    "libelle": lib or "RETENUE", "montant": mnt,
-                    "est_retenue": self._YES,
-                    "cotisable": self._NO, "imposable": self._NO}})
-        return e
+        من نموذج الصفوف الديناميكيّ. لا Convention ولا Catalogue — المحرّك
+        هو مصدر الحساب الوحيد."""
+        out = []
+        for r in self._visible_body_rows():
+            if r.role == "system":
+                continue
+            ent = r.entry()
+            if ent is not None:
+                out.append(ent)
+        return out
+
+    def _build_input(self):
+        """‏``PaieInput`` للمُصيِّر (Word/PDF) — يُشتقّ من نتيجة المحرّك
+        (‏``_bulletin_view``) فتظهر في المستند نفس المبالغ المحسوبة. القيَم
+        الأساسية (أجر/سلة/نقل) من صفوفها؛ بقيّة الأسطر من ``view.lignes``."""
+        sr = self._salaire_row()
+        pin = calc.PaieInput(
+            mois=self._w("mois"), annee=self._w("annee"),
+            jours=_num(sr.val("nbase") if sr else "") or 30.0,
+            salaire_base=_num(sr.val("gain") if sr else ""),
+            panier=_num(next((r.val("gain") for r in self._rows
+                              if r.kind == "panier"), "")),
+            transport=_num(next((r.val("gain") for r in self._rows
+                                 if r.kind == "transport"), "")))
+        view = getattr(self, "_bulletin_view", None)
+        if view is not None:
+            for lv in view.lignes:
+                if lv.key in ("salaire_base", "panier", "transport"):
+                    continue
+                if lv.sens == "GAIN":
+                    pin.primes.append(calc.Prime(
+                        code=lv.code, libelle=lv.libelle, montant=lv.montant,
+                        soumis_cotisation=bool(lv.cotisable),
+                        imposable=bool(lv.imposable)))
+                else:
+                    pin.autres_retenues.append(calc.Retenue(
+                        code=lv.code, libelle=lv.libelle, montant=lv.montant))
+        return pin
 
     def _is_computable(self):
         """هل الحساب ممكن أصلاً؟ (أجر قاعديّ موجب — وإلا فالنتائج «غير
         محسوبة» لا «صفراً حقيقياً»)."""
-        return _num(self._w("salaire_base")) > 0
+        sr = self._salaire_row()
+        return sr is not None and _num(sr.val("gain")) > 0
+
+    def _on_row_edit(self, key):
+        if key in self._suspend:
+            return
+        self._style_field(key)
+        self.mark_dirty()
+        self._recompute()
+
+    def _sync_row_styles(self):
+        for r in self._rows:
+            for cell in r.widgets:
+                self._style_field(r.cell_key(cell))
 
     def _on_slot_write(self, key):
         if key in self._suspend:
@@ -994,20 +1279,33 @@ class BulletinTemplateScreen(Screen):
         elif hasattr(w, "deselect"):
             w.deselect()                     # انتقال تلقائي: المؤشّر فقط، لا تحديد
 
+    @staticmethod
+    def _view_to_paieresult(view):
+        """‏``BulletinView`` (المحرّك) → ``PaieResult`` للمُصيِّر — فتظهر
+        في Word/PDF نفس مبالغ المحرّك ([A]…[E] والمجاميع)."""
+        r = view.result
+        return calc.PaieResult(
+            salaire_poste=view.a, base_cnas=view.a, retenue_cnas=view.b,
+            base_irg=view.c, retenue_irg=view.d,
+            panier=getattr(r, "panier", 0), transport=getattr(r, "transport", 0),
+            total_gain=r.total_gains, total_retenue=r.total_retenues,
+            net_a_payer=view.e, avertissements=list(view.avertissements))
+
     def _recompute(self):
-        self._calc_input = self._build_input()
         self._computed = False
         try:
             cfg = self._load_cfg()
-            # المحرّك عبر مُهايئ الأسطر الجاهز (lignes.compute_bulletin) —
-            # مصدر واحد، بلا Convention/Catalogue. النتيجة الخام للعرض
-            # والمُصيِّر تُشتقّ منه.
-            self._bulletin_view = lignes.compute_bulletin(self._build_entries(), cfg)
-            self._calc_result = calc.compute(self._calc_input, cfg)  # للمُصيِّر
+            #  مصدر الحساب الوحيد: lignes.compute_bulletin (بلا Convention/
+            #  Catalogue). _calc_input / _calc_result للمُصيِّر يُشتقّان منه.
+            self._bulletin_view = lignes.compute_bulletin(
+                self._build_entries(), cfg)
+            self._calc_input = self._build_input()
+            self._calc_result = self._view_to_paieresult(self._bulletin_view)
             self._computed = self._is_computable()
         except Exception:                                    # noqa: BLE001
             logger.warning("إعادة حساب الكشف فشلت", exc_info=True)
             self._bulletin_view = None
+            self._calc_input = self._build_input()
         if hasattr(self, "_canvas"):
             self._canvas.update()
 
@@ -1026,8 +1324,8 @@ class BulletinTemplateScreen(Screen):
             except Exception:                                # noqa: BLE001
                 logger.warning("تعذّر جلب الزبائن المسجَّلين", exc_info=True)
 
-    def _set_prime_soumis(self, idx, value):
-        self._prime_soumis[idx] = bool(value)
+    def _set_prime_soumis(self, value):
+        self._prime_soumis = bool(value)
         self._recompute()
 
     # ----------------------- التوليد / السجلّ / المسح -----------------------
@@ -1112,25 +1410,32 @@ class BulletinTemplateScreen(Screen):
     def _on_clear(self):
         if not confirm(self, "تأكيد", "مسح كل الحقول في هذه الشاشة؟"):
             return
-        defaults = {"jours": "30"}          # الشهر/السنة يبقيان فارغين
         self._suspend = set(self._widgets)
         try:
-            for k, w in self._widgets.items():
+            for s in self._header_slots:
+                w = self._widgets[s.key]
                 if isinstance(w, DateField):
                     w.set_iso("")
                 elif isinstance(w, GroupedNumberEdit):
                     w.set_value("")
                 else:
-                    w.setText(defaults.get(k, ""))
+                    w.setText("")
+            # صفوف الجسم → العودة إلى النواة الافتراضية
+            for r in list(self._rows):
+                r.dispose()
+            self._rows.clear()
+            self._init_default_rows()
             self._prev_text.clear()
         finally:
             self._suspend = set()
-        for cb in self._prime_boxes:
-            cb.setChecked(True)
-        for k in self._widgets:
+        self._prime_soumis = True
+        self._prime_cb.setChecked(True)
+        self._rebuild_nav()
+        for k in list(self._widgets):
             self._style_field(k)
         self.mark_clean()
         self._recompute()
+        self._relayout()
 
     def has_unsaved_changes(self):
         return not self.is_empty()

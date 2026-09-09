@@ -1,14 +1,11 @@
-"""اختبار تثبيت (characterization) لشاشة كشف الراتب المُعاد بناؤها فوق
-PySide6 (``ui2/hr/paie/bulletin_template.py`` — المرحلة 3-أ).
+"""اختبار تثبيت لشاشة كشف الراتب PySide6 (``ui2/hr/paie/bulletin_template.py``).
 
-المبدأ: المحرّك (``programme.payroll.calc``) لا يُلمَس؛ الشاشتان القديمة
-والجديدة كلتاهما مُهايئٌ يبني ``calc.PaieInput`` من الحقول ويستدعي
-``calc.compute``. هذا الاختبار يثبّت أن **الشاشة الجديدة موصِّل أمين**:
-نفس قيَم الحقول → نفس ``calc.PaieInput`` → نفس النتيجة تماماً كاستدعاء
-المحرّك مباشرةً، وأن كل خانة من ``FIELD_SLOTS`` تُرسَم بلا استثناء.
+المبدأ: المحرّك (``programme.payroll``) لا يُلمَس؛ الشاشة موصِّلٌ أمين —
+نموذج الصفوف الديناميكيّ (Phase A2) → ``entries`` → ``lignes.compute_bulletin``
+→ ``BulletinView``؛ ونتيجة المُصيِّر تُشتقّ منها.
 
 التشغيل:
-    python -m unittest discover -s ui2/hr/paie/tests
+    QT_QPA_PLATFORM=offscreen python -m unittest discover -s ui2/hr/paie/tests
 """
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -32,18 +29,10 @@ if _HAS_QT:
     from ui2 import theme
     from ui2.hr.paie.bulletin_template import BulletinTemplateScreen
 
-# بيانات تجريبية ثابتة (نفس ما يُستعمل في مقارنة الصورة جنباً إلى جنب)
-_DATA = {
-    "emp_raison_sociale": "SARL DATA NEWS",
-    "emp_adresse": "Hai Etadjhiz Sonelgaz 02 Lot05 GUE DE CONSTANTINE ALGER",
-    "emp_cnas": "16 412 078 56",
+_HEADER = {
+    "emp_raison_sociale": "SARL DATA NEWS", "emp_cnas": "16 412 078 56",
     "mois": "OCTOBRE", "annee": "2026",
-    "id_nom": "BENALI", "id_prenom": "Karim",
-    "id_num_ss": "18 5030 5123 45", "id_situation_familiale": "M",
-    "id_matricule": "MAT-2024-0087", "id_fonction": "TECHNICIEN SUPERIEUR",
-    "jours": "30", "salaire_base": "45000",
-    "prime0_code": "PRI", "prime0_lib": "PRIME DE RENDEMENT", "prime0_montant": "8000",
-    "panier": "3000", "transport": "2500",
+    "id_nom": "BENALI", "id_prenom": "Karim", "id_matricule": "MAT-2024-0087",
 }
 
 
@@ -51,8 +40,8 @@ def _expected_input():
     return calc.PaieInput(
         mois="OCTOBRE", annee="2026", jours=30.0, salaire_base=45000.0,
         panier=3000.0, transport=2500.0,
-        primes=[calc.Prime(code="PRI", libelle="PRIME DE RENDEMENT",
-                           montant=8000.0, soumis_cotisation=True)],
+        primes=[calc.Prime(code="LIBRE", libelle="PRIME DE RENDEMENT",
+                           montant=8000.0, soumis_cotisation=True, imposable=True)],
         autres_retenues=[])
 
 
@@ -74,96 +63,177 @@ class BulletinTemplatePin(unittest.TestCase):
         self.scr.deleteLater()
         os.environ.pop(paths._LOCAL_STATE_ENV_OVERRIDE, None)
 
+    # ---- أدوات ----
+    def _row(self, kind, occurrence=-1):
+        rs = [r for r in self.scr._rows if r.kind == kind]
+        return rs[occurrence] if rs else None
+
+    def _set(self, kind, **cells):
+        r = self._row(kind)
+        for c, val in cells.items():
+            r.widgets[c].setText(str(val))
+        return r
+
     def _fill(self):
-        for k, v in _DATA.items():
+        for k, v in _HEADER.items():
             self.scr._widgets[k].setText(v)
+        self._set("salaire", gain="45000")
+        self._set("panier", gain="3000")
+        self._set("transport", gain="2500")
+        pr = self._set("prime", libelle="PRIME DE RENDEMENT", gain="8000")
         self.scr._recompute()
+        return pr
 
-    # -------- 1) كل خانة موجودة وتُرسَم بلا استثناء --------
-    def test_all_slots_have_widgets_and_paint(self):
-        import ui.hr.paie.template_simple as tpl
-        for slot in tpl.FIELD_SLOTS:
-            self.assertIn(slot.key, self.scr._widgets)
+    # ================= الصفوف الافتراضية =================
+    def test_default_row_sequence(self):
+        self.assertEqual([r.kind for r in self.scr._visible_body_rows()],
+                         ["salaire", "prime", "panier", "transport", "cnas", "irg"])
+
+    def test_one_default_prime(self):
+        self.assertEqual(len([r for r in self.scr._rows if r.kind == "prime"]), 1)
+
+    def test_panier_transport_permanent_and_zero_ok(self):
+        for kind in ("panier", "transport"):
+            r = self._row(kind)
+            self.assertFalse(r.can_delete())          # أساسي — لا يُحذف
+            self.assertEqual(r.val("gain"), "")       # 0 صالح، ليس incomplete
+        self._fill()                                  # مع أجر قاعديّ
+        self._set("panier", gain="0")
+        self._set("transport", gain="0")
+        self.scr._recompute()
+        self.assertTrue(self.scr._computed)           # 0 لا يكسر الحساب
+
+    def test_system_rows_not_editable(self):
+        for kind in ("cnas", "irg"):
+            r = self._row(kind)
+            self.assertEqual(r.role, "system")
+            self.assertEqual(r.widgets, {})           # لا widgets ⇒ لا Tab stop
+        nav = self.scr._nav_order
+        self.assertFalse(any(k.startswith("r%d_" % self._row("cnas").rid)
+                             for k in nav))
+
+    def test_paints_without_exception(self):
+        self._fill()
+        self.scr._add_row("avance")
         self.scr._relayout()
-        img = QImage(900, 1200, QImage.Format_ARGB32)
-        self.scr._canvas.resize(900, 1200)
-        self.scr._canvas.render(img)            # لا استثناء
+        img = QImage(900, 1400, QImage.Format_ARGB32)
+        self.scr._canvas.resize(900, 1400)
+        self.scr._canvas.render(img)
 
-    # -------- 2) المُهايئ: حقول → PaieInput → نتيجة مطابقة للمحرّك --------
+    # ================= المحرّك / النتيجة =================
     def test_mapping_is_faithful_conduit(self):
         self._fill()
         cfg = load_params(date(2026, 10, 1))
         exp = calc.compute(_expected_input(), cfg)
         got = self.scr._calc_result
-        for field in ("net_a_payer", "total_gain", "total_retenue",
-                      "base_cnas", "retenue_cnas", "base_irg", "retenue_irg"):
-            self.assertEqual(getattr(got, field), getattr(exp, field),
-                             f"{field} انحرف عن المحرّك")
+        for f in ("net_a_payer", "total_gain", "total_retenue",
+                  "base_cnas", "retenue_cnas", "base_irg", "retenue_irg"):
+            self.assertEqual(getattr(got, f), getattr(exp, f), f"{f} انحرف")
 
-    # -------- 3) خانة «منحة خاضعة» تغيّر النتيجة (منطقة المنحة) --------
-    def test_prime_soumis_toggle_changes_result(self):
+    def test_engine_view_is_source(self):
         self._fill()
-        net_soumis = self.scr._calc_result.net_a_payer
-        base_cnas_soumis = self.scr._calc_result.base_cnas
-        self.scr._set_prime_soumis(0, False)
-        self.assertNotEqual(self.scr._calc_result.base_cnas, base_cnas_soumis)
-        # الصافي قد يتغيّر (تحوّل المنحة من Z1 إلى Z2) — على الأقل الوعاء تغيّر
-        self.assertLess(self.scr._calc_result.base_cnas, base_cnas_soumis)
-        _ = net_soumis
-
-    # -------- 4) «مسح» يفرّغ الحقول ويعيد الحساب --------
-    def test_clear_resets(self):
-        self._fill()
-        self.assertTrue(self.scr._employee_fullname())
-        self.scr._on_clear()
-        self.assertFalse(self.scr._employee_fullname())
-        self.assertEqual(self.scr._widgets["jours"].text(), "30")
-
-    # -------- Phase A: المحرّك عبر lignes.compute_bulletin --------
-    def test_engine_view_matches_calc_result(self):
-        """‏``lignes.compute_bulletin`` (البنية التحتية للأسطر) يعطي نفس
-        [A]/[B]/[C]/[D]/[E] كـ ``calc.compute`` للخانات الثابتة الحالية."""
-        self._fill()
-        v = self.scr._bulletin_view
-        r = self.scr._calc_result
+        v, r = self.scr._bulletin_view, self.scr._calc_result
         self.assertIsNotNone(v)
-        self.assertEqual(v.a, r.base_cnas)
-        self.assertEqual(v.b, r.retenue_cnas)
-        self.assertEqual(v.c, r.base_irg)
-        self.assertEqual(v.d, r.retenue_irg)
-        self.assertEqual(v.e, r.net_a_payer)
+        self.assertEqual((v.a, v.b, v.c, v.d, v.e),
+                         (r.base_cnas, r.retenue_cnas, r.base_irg,
+                          r.retenue_irg, r.net_a_payer))
 
-    # -------- Phase A: «نتيجة غير محسوبة» ≠ «صفر حقيقي» --------
-    def test_not_computable_without_base_salary(self):
-        # لا أجر قاعديّ → CNAS/IRG/NET ليست 0,00 بل غير محسوبة
-        self.scr._widgets["salaire_base"].setText("")
-        self.scr._recompute()
-        self.assertFalse(self.scr._computed)
-        # panier/transport = 0 لا يجعلها «محسوبة» ولا تُعدّ ناقصة
-        self.scr._widgets["panier"].setText("0")
-        self.scr._widgets["transport"].setText("0")
-        self.scr._recompute()
-        self.assertFalse(self.scr._computed)
-        # بأجر قاعديّ موجب → تصبح محسوبة
-        self.scr._widgets["salaire_base"].setText("40000")
-        self.scr._recompute()
-        self.assertTrue(self.scr._computed)
-
-    def test_calculated_cells_are_not_widgets(self):
-        # CNAS / IRG / Totaux / Net مرسومة لا حقول ⇒ لا مفاتيح لها في
-        # ``_widgets`` ⇒ ليست Tab stops ولا قابلة للتحرير.
-        for k in ("cnas", "irg", "total", "net", "cnas_montant", "irg_montant"):
-            self.assertNotIn(k, self.scr._widgets)
-
-    # -------- 5) المسوّدة: ذهاب/إياب --------
-    def test_draft_roundtrip(self):
+    def test_prime_soumis_toggle_changes_base(self):
         self._fill()
-        state = self.scr.draft_state()
-        self.assertEqual(state["id_nom"], "BENALI")
+        base0 = self.scr._calc_result.base_cnas
+        self.scr._set_prime_soumis(False)
+        self.assertLess(self.scr._calc_result.base_cnas, base0)
+
+    def test_not_computable_without_base_salary(self):
+        self.assertFalse(self.scr._computed)          # يفتح فارغاً
+        self._fill()
+        self.assertTrue(self.scr._computed)
+        self._set("salaire", gain="")
+        self.scr._recompute()
+        self.assertFalse(self.scr._computed)
+
+    # ================= + Ajouter / حذف / ترتيب =================
+    def test_add_optional_row_deterministic_order(self):
+        self.scr._add_row("avance")
+        self.scr._add_row("autre")
+        kinds = [r.kind for r in self.scr._visible_body_rows()]
+        # avance/autre بعد CNAS/IRG (§13)
+        self.assertLess(kinds.index("cnas"), kinds.index("avance"))
+        self.assertLess(kinds.index("irg"), kinds.index("avance"))
+        self.assertLess(kinds.index("avance"), kinds.index("autre"))
+
+    def test_geometry_moves_with_row_count(self):
+        n0 = self.scr._net_y_mm()
+        self.scr._add_row("prime")
+        self.assertGreater(self.scr._net_y_mm(), n0)   # NET ينزل مع الصفوف
+        r = self._row("prime", -1)
+        self.scr._remove_row(r)
+        self.assertAlmostEqual(self.scr._net_y_mm(), n0, places=3)
+
+    def test_remove_leaves_no_dead_widgets(self):
+        self.scr._add_row("avance")
+        r = self._row("avance", -1)
+        keys = [r.cell_key(c) for c in r.widgets]
+        self.scr._remove_row(r)
+        for k in keys:
+            self.assertNotIn(k, self.scr._widgets)
+            self.assertNotIn(k, self.scr._nav_order)
+
+    def test_filled_optional_row_delete_is_guarded(self):
+        r = self.scr._add_row("avance") or self._row("avance", -1)
+        r = self._row("avance", -1)
+        r.widgets["retenue"].setText("5000")
+        mod.confirm = lambda *_a, **_k: False        # المستخدم يرفض
+        self.scr._remove_row(r)
+        self.assertIn(r, self.scr._rows)             # لم يُحذف
+        mod.confirm = lambda *_a, **_k: True
+
+    def test_basic_rows_cannot_be_removed(self):
+        for kind in ("salaire", "panier", "transport"):
+            r = self._row(kind)
+            self.scr._remove_row(r)
+            self.assertIn(r, self.scr._rows)
+
+    def test_two_prime_rows(self):
+        self._fill()
+        self.scr._add_row("prime")
+        self._row("prime", -1).widgets["libelle"].setText("PRIME DE RISQUE")
+        self._row("prime", -1).widgets["gain"].setText("6000")
+        self.scr._recompute()
+        libs = [l.libelle for l in self.scr._bulletin_view.lignes]
+        self.assertIn("PRIME DE RENDEMENT", libs)
+        self.assertIn("PRIME DE RISQUE", libs)
+
+    def test_avance_and_autre_are_z4_retenues(self):
+        self._fill()
+        net0 = self.scr._calc_result.net_a_payer
+        self.scr._add_row("avance")
+        self._row("avance", -1).widgets["retenue"].setText("10000")
+        self.scr._recompute()
+        self.assertEqual(self.scr._calc_result.net_a_payer, net0 - 10000)
+
+    # ================= مسح / مسوّدة =================
+    def test_clear_resets_to_defaults(self):
+        self._fill()
+        self.scr._add_row("avance")
+        self.scr._on_clear()
+        self.assertEqual([r.kind for r in self.scr._visible_body_rows()],
+                         ["salaire", "prime", "panier", "transport", "cnas", "irg"])
+        self.assertFalse(self.scr._employee_fullname())
+
+    def test_draft_roundtrip_with_dynamic_rows(self):
+        self._fill()
+        self.scr._add_row("avance")
+        self._row("avance", -1).widgets["retenue"].setText("7000")
+        st = self.scr.draft_state()
         other = BulletinTemplateScreen(conn=None)
-        other.apply_draft(state)
-        self.assertEqual(other._widgets["salaire_base"].text(), "45000")
-        self.assertEqual(other._widgets["prime0_lib"].text(), "PRIME DE RENDEMENT")
+        other.apply_draft(st)
+        self.assertEqual(other._widgets["id_nom"].text(), "BENALI")
+        self.assertEqual(other._row("salaire").val("gain") if hasattr(other, "_row")
+                         else [r for r in other._rows if r.kind == "salaire"][0].val("gain"),
+                         "45000")
+        self.assertTrue(any(r.kind == "avance" and r.val("retenue") == "7000"
+                            for r in other._rows))
         other.deleteLater()
 
 

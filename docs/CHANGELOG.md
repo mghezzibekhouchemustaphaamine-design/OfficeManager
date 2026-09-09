@@ -2700,3 +2700,83 @@ python -m ui2.hr.paie
 
 معدَّل: `ui/home/services.py` · `ui/home/app_window.py` ·
 `ui2/hr/paie/__main__.py` · `docs/CHANGELOG.md`.
+
+## مرجع أربعة وخمسون — 2026-09-09: DateField موحّد للتواريخ (PySide6)
+
+مصدر واحد للتواريخ داخل إطار PySide6، مبنيّ بتطوير `_DateEdit` القائمة —
+لا مكوّن/ملف موازٍ.
+
+### `ui2/form.py` — `_DateEdit` → `DateField`
+
+- **`_DateEdit = DateField`** اسمٌ بديل في نهاية الملف (توافق خلفي: `Form`
+  و `ui2/paie/bulletin.py` واختباراته لا تتأثر).
+- **فصل صريح بين التخزين والعرض**:
+  - `iso()` تُعيد `YYYY-MM-DD` (أو `YYYY-MM`) لتاريخ كامل صالح فقط، وإلا `""`.
+  - `set_iso(value)` تقبل **ISO حصراً** (غير ذلك ⇒ يُفرَّغ الحقل) — يحفظ
+    عقد `test_bulletin_screen.py:test_invalid_date_cannot_be_typed_freely`.
+  - `display_format` مستقلّ (وسيط أول، افتراضه `dd/MM/yyyy`). يُشتَقّ منه
+    النوع (date/month) والفاصل وترتيب المقاطع.
+- **الإدخال**: يبدأ فارغاً (لا تاريخ اليوم)، placeholder `JJ/MM/AAAA`،
+  أرقام فقط، `15061990` → `15/06/1990`، `/ - . ` والمسافة تُوحَّد إلى فاصل
+  العرض، الحروف تُتجاهَل بصمت، الإدخال الجزئي مسموح.
+- **أربع حالات** (`neutral` / `incomplete` / `valid` / `error`) — تلوين
+  الحقل + رسالة سطرية (`errorChanged`)، **بلا صناديق حوار**. `31/02/1990`
+  → error. القاعدة الإضافية عبر `set_extra_check(fn)` و `min_date` / `max_date`.
+- **التحرير**: Backspace/Delete طبيعيان (Backspace فوق فاصل يحذف الرقم
+  قبله)، Ctrl+A/C/V طبيعية، **Paste** لتاريخ صالح بأي فاصل معقول يُطبَّع
+  وغير الصالح يُرفَض صامتاً، الأسهم طبيعية، لا إجبار للمؤشّر على النهاية.
+  Auto-advance بين المقاطع ضمنيّ (حقل واحد). `Tab`: ينتقل فقط إذا
+  `valid`/فارغ؛ `incomplete`/`error` يمنع الانتقال ويُظهر الخطأ. Shift+Tab طبيعي.
+- **التقويم**: زرّ 📅 يفتح `QCalendarWidget` (شريط تنقّل بسنة/شهر قابلين
+  للنقر — اختيار سنة قديمة بلا تنقّل شهريّ) + زرّ «اليوم»، محدوداً
+  بـ`min_date`/`max_date`.
+- **المظهر**: مسطّح، بلا أزرار عدّاد، الحالة الفارغة `theme.FIELD_EMPTY`
+  (كريمي)، LTR مفروض على خانة الكتابة مهما كان اتجاه التطبيق. وسيط
+  `flat=True` يزيل الحدّ الظاهر (للاستمارة فوق اللوحة).
+- ملاءمة الواجهة القديمة: `setDate`/`minimumDate`/`setMinimumDate`/
+  `setMaximumDate`/`setFont`/`text`/`selectAll`/`setReadOnly` — فيبقى
+  `Form._make_widget` وبقيّة `Form` دون تغيير.
+
+### `ui2/hr/paie/bulletin_template.py` — استعمال DateField
+
+- حقلا `id_date_naissance` و `id_date_embauche`:
+  `DateField(display_format="dd/MM/yyyy", flat=True, max_date=today)`.
+- إصلاح خلط العرض/التخزين: `set_iso("dd/MM/yyyy")` القديم لم يعُد يُخزَّن
+  كما هو — الآن **المسوّدة (`draft_state`/`apply_draft`) و`iso()` بـ ISO
+  (`YYYY-MM-DD`)**، والمستند (`_employee_data["date_embauche"]`) يعرض نصّ
+  الحقل `dd/MM/yyyy`.
+- **§8 (قواعد الحقلين)**: `max_date=today` يمنع أي تاريخ مستقبلي على
+  الحقلين. قاعدة `date_naissance < date_entree` عبر
+  `id_date_embauche.set_extra_check(self._check_entree)`؛ تغيّر تاريخ
+  الميلاد يستدعي `id_date_embauche.revalidate()` (بلا مسح ولا تعديل
+  تلقائي — يظهر خطأ سطري فقط).
+- `_style_field` يترك DateField يدير نمطه (أربع حالات)؛ `_relayout` يضع
+  DateField بعرض ملائم لـ`dd/MM/yyyy` + زرّ التقويم.
+- **انحراف مقصود عن بوّابة مرجع 52 البصرية**: زرّ تقويم ظاهر بجانب حقلَي
+  التاريخ (طلب صريح في مواصفات UX — البند 5).
+
+### الاختبارات
+
+جديد: `ui2/tests/test_date_field.py` — **17 اختباراً**: الحالات الأربع،
+تطبيع الفواصل، اللصق (صالح/مرفوض)، Ctrl+A+Delete، `iso()`/`set_iso()`،
+فصل العرض عن التخزين، وضع الشهر، التاريخ المستقبلي (مع/بلا `max_date`)،
+`date_naissance < date_entree` وإعادة الفحص عند تغيّر الميلاد.
+
+`ui2/tests` **27 OK** (10 + 17) · `ui2/paie/tests` **17 OK** (محميّة، دون
+تعديل) · `ui2/hr/paie/tests` **5 OK** · `programme/payroll/tests` **49
+OK** · `programme/tests` **6 OK** · `test_golden.py` **14/14** ·
+`demos/ui2_paie_gallery.py --selftest` + `demos/ui2_gallery.py --selftest`
+→ `ALLOK`.
+
+### لم يُمَسّ
+
+`ui/common/widgets.py` · `ui/hr/blocks.py` · `ui/cd/**` ·
+`ui/hr/bulletin_paie.py` · `ui/hr/paie/template_simple.py` ·
+`programme/payroll/**` · `ui2/paie/bulletin.py` · `ui2/paie/tests/**` ·
+مخطّط قاعدة البيانات (التواريخ تبقى `TEXT`، القيمة المعيارية `YYYY-MM-DD`).
+
+### الملفات المتأثرة
+
+معدَّل: `ui2/form.py` · `ui2/hr/paie/bulletin_template.py` ·
+`docs/CHANGELOG.md` · `docs/baseline_screenshots/3a_new_pyside6.png`.
+جديد: `ui2/tests/test_date_field.py`.

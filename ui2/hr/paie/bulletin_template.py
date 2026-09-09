@@ -23,7 +23,7 @@ from datetime import date
 from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPalette
 from PySide6.QtWidgets import (
-    QAbstractSpinBox, QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout,
+    QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QRadioButton, QScrollArea, QSplitter,
     QVBoxLayout, QWidget,
 )
@@ -37,7 +37,7 @@ from ui.hr.paie import template_simple as T
 from ui.hr.render import TemplateNotReady
 from ui2 import theme
 from ui2.alerts import confirm
-from ui2.form import _DateEdit
+from ui2.form import DateField
 from ui2.screen import Screen
 
 logger = logging.getLogger(__name__)
@@ -445,7 +445,7 @@ class BulletinTemplateScreen(Screen):
 
     # المسوّدة
     def draft_state(self):
-        return {k: (w.iso() if isinstance(w, _DateEdit) else w.text())
+        return {k: (w.iso() if isinstance(w, DateField) else w.text())
                 for k, w in self._widgets.items()}
 
     def apply_draft(self, data):
@@ -455,7 +455,7 @@ class BulletinTemplateScreen(Screen):
                 w = self._widgets.get(k)
                 if w is None:
                     continue
-                if isinstance(w, _DateEdit):
+                if isinstance(w, DateField):
                     w.set_iso(v)
                 else:
                     w.setText(str(v or ""))
@@ -467,7 +467,7 @@ class BulletinTemplateScreen(Screen):
 
     def is_empty(self):
         skip = {"mois", "annee", "jours"}
-        return not any((w.text().strip() if not isinstance(w, _DateEdit) else w.iso())
+        return not any(w.text().strip()
                        for k, w in self._widgets.items() if k not in skip)
 
     # ----------------------- بناء الحقول -----------------------
@@ -477,13 +477,12 @@ class BulletinTemplateScreen(Screen):
                     "annee": str(today.year), "jours": "30"}
         for slot in T.FIELD_SLOTS:
             if slot.kind == "date_masked":
-                # نفس مظهر MaskedDateEntry القديمة: dd/MM/yyyy، بلا زرّ
-                # تقويم ظاهر، إطار مسطّح فوق الورقة.
-                w = _DateEdit("dd/MM/yyyy", nullable=True, parent=self._canvas)
-                w.setCalendarPopup(False)
-                w.setButtonSymbols(QAbstractSpinBox.NoButtons)
-                w.setFrame(False)
+                # DateField الموحّد: عرض dd/MM/yyyy، تخزين ISO، مسطّح،
+                # خطأ سطري، ولا تاريخ مستقبلي (max = اليوم لكلا الحقلين §8).
+                w = DateField(display_format="dd/MM/yyyy", nullable=True,
+                              flat=True, max_date=today, parent=self._canvas)
                 w.dateChanged.connect(lambda _d, k=slot.key: self._on_slot_write(k))
+                w.errorChanged.connect(lambda _m: self._relayout())
             else:
                 w = QLineEdit(defaults.get(slot.key, ""), self._canvas)
                 w.setFrame(False)
@@ -501,6 +500,22 @@ class BulletinTemplateScreen(Screen):
             w.show()
         for k in self._widgets:
             self._style_field(k)
+        # §8: تاريخ بداية العمل > تاريخ الميلاد (وكلاهما ≤ اليوم — مضبوط
+        # عبر max_date). القاعدة على حقل الدخول؛ تغيّر الميلاد يُعيد فحصه.
+        self._widgets["id_date_embauche"].set_extra_check(self._check_entree)
+
+    def _birth_pydate(self):
+        iso = self._widgets["id_date_naissance"].iso()
+        try:
+            return date.fromisoformat(iso) if iso else None
+        except ValueError:
+            return None
+
+    def _check_entree(self, d):
+        nb = self._birth_pydate()
+        if nb is not None and d <= nb:
+            return "تاريخ بداية العمل يجب أن يكون بعد تاريخ الميلاد."
+        return None
 
     # ----------------------- الزوم والتخطيط -----------------------
     def _page_box(self):
@@ -585,6 +600,15 @@ class BulletinTemplateScreen(Screen):
                 slot_x_mm = self._row1_layout(scale)[1]
 
             px = x0 + (T.MARGIN_L + slot_x_mm) * scale
+            if isinstance(w, DateField):                        # حقل التاريخ الموحّد
+                base_mm = self._ident_row_y(self._ident_row[slot.key], scale)
+                py = y0 + base_mm * scale - fm.ascent() - _ENTRY_TOP_CHROME
+                w.setFixedWidth(int(fm.horizontalAdvance("00/00/0000") + 34))
+                w.setMinimumHeight(0)
+                w.setMaximumHeight(16777215)
+                w.adjustSize()
+                w.move(int(px), int(py))
+                continue
             if slot.key in self._ident_row:                     # صفّ هوية — إيقاع مُعاير
                 base_mm = self._ident_row_y(self._ident_row[slot.key], scale)
                 py = y0 + base_mm * scale - fm.ascent() - _ENTRY_TOP_CHROME
@@ -599,7 +623,7 @@ class BulletinTemplateScreen(Screen):
             if getattr(slot, "fit_maxlen", False):
                 # قدر أوسع من: maxlen حرفاً عريضاً، أو المحتوى الحالي
                 # (قيَم مجمَّعة بمسافات أطول من maxlen الخام — N° SS مثلاً).
-                cur = w.iso() if isinstance(w, _DateEdit) else w.text()
+                cur = w.iso() if isinstance(w, DateField) else w.text()
                 wpx = int(max(fm.horizontalAdvance("0" * slot.maxlen),
                               fm.horizontalAdvance(cur)) + 10)
             else:
@@ -612,10 +636,13 @@ class BulletinTemplateScreen(Screen):
     # ----------------------- المظهر (كريمي/أبيض/شريط) -----------------------
     def _field_value(self, key):
         w = self._widgets[key]
-        return w.iso() if isinstance(w, _DateEdit) else w.text().strip()
+        return w.iso() if isinstance(w, DateField) else w.text().strip()
 
     def _style_field(self, key):
         w = self._widgets[key]
+        if isinstance(w, DateField):
+            w.refresh_style()                 # DateField يدير نمطه بنفسه (4 حالات)
+            return
         filled = bool(self._field_value(key))
         if key in self._band_keys:
             focused = w.hasFocus()
@@ -629,7 +656,7 @@ class BulletinTemplateScreen(Screen):
             bg = theme.SURFACE if filled else theme.FIELD_EMPTY
             fg = theme.TEXT
             bd = theme.HOVER if w.hasFocus() else "#ffffff"
-        cls = "QDateEdit" if isinstance(w, _DateEdit) else "QLineEdit"
+        cls = "QDateEdit" if isinstance(w, DateField) else "QLineEdit"
         w.setStyleSheet(
             f"{cls} {{ background:{bg}; color:{fg}; border:1px solid {bd}; "
             f"border-radius:0; padding:0 1px; "
@@ -660,7 +687,9 @@ class BulletinTemplateScreen(Screen):
             "fonction": self._w("id_fonction"),
             "situation_familiale": self._w("id_situation_familiale"),
             "num_ss": self._w("id_num_ss"),
-            "date_embauche": self._field_value("id_date_embauche"),
+            # المستند يعرض dd/MM/yyyy (نصّ الحقل)؛ التخزين البرمجي/المسوّدة
+            # يبقيان ISO عبر DateField.iso().
+            "date_embauche": self._w("id_date_embauche"),
         }
 
     def _employee_fullname(self):
@@ -730,6 +759,10 @@ class BulletinTemplateScreen(Screen):
             up = w.text().upper()
             if up != w.text():
                 self._suspend.add(key); w.setText(up); self._suspend.discard(key)
+        # §8: تغيّر تاريخ الميلاد قد يُبطِل صلاحية تاريخ بداية العمل — أعِد
+        # فحصه بلا مسحه ولا تعديله (يظهر عليه خطأ سطري إن لزم).
+        if key == "id_date_naissance":
+            self._widgets["id_date_embauche"].revalidate()
         self._style_field(key)
         self.mark_dirty()
         self._recompute()
@@ -861,7 +894,7 @@ class BulletinTemplateScreen(Screen):
         self._suspend = set(self._widgets)
         try:
             for k, w in self._widgets.items():
-                if isinstance(w, _DateEdit):
+                if isinstance(w, DateField):
                     w.set_iso("")
                 else:
                     w.setText(defaults.get(k, ""))

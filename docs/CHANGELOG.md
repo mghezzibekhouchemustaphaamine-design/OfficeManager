@@ -2948,3 +2948,42 @@ driven) كان يستدعي `selectAll()` على الحقل الهدف — فإ�
 الاختبارات: `ui2/tests` 42 · `ui2/paie/tests` 17 · `ui2/hr/paie/tests` 5
 — خضراء. معدَّل: `ui2/form.py` · `ui2/hr/paie/bulletin_template.py` ·
 `docs/CHANGELOG.md`.
+
+## Phase A (كشف الراتب) — 2026-09-10: ربط المحرّك + تمييز «غير محسوب»
+
+الجزء الآمن من Phase A (§8: لا refactor كبير للجدول الآن — انظر «مؤجَّل»).
+
+- **ربط المحرّك عبر المُهايئ الجاهز**: `_recompute` يبني `entries`
+  (‏`_build_entries`) ويستدعي `lignes.compute_bulletin(entries, cfg)`
+  → `self._bulletin_view` — **بلا Convention ولا Catalogue** (كلاهما
+  اختياري في `compute_bulletin`). المنح/الاقتطاعات الأخرى تُمرَّر كسطرٍ
+  حرّ (`libre`) بتصنيف صريح. `calc.compute` يبقى مصدر `_calc_result`
+  للمُصيِّر (Word/PDF) — صفر انحدار: الأرقام متطابقة (كلاهما →
+  `compute_sequence`)، ومُثبَّت باختبار `test_engine_view_matches_calc_result`.
+- **«نتيجة غير محسوبة» ≠ «صفر حقيقي»** (§2): علَم `self._computed`
+  (= أجر قاعديّ > 0). عند `False` لا تُرسَم CNAS/IRG/TOTAL/NET كـ«0,00»
+  بل تُترَك فارغة. Panier/Transport = 0 تبقى صالحة ولا تجعل الحساب
+  «ممكناً» بذاتها ولا تُعدّ ناقصة.
+- CNAS/IRG/Totaux/Net مرسومة (لا widgets) ⇒ ليست Tab stops ولا قابلة
+  للتحرير/اللصق — مُثبَّت باختبار `test_calculated_cells_are_not_widgets`.
+
+### مؤجَّل (يحتاج قرار المالك)
+
+قائمة «+ Ajouter» + أسطر Rubrique متكيّفة (Absence/Retard/HS/IEP/Avance/
+Autre) على اللوحة تتطلّب تحويل جسم الجدول من خانات ثابتة بالمليمتر
+(`template_simple.FIELD_SLOTS`، 10 صفوف) إلى جدول ديناميكي — إعادة عمل
+ملموسة لـ`_paint_form`/`_relayout`/دورة حياة الحقول تهدّد عمل الزوم/العرض
+المُعتمَد. كذلك: autocomplete للـ Libellé، ترتيب الأسطر الديناميكي،
+حماية حذف السطر الممتلئ.
+
+### الاختبارات
+
+`ui2/hr/paie/tests` **8 OK** (+3: تطابق المحرّك، false-0، الخلايا
+المحسوبة ليست حقولاً) · `ui2/tests` 42 · `ui2/paie/tests` 17 (محميّة) ·
+`programme/payroll/tests` 49 · `programme/tests` 6 · golden 14/14 ·
+galleries `ALLOK`.
+
+### الملفات المتأثرة
+
+معدَّل: `ui2/hr/paie/bulletin_template.py` ·
+`ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.

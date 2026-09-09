@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from programme import database, paths
-from programme.payroll import calc, registry
+from programme.payroll import calc, lignes, registry
 from programme.payroll.calc import fmt_montant
 from programme.payroll.config_loader import PayrollConfigError, load_params
 from ui.hr.constants import MOIS_FR
@@ -269,7 +269,9 @@ class _SheetCanvas(QWidget):
         cell_center("code", T.ROW_TRANSPORT, c["transport"])
         cell_left("libelle", T.ROW_TRANSPORT, "(R+) TRANSPORT")
 
-        if res is not None:
+        # لا تُرسَم CNAS/IRG/TOTAL/NET كـ«0,00» إذا كان الحساب غير ممكن أصلاً
+        # (لا أجر قاعديّ / لا معاملات) — «نتيجة غير محسوبة» ≠ «صفر حقيقي».
+        if res is not None and getattr(sc, "_computed", False):
             cell_right("nbase", T.ROW_CNAS, fmt_montant(res.base_cnas), cc)
             cell_right("taux", T.ROW_CNAS, "9,00", cc)
             cell_right("retenue", T.ROW_CNAS, fmt_montant(res.retenue_cnas), cc)
@@ -353,6 +355,8 @@ class BulletinTemplateScreen(Screen):
 
         self._calc_input = calc.PaieInput()
         self._calc_result = calc.compute(self._calc_input, self._load_cfg())
+        self._bulletin_view = None                      # lignes.BulletinView (المحرّك)
+        self._computed = False                 # نتيجة حقيقية مقابل «غير محسوبة»
 
         self.build_ui()
         self.toolbar.setVisible(False)         # لا شريط أدوات في التصميم القديم
@@ -877,6 +881,43 @@ class BulletinTemplateScreen(Screen):
             panier=_num(self._w("panier")), transport=_num(self._w("transport")),
             primes=primes, autres_retenues=autres)
 
+    _YES, _NO = "نعم", "لا"
+
+    def _build_entries(self):
+        """أسطر الكشف بصيغة :func:`programme.payroll.lignes.compute_bulletin`
+        (‏``[{"type","values"}]``) — من الخانات الثابتة الحالية. المنح
+        وأسطر الاقتطاع الأخرى تُمرَّر كسطرٍ حرّ (``libre``) بتصنيف صريح
+        فيبقى المحرّك مصدر الحساب الوحيد. لا Convention ولا Catalogue."""
+        e = [{"type": "salaire_base",
+              "values": {"montant": self._w("salaire_base")}}]
+        for k in range(T.N_PRIME_SLOTS):
+            lib, mnt = self._w(f"prime{k}_lib"), self._w(f"prime{k}_montant")
+            if lib or mnt:
+                e.append({"type": "libre", "values": {
+                    "libelle": lib or "PRIME", "montant": mnt,
+                    "est_retenue": self._NO,
+                    "cotisable": self._YES if self._prime_soumis[k] else self._NO,
+                    "imposable": self._YES}})
+        if self._w("panier"):
+            e.append({"type": "panier",
+                      "values": {"montant_mensuel": self._w("panier")}})
+        if self._w("transport"):
+            e.append({"type": "transport",
+                      "values": {"montant_mensuel": self._w("transport")}})
+        for k in range(T.N_AUTRE_SLOTS):
+            lib, mnt = self._w(f"autre{k}_lib"), self._w(f"autre{k}_montant")
+            if lib or mnt:
+                e.append({"type": "libre", "values": {
+                    "libelle": lib or "RETENUE", "montant": mnt,
+                    "est_retenue": self._YES,
+                    "cotisable": self._NO, "imposable": self._NO}})
+        return e
+
+    def _is_computable(self):
+        """هل الحساب ممكن أصلاً؟ (أجر قاعديّ موجب — وإلا فالنتائج «غير
+        محسوبة» لا «صفراً حقيقياً»)."""
+        return _num(self._w("salaire_base")) > 0
+
     def _on_slot_write(self, key):
         if key in self._suspend:
             return
@@ -955,10 +996,18 @@ class BulletinTemplateScreen(Screen):
 
     def _recompute(self):
         self._calc_input = self._build_input()
+        self._computed = False
         try:
-            self._calc_result = calc.compute(self._calc_input, self._load_cfg())
+            cfg = self._load_cfg()
+            # المحرّك عبر مُهايئ الأسطر الجاهز (lignes.compute_bulletin) —
+            # مصدر واحد، بلا Convention/Catalogue. النتيجة الخام للعرض
+            # والمُصيِّر تُشتقّ منه.
+            self._bulletin_view = lignes.compute_bulletin(self._build_entries(), cfg)
+            self._calc_result = calc.compute(self._calc_input, cfg)  # للمُصيِّر
+            self._computed = self._is_computable()
         except Exception:                                    # noqa: BLE001
             logger.warning("إعادة حساب الكشف فشلت", exc_info=True)
+            self._bulletin_view = None
         if hasattr(self, "_canvas"):
             self._canvas.update()
 

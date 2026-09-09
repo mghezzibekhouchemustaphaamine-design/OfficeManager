@@ -119,6 +119,42 @@ class BulletinTemplatePin(unittest.TestCase):
         self.assertFalse(self.scr._employee_fullname())
         self.assertEqual(self.scr._widgets["jours"].text(), "30")
 
+    # -------- Phase A: المحرّك عبر lignes.compute_bulletin --------
+    def test_engine_view_matches_calc_result(self):
+        """‏``lignes.compute_bulletin`` (البنية التحتية للأسطر) يعطي نفس
+        [A]/[B]/[C]/[D]/[E] كـ ``calc.compute`` للخانات الثابتة الحالية."""
+        self._fill()
+        v = self.scr._bulletin_view
+        r = self.scr._calc_result
+        self.assertIsNotNone(v)
+        self.assertEqual(v.a, r.base_cnas)
+        self.assertEqual(v.b, r.retenue_cnas)
+        self.assertEqual(v.c, r.base_irg)
+        self.assertEqual(v.d, r.retenue_irg)
+        self.assertEqual(v.e, r.net_a_payer)
+
+    # -------- Phase A: «نتيجة غير محسوبة» ≠ «صفر حقيقي» --------
+    def test_not_computable_without_base_salary(self):
+        # لا أجر قاعديّ → CNAS/IRG/NET ليست 0,00 بل غير محسوبة
+        self.scr._widgets["salaire_base"].setText("")
+        self.scr._recompute()
+        self.assertFalse(self.scr._computed)
+        # panier/transport = 0 لا يجعلها «محسوبة» ولا تُعدّ ناقصة
+        self.scr._widgets["panier"].setText("0")
+        self.scr._widgets["transport"].setText("0")
+        self.scr._recompute()
+        self.assertFalse(self.scr._computed)
+        # بأجر قاعديّ موجب → تصبح محسوبة
+        self.scr._widgets["salaire_base"].setText("40000")
+        self.scr._recompute()
+        self.assertTrue(self.scr._computed)
+
+    def test_calculated_cells_are_not_widgets(self):
+        # CNAS / IRG / Totaux / Net مرسومة لا حقول ⇒ لا مفاتيح لها في
+        # ``_widgets`` ⇒ ليست Tab stops ولا قابلة للتحرير.
+        for k in ("cnas", "irg", "total", "net", "cnas_montant", "irg_montant"):
+            self.assertNotIn(k, self.scr._widgets)
+
     # -------- 5) المسوّدة: ذهاب/إياب --------
     def test_draft_roundtrip(self):
         self._fill()

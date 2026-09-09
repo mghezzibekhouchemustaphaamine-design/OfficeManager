@@ -521,7 +521,7 @@ class BulletinTemplateScreen(Screen):
                               parent=self._canvas)
                 w.dateChanged.connect(lambda _d, k=slot.key: self._on_slot_write(k))
                 w.errorChanged.connect(self._refresh_date_errors)
-                w.completed.connect(lambda k=slot.key: self._focus_rel(k, +1))
+                w.completed.connect(lambda k=slot.key: self._focus_rel(k, +1, select=False))
             elif slot.kind in ("adherent", "num_ss"):
                 # حقول رقمية مجمَّعة (reusable): N° ADHÉRENT «xx xxx xxx xx»
                 # · N° SS «xx xxxx xxxx xx» أو «xx xxxx xxxx /xx».
@@ -535,7 +535,7 @@ class BulletinTemplateScreen(Screen):
                       "l": Qt.AlignLeft}[slot.align]
                 w.setAlignment(al | Qt.AlignVCenter)
                 w.textEdited.connect(lambda _t, k=slot.key: self._on_slot_write(k))
-                w.completed.connect(lambda k=slot.key: self._focus_rel(k, +1))
+                w.completed.connect(lambda k=slot.key: self._focus_rel(k, +1, select=False))
             else:
                 w = QLineEdit(defaults.get(slot.key, ""), self._canvas)
                 w.setFrame(False)
@@ -594,7 +594,7 @@ class BulletinTemplateScreen(Screen):
         self.mark_dirty()
         self._recompute()
         if code:
-            self._focus_rel(key, +1)
+            self._focus_rel(key, +1, select=False)     # انتقال تلقائي — بلا تحديد
 
     def _birth_pydate(self):
         iso = self._widgets["id_date_naissance"].iso()
@@ -936,10 +936,11 @@ class BulletinTemplateScreen(Screen):
 
     def _advance_after(self, key):
         """انتقال مؤجَّل للحقل التالي — بعد أن ينتهي حدث الكتابة الحالي
-        (يمنع تعارض إعادة الضبط مع تغيير التركيز)."""
-        QTimer.singleShot(0, lambda: self._focus_rel(key, +1))
+        (يمنع تعارض إعادة الضبط مع تغيير التركيز). **بلا تحديد** للمحتوى:
+        الانتقال التلقائي لا يجوز أن يُعرّض قيمةً قائمة للحذف بأوّل ضغطة."""
+        QTimer.singleShot(0, lambda: self._focus_rel(key, +1, select=False))
 
-    def _focus_rel(self, key, direction):
+    def _focus_rel(self, key, direction, *, select=True):
         try:
             i = self._nav_order.index(key)
         except ValueError:
@@ -947,8 +948,10 @@ class BulletinTemplateScreen(Screen):
         nkey = self._nav_order[(i + direction) % len(self._nav_order)]
         w = self._widgets[nkey]
         w.setFocus()
-        if hasattr(w, "selectAll"):
-            w.selectAll()
+        if select and hasattr(w, "selectAll"):
+            w.selectAll()                    # Tab/Enter يدويّ: تحديد للكتابة فوقه
+        elif hasattr(w, "deselect"):
+            w.deselect()                     # انتقال تلقائي: المؤشّر فقط، لا تحديد
 
     def _recompute(self):
         self._calc_input = self._build_input()

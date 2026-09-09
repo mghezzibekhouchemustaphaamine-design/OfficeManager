@@ -2932,3 +2932,19 @@ galleries `ALLOK`.
 الاختبارات: `ui2/tests` **42 OK** · 17 + 5 + 49 + 6 + 14 ذهبياً + galleries
 `ALLOK`. معدَّل: `ui2/form.py` · `ui2/hr/paie/bulletin_template.py` ·
 `docs/CHANGELOG.md`.
+
+## Phase 55-د — 2026-09-09: الانتقال التلقائي لا يمسح قيمة الحقل التالي
+
+**الخلل:** الانتقال التلقائي من الشهر إلى السنة (وكلّ انتقال completion-
+driven) كان يستدعي `selectAll()` على الحقل الهدف — فإن كان مملوءاً، أوّل
+ضغطة تستبدل محتواه بالكامل (يبدو «حذفاً»).
+
+**الإصلاح:** `_focus_rel(key, dir, *, select=True)`. الانتقال التلقائي
+(`_advance_after`، إشارات `completed` للتاريخ/الرقم المجمَّع، اختيار
+الحالة العائلية) يمرّر `select=False` ⇒ **تركيز + مؤشّر في النهاية بلا
+تحديد**، فلا تُعرَّض قيمةٌ قائمة للحذف. الانتقال اليدوي (Enter/Tab) يبقى
+`select=True` (عُرف ويندوز: تحديد للكتابة فوقه). أُضيف `DateField.deselect()`.
+
+الاختبارات: `ui2/tests` 42 · `ui2/paie/tests` 17 · `ui2/hr/paie/tests` 5
+— خضراء. معدَّل: `ui2/form.py` · `ui2/hr/paie/bulletin_template.py` ·
+`docs/CHANGELOG.md`.

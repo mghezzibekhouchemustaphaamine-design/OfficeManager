@@ -708,6 +708,9 @@ class DateField(QWidget):
     def selectAll(self) -> None:                          # noqa: N802 (Qt)
         self._edit.selectAll()
 
+    def deselect(self) -> None:
+        self._edit.deselect()
+
     def setReadOnly(self, ro: bool) -> None:              # noqa: N802 (Qt)
         self._edit.setReadOnly(ro)
         self._btn.setEnabled(not ro)

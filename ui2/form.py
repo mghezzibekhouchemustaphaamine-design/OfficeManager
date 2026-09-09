@@ -13,7 +13,9 @@ from datetime import date as _pydate, datetime as _pydatetime
 from typing import Any, Callable, Dict, List, Optional
 
 from PySide6.QtCore import QDate, QEvent, QRect, Qt, Signal
-from PySide6.QtGui import QDoubleValidator, QIntValidator, QPainter, QPen
+from PySide6.QtGui import (
+    QColor, QDoubleValidator, QIntValidator, QPainter, QPalette, QPen,
+)
 from PySide6.QtWidgets import (
     QCalendarWidget, QComboBox, QFormLayout, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QPlainTextEdit, QPushButton, QToolButton, QVBoxLayout, QWidget,
@@ -143,26 +145,49 @@ class _CalIcon(QToolButton):
 
 class GroupedNumberEdit(QLineEdit):
     """حقل رقمي مُقنَّع reusable: أرقام فقط، عرضٌ مجمَّع (``group_digits``)،
-    مؤشّر مستقرّ أثناء التحرير، لصق ذكي، وإشارة :attr:`completed` عند بلوغ
-    كامل الأرقام (للانتقال التلقائي). ``value()`` = الأرقام الخام،
-    ``text()`` = العرض المنسَّق."""
+    مؤشّر مستقرّ، لصق ذكي، وإشارة :attr:`completed` عند اكتمال الأرقام.
+
+    ``key_sep`` (اختياري): آخر مجموعة تصير **مفتاحاً اختيارياً** يُفصَل
+    بـ« /» — نمط N° SS: ``[2, 4, 4, 2]`` + ``key_sep="/"`` ⇒
+    ``XX XXXX XXXX XX`` أو ``XX XXXX XXXX /XX``. حذف «/» بالرجوع (ونحن بعده)
+    أو بـ Delete (ونحن قبله) يدمج الأرقام. ``text()`` = العرض،
+    ``value()`` = مضغوط (أرقام، مع ``/`` إن وُجد المفتاح)."""
 
     completed = Signal()
 
-    def __init__(self, widths, sep: str = " ", parent=None):
+    def __init__(self, widths, sep: str = " ", key_sep=None, parent=None):
         super().__init__(parent)
         self._widths = list(widths)
         self._sep = sep
+        self._key_sep = key_sep
         self._total = sum(self._widths)
+        self._main_widths = self._widths[:-1] if key_sep else self._widths
+        self._main_len = sum(self._main_widths)
         self.setLayoutDirection(Qt.LeftToRight)
         self.textEdited.connect(self._reformat)
 
-    # -- تنسيق مع الحفاظ على موضع المؤشّر بعدد الأرقام --
+    # -- فكّ النصّ إلى (main, key, has_key) --
+    def _split(self, raw: str):
+        if self._key_sep and self._key_sep in raw:
+            a, _s, b = raw.partition(self._key_sep)
+            main = re.sub(r"\D", "", a)[:self._main_len]
+            key = re.sub(r"\D", "", b)[:self._widths[-1]]
+            return main, key, True
+        return re.sub(r"\D", "", raw)[:self._total], "", False
+
+    def _display(self, main: str, key: str, has_key: bool) -> str:
+        if has_key:
+            return (group_digits(main, self._main_widths, self._sep)
+                    + f" {self._key_sep}{key}")
+        return group_digits(main, self._widths, self._sep)
+
     def _reformat(self, _txt: str) -> None:
         raw = self.text()
         pos = self.cursorPosition()
-        before = len(re.sub(r"\D", "", raw[:pos]))
-        new = group_digits(raw, self._widths, self._sep)
+        sig = "0123456789" + (self._key_sep or "")
+        before = sum(1 for ch in raw[:pos] if ch in sig)
+        main, key, has_key = self._split(raw)
+        new = self._display(main, key, has_key)
         if new != raw:
             self.blockSignals(True)
             self.setText(new)
@@ -172,34 +197,66 @@ class GroupedNumberEdit(QLineEdit):
             else:
                 cnt, npos = 0, len(new)
                 for i, ch in enumerate(new):
-                    if ch.isdigit():
+                    if ch in sig:
                         cnt += 1
                         if cnt == before:
                             npos = i + 1
                             break
                 self.setCursorPosition(min(npos, len(new)))
-        if len(self.value()) == self._total:
+        if len(main + key) >= self._total:
             self.completed.emit()
 
+    def keyPressEvent(self, e):                           # noqa: N802 (Qt)
+        if self._key_sep and not self.hasSelectedText():
+            t, p = self.text(), self.cursorPosition()
+            if e.key() == Qt.Key_Backspace and p > 0 and \
+                    t[:p].rstrip().endswith(self._key_sep):
+                cut = t[:p].rfind(self._key_sep)
+                merged = re.sub(r"\D", "", t[:cut]) + re.sub(r"\D", "", t[p:])
+                left = group_digits(re.sub(r"\D", "", t[:cut]),
+                                    self._widths, self._sep)
+                self.setText(group_digits(merged, self._widths, self._sep))
+                self.setCursorPosition(len(left))
+                return
+            if e.key() == Qt.Key_Delete and t[p:].lstrip().startswith(
+                    self._key_sep):
+                cut = t.find(self._key_sep, p)
+                merged = re.sub(r"\D", "", t[:cut]) + re.sub(r"\D", "", t[cut + 1:])
+                self.setText(group_digits(merged, self._widths, self._sep))
+                self.setCursorPosition(p)
+                return
+        super().keyPressEvent(e)
+
     def insertFromMimeData(self, source):                 # noqa: N802 (Qt)
-        txt = (source.text() if source is not None and source.hasText()
-               else "")
-        digs = re.sub(r"\D", "", txt)
-        if digs:
-            self.set_value(digs)
-            if len(self.value()) == self._total:
-                self.completed.emit()
+        txt = source.text() if source is not None and source.hasText() else ""
+        if self._key_sep and self._key_sep in txt:
+            self.set_value(txt.replace(" ", ""))
+        else:
+            digs = re.sub(r"\D", "", txt)
+            if digs:
+                self.set_value(digs)
+        if self.is_complete():
+            self.completed.emit()
 
     def value(self) -> str:
-        return re.sub(r"\D", "", self.text())[:self._total]
+        main, key, has_key = self._split(self.text())
+        return f"{main}/{key}" if has_key else main
 
-    def set_value(self, digits) -> None:
+    def set_value(self, v) -> None:
         self.blockSignals(True)
-        self.setText(group_digits(str(digits or ""), self._widths, self._sep))
+        s = str(v or "")
+        if self._key_sep and "/" in s:
+            a, _s, b = s.partition("/")
+            self.setText(self._display(
+                re.sub(r"\D", "", a)[:self._main_len],
+                re.sub(r"\D", "", b)[:self._widths[-1]], True))
+        else:
+            self.setText(group_digits(s, self._widths, self._sep))
         self.blockSignals(False)
 
     def is_complete(self) -> bool:
-        return len(self.value()) == self._total
+        main, key, _h = self._split(self.text())
+        return len(main + key) >= self._total
 
 
 class _MaskLineEdit(QLineEdit):
@@ -284,8 +341,15 @@ class DateField(QWidget):
         self._btn.setFocusPolicy(Qt.NoFocus)
         self._btn.setAutoRaise(True)
         self._btn.setCursor(Qt.PointingHandCursor)
+        self._btn.setMinimumSize(0, 0)                    # لا يفرض ارتفاعاً
         self._btn.setFixedWidth(22)
         self._btn.clicked.connect(self._open_calendar)
+
+        # تظليل التحديد أزرق (نشط) ويُعتّمه Qt تلقائياً عند فقد التركيز.
+        pal = self._edit.palette()
+        pal.setColor(QPalette.Highlight, QColor(theme.PRIMARY))
+        pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+        self._edit.setPalette(pal)
 
         # رسالة الخطأ السطرية: طبقةٌ عائمة فوق ما تحت الحقل — **ليست** في
         # التخطيط، فلا تُغيّر ارتفاع DateField ولا محاذاته (Phase 55 / A1).
@@ -407,8 +471,7 @@ class DateField(QWidget):
             border = theme.BORDER
         self._edit.setStyleSheet(
             f"QLineEdit{{background:{bg}; color:{theme.TEXT}; "
-            f"border:1px solid {border}; border-radius:0; padding:0 1px; "
-            f"selection-background-color:{bg}; selection-color:{theme.TEXT};}}")
+            f"border:1px solid {border}; border-radius:0; padding:0 1px;}}")
         self._btn.setStyleSheet(
             "QToolButton{border:none; background:transparent;}")
 
@@ -553,6 +616,7 @@ class DateField(QWidget):
     # ----------------------- القراءة/الكتابة البرمجية -----------------------
     def _set_from_pydate(self, d, *, silent: bool = False) -> None:
         self._edit.blockSignals(True)
+        self._edit.deselect()                             # لا تظليل من ضبط برمجيّ
         if d is None:
             self._edit.clear()
         else:
@@ -626,6 +690,15 @@ class DateField(QWidget):
     def setFont(self, f) -> None:                         # noqa: N802 (Qt)
         super().setFont(f)
         self._edit.setFont(f)
+        self._btn.setFont(f)
+
+    def set_row_geom(self, height: int, btn_w: int) -> None:
+        """يفرض ارتفاع الحقل (= ارتفاع بقيّة حقول الصفّ) على المركّب
+        وخانة الكتابة وزرّ التقويم معاً — فلا يتضخّم الزرّ الارتفاع."""
+        h = max(int(height), 12)
+        self.setFixedHeight(h)
+        self._edit.setFixedHeight(h)
+        self._btn.setFixedSize(max(int(btn_w), 8), h)
 
     def text(self) -> str:
         return self._edit.text()

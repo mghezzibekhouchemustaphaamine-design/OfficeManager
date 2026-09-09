@@ -114,6 +114,39 @@ class SmartInputPrimitives(unittest.TestCase):
         g._reformat("")
         self.assertEqual(g.value(), "123")
 
+    # ---------------- N° SS: مفتاح «/XX» اختياري ----------------
+    def test_ssn_without_key(self):
+        g = F.GroupedNumberEdit([2, 4, 4, 2], key_sep="/")
+        g.setText("185030512345")
+        g._reformat("")
+        self.assertEqual(g.text(), "18 5030 5123 45")
+        self.assertTrue(g.is_complete())
+
+    def test_ssn_with_key_separator(self):
+        g = F.GroupedNumberEdit([2, 4, 4, 2], key_sep="/")
+        g.setText("1850305123/45")
+        g._reformat("")
+        self.assertEqual(g.text(), "18 5030 5123 /45")
+        self.assertEqual(g.value(), "1850305123/45")
+        self.assertTrue(g.is_complete())
+
+    def test_ssn_paste_both_forms(self):
+        for raw, disp in (("185030512345", "18 5030 5123 45"),
+                          ("18 5030 5123 /45", "18 5030 5123 /45"),
+                          ("1850305123/45", "18 5030 5123 /45")):
+            g = F.GroupedNumberEdit([2, 4, 4, 2], key_sep="/")
+            from PySide6.QtCore import QMimeData
+            md = QMimeData(); md.setText(raw)
+            g.insertFromMimeData(md)
+            self.assertEqual(g.text(), disp, raw)
+
+    def test_ssn_letters_rejected(self):
+        import re
+        g = F.GroupedNumberEdit([2, 4, 4, 2], key_sep="/")
+        g.setText("18ab5030")
+        g._reformat("")
+        self.assertEqual(re.sub(r"\D", "", g.text()), "185030")
+
     # ---------------- DateField smart day-pad + completed ----------------
     def test_datefield_day_pad(self):
         d = F.DateField("dd/MM/yyyy")

@@ -208,9 +208,6 @@ class _SheetCanvas(QWidget):
             if lbl:
                 base_text(xl, sc._ident_row_y(row, scale), f"{lbl} :",
                           font(3.2, True))
-            if kind == "famille":
-                base_text(xv + wv + 1.2, sc._ident_row_y(row, scale), "▾",
-                          font(3.0), QColor("#5f6368"))
         a_x, _lieu_x = sc._row1_layout(scale)
         base_text(a_x, sc._ident_row_y(1, scale), "à", font(3.2, True))
 
@@ -514,9 +511,15 @@ class BulletinTemplateScreen(Screen):
                 w.dateChanged.connect(lambda _d, k=slot.key: self._on_slot_write(k))
                 w.errorChanged.connect(self._refresh_date_errors)
                 w.completed.connect(lambda k=slot.key: self._focus_rel(k, +1))
-            elif slot.kind == "adherent":
-                # رقم الانتساب: حقلٌ رقميّ مجمَّع reusable «xx xxx xxx xx».
-                w = GroupedNumberEdit([2, 3, 3, 2], parent=self._canvas)
+            elif slot.kind in ("adherent", "num_ss"):
+                # حقول رقمية مجمَّعة (reusable): N° ADHÉRENT «xx xxx xxx xx»
+                # · N° SS «xx xxxx xxxx xx» أو «xx xxxx xxxx /xx».
+                if slot.kind == "adherent":
+                    w = GroupedNumberEdit([2, 3, 3, 2], parent=self._canvas)
+                else:
+                    w = GroupedNumberEdit([2, 4, 4, 2], key_sep="/",
+                                          parent=self._canvas)
+                w.setFrame(False)
                 al = {"r": Qt.AlignRight, "c": Qt.AlignHCenter,
                       "l": Qt.AlignLeft}[slot.align]
                 w.setAlignment(al | Qt.AlignVCenter)
@@ -528,9 +531,7 @@ class BulletinTemplateScreen(Screen):
                 al = {"r": Qt.AlignRight, "c": Qt.AlignHCenter,
                       "l": Qt.AlignLeft}[slot.align]
                 w.setAlignment(al | Qt.AlignVCenter)
-                # القيَم المجمَّعة (N° SS) تُدخَل بمسافات فتتجاوز maxlen الخام.
-                if slot.kind != "num_ss":
-                    w.setMaxLength(slot.maxlen)
+                w.setMaxLength(slot.maxlen)
                 w.textChanged.connect(lambda _t, k=slot.key: self._on_slot_write(k))
                 w.returnPressed.connect(lambda k=slot.key: self._focus_rel(k, +1))
             w.setLayoutDirection(Qt.LeftToRight)
@@ -701,6 +702,8 @@ class BulletinTemplateScreen(Screen):
             k = self._key_of_edit(obj)
             if k:
                 self._style_field(k)                      # حدّ التركيز واضح (B)
+            if t == QEvent.FocusOut:
+                obj.deselect()                            # لا تظليل بعد المغادرة
         if t == QEvent.MouseButtonPress:
             k = self._key_of_edit(obj)
             if k and self._slots_by_key.get(k) and \
@@ -740,8 +743,13 @@ class BulletinTemplateScreen(Screen):
 
             # ---- عرضاً (كلّه بالمليمتر ثمّ يُحوَّل — لا ثابت بكسل) ----
             if isinstance(w, DateField):
-                w_px = int(v.px(slot.w_mm + _DATE_BTN_MM))
-            elif getattr(slot, "fit_maxlen", False) or isinstance(
+                btn_px = v.px(_DATE_BTN_MM)
+                w_px = int(v.px(slot.w_mm) + btn_px)
+                w.set_row_geom(h_px, btn_px)              # ارتفاع الحقل = بقيّة الصفّ
+                w.setFixedWidth(max(w_px, 12))
+                w.move(int(v.x(x_mm)), int(top_px))
+                continue
+            if getattr(slot, "fit_maxlen", False) or isinstance(
                     w, GroupedNumberEdit):
                 cur = w.text()
                 w_px = int(max(fm.horizontalAdvance("0" * max(slot.maxlen, 10)),
@@ -777,18 +785,17 @@ class BulletinTemplateScreen(Screen):
             bg = theme.SURFACE if filled else theme.FIELD_EMPTY
             fg = theme.TEXT
             bd = theme.HOVER if w.hasFocus() else "#ffffff"
-        cls = "QDateEdit" if isinstance(w, DateField) else "QLineEdit"
         w.setStyleSheet(
-            f"{cls} {{ background:{bg}; color:{fg}; border:1px solid {bd}; "
-            f"border-radius:0; padding:0 1px; "
-            f"selection-background-color:{bg}; selection-color:{fg}; }}")
-        # توحيد صريح: لون النصّ من QPalette أيضاً (لا تظليل يُلوّن القيمة)
+            f"QLineEdit {{ background:{bg}; color:{fg}; border:1px solid {bd}; "
+            f"border-radius:0; padding:0 1px; }}")
+        # لون النصّ صريح من QPalette، وتظليل التحديد أزرق (نشط) — Qt يعتّمه
+        # تلقائياً عند فقد التركيز، فلا يبقى بلوك أزرق بعد المغادرة.
         pal = w.palette()
-        for role in (QPalette.Text, QPalette.WindowText, QPalette.HighlightedText):
-            pal.setColor(role, QColor(fg))
+        pal.setColor(QPalette.Text, QColor(fg))
+        pal.setColor(QPalette.WindowText, QColor(fg))
+        pal.setColor(QPalette.Highlight, QColor(theme.PRIMARY))
+        pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
         w.setPalette(pal)
-        if isinstance(w, QLineEdit):
-            w.deselect()
 
     # ----------------------- البيانات والحساب -----------------------
     def _w(self, key):

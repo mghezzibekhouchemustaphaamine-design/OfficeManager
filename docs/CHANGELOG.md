@@ -2876,3 +2876,42 @@ Legacy Tkinter (`ui/common/widgets.py`, `ui/hr/blocks.py`, `ui/cd/**`،
 معدَّل: `ui2/form.py` · `ui2/hr/paie/bulletin_template.py` ·
 `docs/CHANGELOG.md`. جديد: `ui2/tests/test_smart_input.py` ·
 `docs/baseline_screenshots/55_zoom_*.png`.
+
+## Phase 55-ب — 2026-09-09: إصلاحات مراجعة (كشف الراتب PySide6)
+
+بعد مراجعة Phase 55:
+
+- **تظليل التحديد لم يكن يظهر بالأزرق** (نقر مزدوج / رجوع للحقل باختصار):
+  سببه أن الأنماط كانت تضبط `selection-background-color = لون الحقل`
+  و`_style_field` كان يستدعي `deselect()` بعد `selectAll()`. الآن:
+  إزالة `selection-*` من QSS، وضبط `QPalette.Highlight = theme.PRIMARY`
+  / `HighlightedText = أبيض` (يعتّمه Qt تلقائياً عند فقد التركيز)، وحذف
+  `deselect()` من `_style_field` — يبقى فقط عند `FocusOut`.
+- **ارتفاع حقلَي التاريخ ≠ بقيّة الحقول**: `_CalIcon` (زرّ التقويم) كان
+  يفرض ارتفاعاً أدنى من نمط QToolButton فيتضخّم المركّب. أُضيف
+  `DateField.set_row_geom(height, btn_w)` يفرض نفس ارتفاع الصفّ على
+  المركّب وخانة الكتابة والزرّ معاً؛ و`setFont` يضبط خطّ الزرّ أيضاً؛
+  و`_relayout` يستدعيه بارتفاع بقيّة حقول الصفّ.
+- **N° SS**: صار `GroupedNumberEdit([2,4,4,2], key_sep="/")` — أرقام فقط،
+  عرض `XX XXXX XXXX XX`، ويقبل `/` قبل الرقمين الأخيرين
+  (`XX XXXX XXXX /XX`) بلا تعارض مع الأرقام قبله/بعده؛ حذف `/` بالرجوع
+  (ونحن بعده) أو بـ Delete (ونحن قبله) يدمج الأرقام. لصق الصيغتين
+  يُطبَّع. (‏`GroupedNumberEdit` عُمِّمت بوسيط `key_sep` — مفتاح اختياري
+  من آخر مجموعة.)
+- **SIT. FAMILIALE**: حُذف السهم `▾` المرسوم أمامه (القائمة المنبثقة
+  بالنقر تبقى).
+- **توحيد الخطّ داخل صندوق الهوية**: كلّ حقوله (QLineEdit عادية +
+  `GroupedNumberEdit` لـ N° SS + `DateField`) تأخذ نفس
+  `_DocView.font(slot.font_mm=3.2, bold=True)`؛ `GroupedNumberEdit` نالت
+  `setFrame(False)` كبقيّتها.
+
+### الاختبارات
+
+`ui2/tests` **42 OK** (‏+4: N° SS بلا/مع مفتاح، لصق الصيغتين، رفض
+الحروف). بقيّة المجموعات دون تغيير: 49 + 6 + 17 + 5 + 14 ذهبياً +
+galleries `ALLOK`.
+
+### الملفات المتأثرة
+
+معدَّل: `ui2/form.py` · `ui2/hr/paie/bulletin_template.py` ·
+`ui2/tests/test_smart_input.py` · `docs/CHANGELOG.md`.

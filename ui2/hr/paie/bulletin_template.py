@@ -129,18 +129,33 @@ _DEFAULT_ZONE = {"iep": _ZONE_A, "hs": _ZONE_A, "absence": _ZONE_A,
                  "retard": _ZONE_A, "prime": _ZONE_A, "free": _ZONE_A,
                  "avance": _ZONE_C, "autre": _ZONE_C}
 
-#  رُتب الترتيب: الصفوف الثابتة تُرسي حدود المناطق، والصفوف الاختيارية
-#  تقع داخل حزمة منطقتها بترتيب الإضافة (§3). Zone A بين الأجر و CNAS،
-#  Zone B بين النقل و IRG، Zone C تحت IRG.
-_ANCHOR_RANK = {"salaire": 0, "cnas": 20, "panier": 30, "transport": 40,
-                "irg": 60}
-_ZONE_RANK = {_ZONE_A: 10, _ZONE_B: 50, _ZONE_C: 70}
+#  ================= نموذج الموضع البصريّ (Phase E.3 §2) =================
+#  المنطقة = التصنيف الحسابيّ. **الشريحة (segment) + الترتيب (order)** =
+#  الموضع البصريّ الذي اختاره المستخدم، **مستقلٌّ عن المنطقة**. خمس شرائح
+#  بين الصفوف الثابتة:
+#    A  : بعد الأجر القاعديّ، قبل CNAS   → Zone A
+#    B1 : بعد CNAS، قبل PANIER           → Zone B
+#    B2 : بعد PANIER، قبل TRANSPORT      → Zone B
+#    B3 : بعد TRANSPORT، قبل IRG         → Zone B
+#    C  : بعد IRG                        → Zone C
+#  داخل كلّ شريحة يُحفَظ ترتيب الإدراج بالضبط (§1/§3/§5).
+_SEGMENTS = ("A", "B1", "B2", "B3", "C")
+_SEGMENT_ZONE = {"A": _ZONE_A, "B1": _ZONE_B, "B2": _ZONE_B, "B3": _ZONE_B,
+                 "C": _ZONE_C}
+_SEGMENT_RANK = {"A": 10, "B1": 30, "B2": 50, "B3": 70, "C": 90}
+#  الشريحة التي تلي كلّ صفٍّ ثابت مباشرةً (الحدّ أسفله).
+_SEGMENT_BELOW_ANCHOR = {"salaire": "A", "cnas": "B1", "panier": "B2",
+                         "transport": "B3", "irg": "C"}
+_ANCHOR_RANK = {"salaire": 0, "cnas": 20, "panier": 40, "transport": 60,
+                "irg": 80}
+#  الشريحة الافتراضية عند ``_add_row(kind)`` بلا موضع صريح.
+_DEFAULT_SEGMENT = {"iep": "A", "hs": "A", "absence": "A", "retard": "A",
+                    "prime": "A", "free": "A", "avance": "C", "autre": "C"}
 
 
 def _legacy_zone(kind, cells):
-    """منطقة سطرٍ من Work/Draft قديم (< DRAFT_VERSION 5) لا يحمل ``zone``
-    صريحاً (§39): تُشتقّ من نوعه وتصنيفه القديم مرّة واحدة عند الاستعادة،
-    ثمّ تُحفَظ صريحةً بالنسخة الجديدة."""
+    """منطقة سطرٍ من Work/Draft قديم لا يحمل ``segment``/``zone`` صريحاً
+    (§5/§39): تُشتقّ من نوعه وتصنيفه القديم مرّة واحدة عند الاستعادة."""
     cells = cells or {}
     if kind in ("iep", "hs", "absence", "retard"):
         return _ZONE_A
@@ -151,6 +166,12 @@ def _legacy_zone(kind, cells):
         cot, imp = _soumis_class(cells.get("classe") or _SOUMIS_CHOICES[2])
         return _ZONE_A if cot == _YES else (_ZONE_B if imp == _YES else _ZONE_C)
     return _ZONE_C                                    # avance / autre-retenue
+
+
+def _legacy_segment(kind, cells):
+    """‏``segment`` لسطرٍ قديم بلا حقل ``segment`` (§5): Zone A → A ·
+    Zone B → **B3** (قبل IRG) · Zone C → C."""
+    return {_ZONE_A: "A", _ZONE_B: "B3", _ZONE_C: "C"}[_legacy_zone(kind, cells)]
 
 #  Smart Next (Phase D): ما يُنقَل إلى الشهر التالي. الباقي (absence /
 #  retard / hs / avance / autre) يُحذَف بالكامل — عرضيّ/شهريّ لا يتكرّر.
@@ -179,19 +200,25 @@ _ZONE_CLASS = {_ZONE_A: (_YES, _YES), _ZONE_B: (_NO, _YES), _ZONE_C: (_NO, _NO)}
 # --------- تحويل الصفوف إلى entries لـ lignes.compute_bulletin ---------
 
 def _free_entry(r):
-    """السطر الحرّ (§8-§11): قيمةٌ في GAIN **أو** RETENUE (لا الاثنين).
-    N/BASE و TAUX عرضٌ فقط — لا حساب تلقائيّ (§9). التصنيف من المنطقة."""
+    """السطر الحرّ (§8-§14). التصنيف الجبائيّ من المنطقة (الموضع):
+      • GAIN — مسموحٌ في كلّ المناطق: Zone A ⇒ CNAS+IRG · Zone B ⇒ IRG
+        فقط · Zone C ⇒ خارج الاثنين.
+      • RETENUE حرّة — مسموحةٌ في **Zone C فقط** (اقتطاع صافٍ / Z4، وهو ما
+        يطبّقه المحرّك فعلاً). في Zone A/B لا يملك المحرّك مساراً عامّاً
+        باقتطاعٍ قبل الضريبة ⇒ **لا تُحتسَب** (§12/§13/§16) — تُبرَز
+        للمراجعة، ويحوّلها المستخدم إلى Absence/Retard أو ينقلها لأسفل IRG.
+    N/BASE و TAUX عرضٌ فقط — لا حساب تلقائيّ (§9)."""
     cot, imp = _ZONE_CLASS[r.zone]
     gain, ret = r.val("gain"), r.val("retenue")
     lbl = r.val("libelle") or "LIGNE LIBRE"
     if ret and not gain:
-        #  RETENUE موجبة تُطرح حسب المنطقة: Zone A = اقتطاع خاضع (يُنقِص
-        #  [A]/[C]/الصافي، كالغياب) · غيرها = اقتطاع صافٍ فقط (Z4).
-        za = r.zone == _ZONE_A
+        if r.zone != _ZONE_C:
+            return None                            # §13: غير مدعوم — لا يُحتسَب
         return {"type": "libre", "values": {
             "libelle": lbl, "montant": ret, "est_retenue": _YES,
-            "cotisable": _YES if za else _NO,
-            "imposable": _YES if za else _NO}}
+            "cotisable": _NO, "imposable": _NO}}
+    if not gain:
+        return None
     return {"type": "libre", "values": {
         "libelle": lbl, "montant": gain, "est_retenue": _NO,
         "cotisable": cot, "imposable": imp}}
@@ -460,23 +487,25 @@ class _Row:
     widgetاً — يُرسَم من ``BulletinView``."""
 
     def __init__(self, screen: "BulletinTemplateScreen", kind: str, rid: int,
-                 zone: str = None, seq: int = None):
+                 segment: str = None, order: float = None):
         self.screen = screen
         self.kind = kind
         self.rid = rid
-        #  ``seq`` يُمرَّر عند تحويل النوع في المكان (§18) للحفاظ على موضع
-        #  السطر داخل حزمة منطقته.
-        if seq is None:
-            self.seq = screen._row_seq
-            screen._row_seq += 1
-        else:
-            self.seq = seq
         spec = _ROW_SPECS[kind]
         self.role = spec["role"]
-        #  المنطقة الحسابيّة (§1/§2) — للصفوف الاختيارية فقط؛ الثابتة
-        #  تُرتَّب بمرتكزاتها. تُمرَّر عند الاستعادة، وإلا الافتراض.
-        self.zone = (zone if zone in _ZONES
-                     else _DEFAULT_ZONE.get(kind, _ZONE_C))
+        #  الموضع البصريّ (§2) — للصفوف الاختيارية فقط؛ الثابتة تُرتَّب
+        #  بمرتكزاتها. ``segment`` تُمرَّر عند الإدراج/الاستعادة، و``order``
+        #  رقمٌ متزايدٌ داخل الشريحة يُعاد تسويته بـ ``_reindex_segments``.
+        if self.role == "optional":
+            self.segment = (segment if segment in _SEGMENTS
+                            else _DEFAULT_SEGMENT.get(kind, "C"))
+            self.order = (float(order) if order is not None
+                          else float(screen._alloc_order(self.segment)))
+        else:
+            self.segment = None
+            self.order = 0.0
+        #  حالة مراجعة (§8/§15): "" | "duplicate_unique" | "free_retenue_ab".
+        self._review = ""
         self.code = spec["code"]
         self.libelle = spec["lib"]
         self._cellspec = {c["name"]: c for c in spec["cells"]}
@@ -569,13 +598,19 @@ class _Row:
     def can_delete(self) -> bool:
         return self.role == "optional"
 
+    @property
+    def zone(self):
+        """المنطقة الحسابيّة — **مشتقّة** من الشريحة (§2): لا تُخزَّن ولا
+        تُضبَط مباشرةً. الشريحة هي القرار."""
+        return _SEGMENT_ZONE.get(self.segment, _ZONE_C)
+
     def sort_key(self):
-        #  الصفوف الثابتة تُرسي حدود المناطق؛ الاختيارية داخل حزمة منطقتها
-        #  بترتيب الإضافة (§3). لا ترتيب دلاليّ حسب النوع بعد اليوم — الموضع
-        #  قرار المستخدم (§1).
+        #  الصفوف الثابتة تُرسي حدود الشرائح؛ الاختيارية داخل شريحتها
+        #  بترتيب الإدراج الدقيق (§1/§3). الموضع قرار المستخدم — لا ترتيب
+        #  دلاليّ حسب النوع.
         if self.role != "optional":
-            return (_ANCHOR_RANK.get(self.kind, 999), -1)
-        return (_ZONE_RANK.get(self.zone, _ZONE_RANK[_ZONE_C]), self.seq)
+            return (_ANCHOR_RANK.get(self.kind, 999), -1.0)
+        return (_SEGMENT_RANK[self.segment], self.order)
 
     def entry(self):
         return _ROW_SPECS[self.kind].get("to_entry", lambda _r: None)(self)
@@ -867,7 +902,7 @@ class BulletinTemplateScreen(Screen):
     DOC_LABEL = "Bulletin de paie"
     OUTPUT_DIRNAME = "Bulletins de paie"
     DRAFT_NAME = "paie_template"
-    DRAFT_VERSION = 5          # R1: نموذج المناطق A/B/C + بلا Prime افتراضيّ
+    DRAFT_VERSION = 6          # E.3: نموذج الشريحة+الترتيب (الموضع البصريّ)
 
     #  أدنى عدد أسطر مرسومة تحت IRG (منطقة Zone C + فراغ) قبل TOTAL/NET —
     #  يُبقي أسفل الوثيقة ثابتاً بصرياً مهما قلّت الأسطر (§4). المساحة
@@ -956,9 +991,15 @@ class BulletinTemplateScreen(Screen):
         return sorted(self._rows, key=lambda r: r.sort_key())
 
     def _visible_body_rows(self):
-        """الصفوف بترتيب المناطق (§3): الأجر → [Zone A] → CNAS → السلة →
-        النقل → [Zone B] → IRG → [Zone C]."""
+        """الصفوف بترتيب الشرائح (§3): الأجر → [A] → CNAS → [B1] → PANIER →
+        [B2] → TRANSPORT → [B3] → IRG → [C]."""
         return self._ordered_rows()
+
+    def _segment_rows(self, segment):
+        """الصفوف الاختيارية في شريحةٍ مرتَّبةً بترتيبها الدقيق."""
+        return sorted((r for r in self._rows
+                       if r.role == "optional" and r.segment == segment),
+                      key=lambda r: r.order)
 
     def _zone_rows(self, zone):
         return [r for r in self._rows
@@ -967,30 +1008,94 @@ class BulletinTemplateScreen(Screen):
     def _row_index(self, row) -> int:
         return self._visible_body_rows().index(row)
 
-    def _add_row(self, kind: str, zone: str = None):
+    # ---------- ترتيب الشرائح: تخصيص/تسوية الأرقام (§2/§5) ----------
+    def _alloc_order(self, segment):
+        return 1.0 + max((r.order for r in self._rows if r.role == "optional"
+                          and r.segment == segment), default=-1.0)
+
+    def _reindex_segments(self):
+        """يُعيد تسوية ``order`` إلى ``0,1,2,…`` داخل كلّ شريحة (يمنع انجراف
+        الكسور بعد عدّة إدراجات) دون تغيير الترتيب المرئيّ."""
+        for seg in _SEGMENTS:
+            for j, r in enumerate(self._segment_rows(seg)):
+                r.order = float(j)
+
+    def _add_row(self, kind: str, segment: str = None):
+        """إضافةٌ إلى **آخر** الشريحة (المسار الافتراضيّ/القديم)."""
+        if not self._can_add_smart(kind):                  # §7: IEP فريدة
+            self.status.setText(
+                f"«{_SMART_TYPES[kind]['label']}» موجودة مسبقاً — سطرٌ واحد فقط.")
+            return None
+        seg = segment if segment in _SEGMENTS \
+            else _DEFAULT_SEGMENT.get(kind, "C")
+        return self._insert_row_at(kind, seg, len(self._segment_rows(seg)))
+
+    def _insert_row_at(self, kind: str, segment: str, index: int):
+        """يُدرج صفّاً **في الموضع الدقيق** ``index`` داخل ``segment`` (§1/§3):
+        يُزاح ما بعده ثمّ تُسوَّى الأرقام."""
         if self._locked:                          # 🔒 — لا تعديل بنية
             return None
-        if len([r for r in self._rows if r.role != "system"]) + 2 >= _MAX_BODY_ROWS:
+        if len([r for r in self._rows
+                if r.role != "system"]) + 2 >= _MAX_BODY_ROWS:      # §31
             from ui2.alerts import warn
             warn(self, self.TITLE,
                  ["بلغ الجدول الحدّ الأقصى للصفوف — احذف صفاً قبل الإضافة."])
             return None
-        r = _Row(self, kind, self._next_rid, zone=zone)
+        seg = segment if segment in _SEGMENTS else "A"
+        index = max(0, min(int(index), len(self._segment_rows(seg))))
+        r = _Row(self, kind, self._next_rid, segment=seg, order=index - 0.5)
         self._next_rid += 1
         self._rows.append(r)
+        self._reindex_segments()
         self._refresh_libelle_suggestions()
         self._rebuild_nav()
         self._sync_row_styles()
         self.mark_dirty()
         self._recompute()
         self._relayout()
-        # ركّز أوّل خلية قابلة للتحرير في الصف الجديد (LIBELLÉ للسطر الحرّ)
         cells = _ROW_SPECS[kind]["cells"]
         if cells:
             first = "libelle" if any(c["name"] == "libelle" for c in cells) \
                 else cells[0]["name"]
             self._widgets[r.cell_key(first)].setFocus()
         return r
+
+    # ---------- حارس النوع الفريد على مستوى النموذج (§7/§20) ----------
+    def _can_add_smart(self, kind: str, exclude=None) -> bool:
+        """‏``False`` إن كان ``kind`` نوعاً فريداً وموجوداً أصلاً (عدا
+        ``exclude``). المرجعُ الوحيد — الاقتراحات مجرّد تسهيلٍ بصريّ."""
+        if kind not in _SMART_UNIQUE:
+            return True
+        return not any(r.kind == kind and r is not exclude
+                       for r in self._rows)
+
+    def _dedupe_unique(self) -> bool:
+        """يُبقي أوّل صفٍّ من كلّ نوعٍ فريد، ويُنزِّل الباقي إلى «حرّ + مراجعة»
+        مع الحفاظ على بيانات المستخدم المرئيّة (§8). ``True`` إن غيّر شيئاً."""
+        seen, changed = set(), False
+        for i, r in enumerate(list(self._rows)):
+            if r.kind not in _SMART_UNIQUE:
+                continue
+            if r.kind in seen:
+                lbl = r.val("libelle") or _SMART_TYPES[r.kind]["label"]
+                #  §8: لا نفقد بيانات المستخدم — نُضمّن قيمة المدخل القديم
+                #  (النسبة) في التسمية المرئيّة قبل التنزيل إلى «حرّ».
+                extra = " ".join(f"{c}={r.val(c)}" for c in ("taux", "code")
+                                 if r.val(c))
+                code = r.val("code")
+                seg, order, rid = r.segment, r.order, r.rid
+                r.dispose()
+                fr = _Row(self, "free", rid, segment=seg, order=order)
+                fr._review = "duplicate_unique"
+                fr.set_val("libelle",
+                           f"{lbl} (DOUBLON à revoir{' — ' + extra if extra else ''})")
+                if code:
+                    fr.set_val("code", code)
+                self._rows[i] = fr
+                changed = True
+            else:
+                seen.add(r.kind)
+        return changed
 
     # ============= LIBELLÉ ذكيّ + التحويل (UX Redesign R3) =============
     def _refresh_libelle_suggestions(self):
@@ -1022,9 +1127,9 @@ class BulletinTemplateScreen(Screen):
             if row.kind != "free":
                 self._convert_row(row, "free", keep_libelle=text)
             return
-        #  §24: نوع فريد موجود أصلاً ⇒ لا تحويل، تلميح خفيف، يبقى حرّاً.
-        if target in _SMART_UNIQUE and any(
-                r.kind == target for r in self._rows if r is not row):
+        #  §7/§20: حارس النوع الفريد على مستوى النموذج — لا سطرٌ ذكيّ ثانٍ
+        #  حتى لو كُتب الاسم يدوياً.
+        if not self._can_add_smart(target, exclude=row):
             self.status.setText(
                 f"«{_SMART_TYPES[target]['label']}» موجودة مسبقاً — سطرٌ واحد "
                 "فقط. بقي السطر حرّاً.")
@@ -1032,10 +1137,9 @@ class BulletinTemplateScreen(Screen):
         self._convert_row(row, target)
 
     def _convert_row(self, row, new_kind, *, keep_libelle=None):
-        """يحوّل ``row`` إلى ``new_kind`` **في المكان** (§18): نفس الموضع
-        (‏``seq``) ونفس المنطقة (§19 — لا نقل تلقائيّ). لا تُنقَل القيَم غير
-        المتوافقة — فقط CODE إن كان معدَّلاً يدوياً، وLIBELLÉ الحرّ إن
-        طُلِب. يُعاد بناء المدخلات والتنقّل والحساب."""
+        """يحوّل ``row`` إلى ``new_kind`` **في المكان** (§18): نفس الشريحة
+        و``order`` (§2 — لا نقل بين المواضع). لا تُنقَل القيَم غير المتوافقة
+        — فقط CODE إن كان يدوياً، وLIBELLÉ الحرّ إن طُلِب."""
         #  حارس إعادة الدخول: تغيير التركيز أثناء التحويل قد يعيد إطلاق
         #  ``_on_libelle_committed`` ⇒ تحويلٌ متداخل يخلّف widgetات يتيمة.
         if getattr(self, "_converting", False):
@@ -1044,13 +1148,16 @@ class BulletinTemplateScreen(Screen):
             i = self._rows.index(row)
         except ValueError:
             return None
+        #  §7/§20: لا نوعٌ فريد ثانٍ (حتى استدعاءً مباشراً).
+        if not self._can_add_smart(new_kind, exclude=row):
+            return None
         self._converting = True
         try:
             keep_code = row.val("code") if row._code_manual else None
             code_manual = row._code_manual
-            seq, zone, rid = row.seq, row.zone, row.rid
+            seg, order, rid = row.segment, row.order, row.rid
             row.dispose()
-            nr = _Row(self, new_kind, rid, zone=zone, seq=seq)
+            nr = _Row(self, new_kind, rid, segment=seg, order=order)
             nr._code_manual = code_manual
             if keep_code:
                 nr.set_val("code", keep_code)
@@ -1072,29 +1179,32 @@ class BulletinTemplateScreen(Screen):
             self._converting = False
         return nr
 
-    def _insert_free_row(self, zone: str):
-        """يُدرج سطراً حرّاً في المنطقة المعطاة (§6/§8) — نوع الإضافة
-        الافتراضيّ من الجدول نفسه. الموضع داخل الحزمة = ترتيب الإضافة."""
-        if zone not in _ZONES:
-            zone = _ZONE_A
-        return self._add_row("free", zone=zone)
+    #  الشريحة الافتراضية لكلّ منطقة (Zone B ⇒ B3، قبل IRG).
+    _ZONE_DEFAULT_SEGMENT = {_ZONE_A: "A", _ZONE_B: "B3", _ZONE_C: "C"}
 
-    def _zone_at_doc_y(self, mm_y: float) -> str:
-        """المنطقة التي يقع فيها إحداثيّ y (مليمتر ورقة) داخل جسم الجدول:
-        فوق CNAS ⇒ A · بين النقل و IRG ⇒ B · تحت IRG ⇒ C (§6)."""
+    def _insert_free_row(self, zone: str):
+        """يُدرج سطراً حرّاً في آخر شريحة المنطقة (المسار المختصر — الاختبارات
+        والإدراج غير المتموضع). الإدراج الدقيق عبر ``_insert_row_at``."""
+        seg = self._ZONE_DEFAULT_SEGMENT.get(zone, "A")
+        return self._insert_row_at("free", seg, len(self._segment_rows(seg)))
+
+    def _gutter_target(self, mm_y: float):
+        """‏``(segment, index)`` للحدّ الأقرب لموضع ``mm_y`` بين **صفوفٍ
+        فعليّة** (§1/§3/§4)، أو ``None`` إن كان الحدّ فوق الأجر القاعديّ
+        (§3A — لا ＋ هناك). الأسطر الفارغة تحت آخر صفّ Zone C تنطبق على
+        «بعد آخر صفّ C»."""
         rows = self._visible_body_rows()
-        idx = {r.kind: i for i, r in enumerate(rows)}
-        row_at = int(max(0, (mm_y - T.BODY_TOP) // T.ROW_H))
-        i_cnas = idx.get("cnas", 0)
-        i_trans = idx.get("transport", i_cnas)
-        i_irg = idx.get("irg", len(rows))
-        if row_at <= i_cnas:
-            return _ZONE_A
-        if row_at <= i_irg and row_at > i_trans:
-            return _ZONE_B
-        if row_at > i_irg:
-            return _ZONE_C
-        return _ZONE_A if row_at <= i_cnas else _ZONE_C
+        nb = len(rows)
+        b = int(round((mm_y - T.BODY_TOP) / T.ROW_H))
+        b = max(0, min(nb, b))
+        if b == 0:
+            return None
+        above = rows[b - 1]
+        seg = (above.segment if above.role == "optional"
+               else _SEGMENT_BELOW_ANCHOR[above.kind])
+        idx = sum(1 for r in rows[:b]
+                  if r.role == "optional" and r.segment == seg)
+        return seg, idx
 
     # ============= أزرار ＋/－ على هامش الجدول (Word-like — §6/§7/§33) =============
     def _build_gutter_controls(self):
@@ -1103,14 +1213,15 @@ class BulletinTemplateScreen(Screen):
         بالـ hover فقط، يختفيان في القفل، وليسا جزءاً من الرسم (فلا يظهران
         في DOCX/PDF)."""
         from PySide6.QtWidgets import QToolButton
-        self._plus_zone = None
+        self._plus_target = None            # (segment, index) للإدراج الدقيق
         self._minus_row = None
         self._btn_plus = QToolButton(self._canvas)
         self._btn_plus.setText("＋")
         self._btn_plus.setCursor(Qt.PointingHandCursor)
         self._btn_plus.setToolTip("إدراج سطر هنا")
         self._btn_plus.clicked.connect(
-            lambda: self._plus_zone and self._insert_free_row(self._plus_zone))
+            lambda: self._plus_target is not None
+            and self._insert_row_at("free", *self._plus_target))
         self._btn_minus = QToolButton(self._canvas)
         self._btn_minus.setText("－")
         self._btn_minus.setCursor(Qt.PointingHandCursor)
@@ -1133,6 +1244,8 @@ class BulletinTemplateScreen(Screen):
         self._canvas.setMouseTracking(True)
 
     def _hide_gutter_controls(self):
+        self._plus_target = None
+        self._minus_row = None
         for b in (getattr(self, "_btn_plus", None),
                   getattr(self, "_btn_minus", None)):
             if b is not None:
@@ -1157,17 +1270,22 @@ class BulletinTemplateScreen(Screen):
         size = max(13, min(24, int(v.px(4.4))))
         rows = self._visible_body_rows()
         r_idx = int((mm_y - top) // T.ROW_H)
+        nb_real = len(rows)
 
-        #  ＋ — الهامش الأيسر فقط (من ‎-13mm‎ إلى ‎+2mm‎)، عند أقرب حدّ صفّ.
-        if -13.0 <= mm_x <= 2.0:
-            b_idx = max(0, min(n, int(round((mm_y - top) / T.ROW_H))))
-            self._plus_zone = self._zone_at_doc_y(top + (b_idx + 0.5) * T.ROW_H)
+        #  ＋ — الهامش الأيسر فقط (‎-13..+2mm‎)، عند أقرب حدّ **صفٍّ فعليّ**
+        #  (§4: الأسطر الفارغة تنطبق على «بعد آخر صفّ C»). موضع الإدراج
+        #  الدقيق = (segment, index) لا مجرّد المنطقة.
+        b_real = max(0, min(nb_real, int(round((mm_y - top) / T.ROW_H))))
+        target = self._gutter_target(mm_y)
+        if -13.0 <= mm_x <= 2.0 and target is not None:
+            self._plus_target = target
             self._btn_plus.setFixedSize(size, size)
             self._btn_plus.move(int(v.x(-6.0) - size),
-                                int(v.y(top + b_idx * T.ROW_H) - size / 2))
+                                int(v.y(top + b_real * T.ROW_H) - size / 2))
             self._btn_plus.raise_()
             self._btn_plus.show()
         else:
+            self._plus_target = None
             self._btn_plus.hide()
 
         #  － — الهامش الأيمن فقط (خارج الجدول: من حافته إلى ‎+14mm‎)، مقابل
@@ -1193,6 +1311,7 @@ class BulletinTemplateScreen(Screen):
             return
         row.dispose()
         self._rows.remove(row)
+        self._reindex_segments()              # §25: يبقى الترتيب متّصلاً
         self._refresh_libelle_suggestions()
         self._rebuild_nav()
         self.mark_dirty()
@@ -1375,10 +1494,13 @@ class BulletinTemplateScreen(Screen):
         return {
             "header": {s.key: self._hdr_val(self._widgets[s.key])
                        for s in self._header_slots},
-            "rows": [{"kind": r.kind, "zone": r.zone,
+            "rows": [{"kind": r.kind,
+                      "segment": r.segment, "order": r.order,
+                      "zone": r.zone,                      # مشتقٌّ — للقراءة فقط
                       "cells": {c: r.val(c) for c in r.widgets},
                       "iep_manual": r._iep_manual,
-                      "code_manual": r._code_manual}
+                      "code_manual": r._code_manual,
+                      "review": r._review}
                      for r in self._rows],
             "incomplete": bool(v is not None and v.is_incomplete),
         }
@@ -1406,21 +1528,33 @@ class BulletinTemplateScreen(Screen):
             for r in list(self._rows):
                 r.dispose()
             self._rows.clear()
+            legacy_order = {}
             for spec in data.get("rows", []):
                 kind = spec.get("kind")
                 if kind not in _ROW_SPECS:
                     continue
                 cells = spec.get("cells") or {}
-                #  §39: عمل قديم (< DRAFT_VERSION 5) بلا ``zone`` ⇒ تُشتقّ
-                #  مرّة من النوع/التصنيف القديم ثمّ تُحفَظ صريحةً.
-                zone = spec.get("zone") or _legacy_zone(kind, cells)
-                r = _Row(self, kind, self._next_rid, zone=zone)
+                #  §5/§39: عملٌ قديم بلا ``segment`` ⇒ تُشتقّ من ``zone``
+                #  القديم (A→A · B→B3 · C→C) وترتيب الملفّ، مرّةً في الذاكرة
+                #  ثمّ تُحفَظ صريحةً عند الحفظ التالي.
+                seg = spec.get("segment")
+                order = spec.get("order")
+                if seg not in _SEGMENTS:
+                    seg = (_legacy_segment(kind, cells)
+                           if not spec.get("zone")
+                           else {_ZONE_A: "A", _ZONE_B: "B3",
+                                 _ZONE_C: "C"}.get(spec["zone"],
+                                                  _legacy_segment(kind, cells)))
+                    order = legacy_order.get(seg, 0)
+                    legacy_order[seg] = order + 1
+                r = _Row(self, kind, self._next_rid, segment=seg, order=order)
                 self._next_rid += 1
                 self._rows.append(r)
                 for c, val in cells.items():
                     r.set_val(c, val)
                 r._iep_manual = bool(spec.get("iep_manual"))
                 r._code_manual = bool(spec.get("code_manual"))
+                r._review = spec.get("review") or ""
             for kind in self._FIXED_KINDS:
                 if not any(r.kind == kind for r in self._rows):
                     self._rows.append(_Row(self, kind, self._next_rid))
@@ -1428,6 +1562,8 @@ class BulletinTemplateScreen(Screen):
             self._prev_text.clear()
         finally:
             self._suspend = set()
+        self._reindex_segments()
+        self._dedupe_unique()                 # §8: لا نوعٌ فريد مكرَّر
         self._refresh_libelle_suggestions()
         self._rebuild_nav()
         for k in list(self._widgets):
@@ -1992,7 +2128,7 @@ class BulletinTemplateScreen(Screen):
     #  حالتان مرئيّتان فقط: ⚠️ Incomplete · 🔒 Final. Auto-draft آليّة
     #  استرداد داخلية لا حالة مستند.
 
-    WORK_VERSION = 2          # R1: نموذج المناطق A/B/C في كلّ صفّ
+    WORK_VERSION = 3          # E.3: segment + order لكلّ صفّ
 
     def work_data(self) -> dict:
         """Work Data كاملة — مصدر إعادة بناء الشاشة (لا DOCX/PDF). تلفّ

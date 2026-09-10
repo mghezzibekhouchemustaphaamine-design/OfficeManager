@@ -464,7 +464,7 @@ class BulletinTemplateZoneModelR1(unittest.TestCase):
 
     def test_draft_roundtrip_preserves_explicit_zone(self):
         self.scr._add_row("prime")
-        self._last("prime").zone = "B"
+        self._last("prime").segment = "B3"
         st = self.scr.draft_state()
         self.assertEqual([r for r in st["rows"] if r["kind"] == "prime"][0]["zone"],
                          "B")
@@ -550,7 +550,7 @@ class BulletinTemplateFreeRowR2(unittest.TestCase):
         self.assertLess(self.scr._calc_result.net_a_payer, net0)
 
     def test_free_gain_and_retenue_mutually_exclusive(self):
-        r = self.scr._insert_free_row("A")
+        r = self.scr._insert_free_row("C")            # E.3: RETENUE حرّة = Zone C
         r.set_val("gain", "1000")
         self.scr._on_row_edit(r.cell_key("gain"))
         r.set_val("retenue", "300")
@@ -568,7 +568,7 @@ class BulletinTemplateFreeRowR2(unittest.TestCase):
     def test_free_nbase_taux_do_not_autocalculate(self):
         net0 = self.scr._calc_result.net_a_payer
         r = self._free("A", nbase="10", taux="100")     # بلا gain/retenue
-        self.assertIsNone(r.entry()["values"]["montant"] or None)
+        self.assertIsNone(r.entry())                    # لا NBASE×TAUX ضمنيّ
         self.assertEqual(self.scr._calc_result.net_a_payer, net0)
 
     # ---------- بلا رمادي (§29) ----------
@@ -581,15 +581,27 @@ class BulletinTemplateFreeRowR2(unittest.TestCase):
         self.assertTrue(theme.SURFACE.lstrip("#") in ss.replace("#", "")
                         or theme.FIELD_EMPTY.lstrip("#") in ss.replace("#", ""))
 
-    # ---------- خريطة y → منطقة ----------
-    def test_zone_at_doc_y(self):
+    # ---------- خريطة y → (شريحة، فهرس) للإدراج الدقيق (§1/§3) ----------
+    def test_gutter_target_segments(self):
         rows = self.scr._visible_body_rows()
-        ys = 0.0   # Phase E.1: هندسة الوثيقة بلا إزاحة معتمِدة زوم
         i = {r.kind: k for k, r in enumerate(rows)}
-        y_above = ys + T.BODY_TOP + i["cnas"] * T.ROW_H - 0.1
-        y_below = ys + T.BODY_TOP + (i["irg"] + 1.5) * T.ROW_H
-        self.assertEqual(self.scr._zone_at_doc_y(y_above), "A")
-        self.assertEqual(self.scr._zone_at_doc_y(y_below), "C")
+        # حدٌّ فوق الأجر القاعديّ ⇒ لا ＋ (§3A)
+        self.assertIsNone(self.scr._gutter_target(T.BODY_TOP - 1.0))
+        # بين الأجر و CNAS ⇒ شريحة A
+        self.assertEqual(self.scr._gutter_target(
+            T.BODY_TOP + i["cnas"] * T.ROW_H - 0.1)[0], "A")
+        # بين CNAS و PANIER ⇒ B1
+        self.assertEqual(self.scr._gutter_target(
+            T.BODY_TOP + i["panier"] * T.ROW_H - 0.1)[0], "B1")
+        # بين PANIER و TRANSPORT ⇒ B2
+        self.assertEqual(self.scr._gutter_target(
+            T.BODY_TOP + i["transport"] * T.ROW_H - 0.1)[0], "B2")
+        # بين TRANSPORT و IRG ⇒ B3
+        self.assertEqual(self.scr._gutter_target(
+            T.BODY_TOP + i["irg"] * T.ROW_H - 0.1)[0], "B3")
+        # تحت IRG (وفي الأسطر الفارغة) ⇒ C
+        self.assertEqual(self.scr._gutter_target(
+            T.BODY_TOP + (i["irg"] + 3) * T.ROW_H)[0], "C")
 
     # ---------- أزرار ＋/－ على الهامش (§6/§7/§28/§33) ----------
     def _canvas_pt(self, mm_x, row_boundary):
@@ -602,7 +614,8 @@ class BulletinTemplateFreeRowR2(unittest.TestCase):
     def test_gutter_plus_shows_in_left_margin(self):
         self.scr._gutter_mouse_move(self._canvas_pt(-5.0, 1))
         self.assertFalse(self.scr._btn_plus.isHidden())
-        self.assertIn(self.scr._plus_zone, ("A", "B", "C"))
+        self.assertIsNotNone(self.scr._plus_target)
+        self.assertIn(self.scr._plus_target[0], ("A", "B1", "B2", "B3", "C"))
 
     def test_gutter_hidden_outside_margin(self):
         self.scr._gutter_mouse_move(self._canvas_pt(-5.0, 1))
@@ -629,7 +642,7 @@ class BulletinTemplateFreeRowR2(unittest.TestCase):
 
     def test_gutter_plus_click_inserts_in_hovered_zone(self):
         self.scr._gutter_mouse_move(self._canvas_pt(-5.0, 1))
-        self.scr._plus_zone = "C"
+        self.scr._plus_target = ("C", 0)
         self.scr._btn_plus.click()
         fr = [r for r in self.scr._rows if r.kind == "free"]
         self.assertTrue(fr and fr[-1].zone == "C")
@@ -687,11 +700,11 @@ class BulletinTemplateSmartLibelleR3(unittest.TestCase):
     # ---------- تحويل حرّ → ذكيّ (§14/§16) ----------
     def test_free_to_smart_on_exact_match(self):
         r = self.scr._insert_free_row("A")
-        seq = r.seq
+        seg, order = r.segment, r.order
         nr = self._commit_libelle(r, "Absence")
         self.assertEqual(nr.kind, "absence")
         self.assertEqual(nr.zone, "A")
-        self.assertEqual(nr.seq, seq)                  # نفس الموضع (§18)
+        self.assertEqual((nr.segment, nr.order), (seg, order))   # نفس الموضع (§18)
 
     def test_alias_match_converts(self):
         r = self.scr._insert_free_row("A")
@@ -713,10 +726,10 @@ class BulletinTemplateSmartLibelleR3(unittest.TestCase):
         r = self.scr._insert_free_row("A")
         r2 = self._commit_libelle(r, "Absence")
         r2.set_val("qty", "3")
-        seq = r2.seq
+        seg, order = r2.segment, r2.order
         r3 = self._commit_libelle(r2, "Retard")
         self.assertEqual(r3.kind, "retard")
-        self.assertEqual(r3.seq, seq)
+        self.assertEqual((r3.segment, r3.order), (seg, order))
         self.assertEqual(r3.val("qty"), "")           # قيمة غير متوافقة لا تُنقَل
 
     def test_smart_to_free_on_nonmatch(self):
@@ -1363,6 +1376,161 @@ class BulletinTemplateE2(unittest.TestCase):
             self.assertIn(id(w), owned,
                           f"widget يتيم على اللوحة: {type(w).__name__} "
                           f"{w.text()!r} @ {w.x()}")
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateE3Insert(unittest.TestCase):
+    """E.3 — الإدراج الدقيق (segment + order) + ترتيب الحفظ/الاستعادة +
+    حارس IEP الفريد + ترحيل قديم."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_e3i_")
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        os.environ[paths._DATA_DIR_ENV_OVERRIDE] = self._tmp
+        open(os.path.join(self._tmp, "office_system.db"), "a").close()
+        database.init_db()
+        mod.confirm = lambda *_a, **_k: True
+        self.scr = BulletinTemplateScreen(conn=None)
+        self.scr._widgets["mois"].setText("OCTOBRE")
+        self.scr._widgets["annee"].setText("2026")
+        [r for r in self.scr._rows if r.kind == "salaire"][0].set_val("gain",
+                                                                      "45000")
+        self.scr._recompute()
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        for k in (paths._LOCAL_STATE_ENV_OVERRIDE, paths._DATA_DIR_ENV_OVERRIDE):
+            os.environ.pop(k, None)
+
+    def _kinds(self):
+        return [r.kind for r in self.scr._visible_body_rows()]
+
+    def _seglabels(self, seg):
+        return [r.val("libelle") for r in self.scr._segment_rows(seg)]
+
+    # ---------- الحدود (§3) ----------
+    def test_no_plus_before_salaire(self):
+        self.assertIsNone(self.scr._gutter_target(T.BODY_TOP - 2.0))
+        self.assertIsNone(self.scr._gutter_target(T.BODY_TOP + 0.1))  # b==0
+
+    def test_exact_segments_b1_b2_b3(self):
+        rows = self.scr._visible_body_rows()
+        i = {r.kind: k for k, r in enumerate(rows)}
+        #  الحدّ **أسفل** المرتكز مباشرةً (‎-0.15mm‎ فوق سطر ما بعده).
+        for below, seg in (("panier", "B1"), ("transport", "B2"),
+                           ("irg", "B3")):
+            y = T.BODY_TOP + i[below] * T.ROW_H - 0.15
+            self.assertEqual(self.scr._gutter_target(y)[0], seg)
+
+    # ---------- الإدراج الدقيق بين صفوف (§1) ----------
+    def test_exact_insert_between_optional_rows(self):
+        a1 = self.scr._insert_row_at("free", "A", 0); a1.set_val("libelle", "A1")
+        a3 = self.scr._insert_row_at("free", "A", 1); a3.set_val("libelle", "A3")
+        # ＋ بين A1 و A3 ⇒ index 1
+        self.scr._insert_row_at("free", "A", 1)
+        self.scr._rows[-1] if False else None
+        mid = [r for r in self.scr._segment_rows("A")][1]
+        mid.set_val("libelle", "A2")
+        self.assertEqual(self._seglabels("A"), ["A1", "A2", "A3"])
+
+    def test_insert_after_deletion_keeps_exact_order(self):
+        for lbl in ("A1", "A2", "A3"):
+            r = self.scr._insert_row_at("free", "A", len(
+                self.scr._segment_rows("A")))
+            r.set_val("libelle", lbl)
+        a2 = self.scr._segment_rows("A")[1]
+        self.scr._remove_row(a2)
+        self.assertEqual(self._seglabels("A"), ["A1", "A3"])
+        self.scr._insert_row_at("free", "A", 1).set_val("libelle", "NEW")
+        self.assertEqual(self._seglabels("A"), ["A1", "NEW", "A3"])
+
+    def test_b_segments_are_all_zone_b(self):
+        for seg in ("B1", "B2", "B3"):
+            r = self.scr._insert_row_at("free", seg, 0)
+            self.assertEqual(r.zone, "B")
+        rows = self._kinds()
+        self.assertLess(rows.index("cnas"), rows.index("free"))
+        self.assertLess(rows.index("free"), rows.index("irg"))
+
+    # ---------- حفظ/استعادة الترتيب الدقيق (§5/§26) ----------
+    def test_save_reload_exact_visual_order(self):
+        seq = [("A", "A1"), ("A", "A2"), ("B1", "B1x"), ("B2", "B2x"),
+               ("B3", "B3x"), ("C", "C1"), ("C", "C2")]
+        for seg, lbl in seq:
+            r = self.scr._insert_row_at("free", seg,
+                                        len(self.scr._segment_rows(seg)))
+            r.set_val("libelle", lbl)
+        before = [(r.kind, r.val("libelle")) for r in
+                  self.scr._visible_body_rows()]
+        st = self.scr.draft_state()
+        other = BulletinTemplateScreen(conn=None)
+        other.apply_draft(st)
+        after = [(r.kind, r.val("libelle")) for r in
+                 other._visible_body_rows()]
+        self.assertEqual(before, after)
+        other.deleteLater()
+
+    # ---------- حارس IEP الفريد على مستوى النموذج (§7/§8/§20) ----------
+    def test_manual_iep_alias_cannot_create_second(self):
+        a = self.scr._insert_free_row("A")
+        a.widgets["libelle"].setText("IEP")
+        a.widgets["libelle"].committed.emit("IEP")
+        self.assertEqual([r.kind for r in self.scr._rows].count("iep"), 1)
+        b = self.scr._insert_free_row("A")
+        b.widgets["libelle"].setText("Ancienneté")
+        b.widgets["libelle"].committed.emit("Ancienneté")
+        self.assertEqual([r.kind for r in self.scr._rows].count("iep"), 1)
+        self.assertEqual([r for r in self.scr._rows
+                          if r.rid == b.rid][0].kind, "free")
+
+    def test_add_row_iep_blocked_when_present(self):
+        self.scr._add_row("iep")
+        self.scr._add_row("iep")
+        self.assertEqual([r.kind for r in self.scr._rows].count("iep"), 1)
+
+    def test_legacy_draft_two_iep_rows_deduped(self):
+        legacy = {"header": {"mois": "OCTOBRE", "annee": "2026",
+                             "id_nom": "X"},
+                  "rows": [
+                      {"kind": "salaire", "zone": "A",
+                       "cells": {"gain": "45000", "nbase": "30"}},
+                      {"kind": "iep", "zone": "A",
+                       "cells": {"taux": "0.10", "code": "IEP",
+                                 "libelle": "IEP / Ancienneté"}},
+                      {"kind": "iep", "zone": "A",
+                       "cells": {"taux": "0.05", "code": "IEP",
+                                 "libelle": "IEP / Ancienneté"}},
+                  ]}
+        self.scr.apply_draft(legacy)
+        ieps = [r for r in self.scr._rows if r.kind == "iep"]
+        self.assertEqual(len(ieps), 1)
+        dup = [r for r in self.scr._rows if r._review == "duplicate_unique"]
+        self.assertEqual(len(dup), 1)
+        self.assertIn("0.05", dup[0].val("libelle"))    # §8: البيانات لم تُفقَد
+        v = self.scr.validate()
+        self.assertFalse(v.ready_for_final)          # مراجعة مطلوبة
+        # المكرَّر لا يُحتسَب: iep واحدة فقط تُغذّي المحرّك
+        n_iep_lines = sum(1 for lv in self.scr._bulletin_view.lignes
+                          if lv.key == "iep")
+        self.assertLessEqual(n_iep_lines, 1)
+
+    def test_legacy_zone_b_maps_to_segment_b3(self):
+        legacy = {"header": {"mois": "OCTOBRE", "annee": "2026"},
+                  "rows": [
+                      {"kind": "salaire", "zone": "A",
+                       "cells": {"gain": "45000"}},
+                      {"kind": "free", "zone": "B",
+                       "cells": {"libelle": "OLD B", "gain": "1000"}},
+                  ]}
+        self.scr.apply_draft(legacy)
+        fr = [r for r in self.scr._rows if r.kind == "free"][0]
+        self.assertEqual(fr.segment, "B3")
+        self.assertEqual(fr.zone, "B")
 
 
 @unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")

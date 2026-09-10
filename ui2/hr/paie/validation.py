@@ -147,9 +147,21 @@ def validate_screen(screen) -> ValidationResult:
     for r in screen._rows:
         if r.role == "system" or r.kind == "salaire":
             continue
+        #  E.3 §8/§15: حالات «تحتاج مراجعة» من نسخٍ قديمة معطوبة.
+        rev = getattr(r, "_review", "")
+        if rev == "duplicate_unique":
+            res.invalid_fields.append(Problem(
+                screen._row_problem_key(r),
+                "نوعٌ فريد مكرَّر (IEP) من نسخةٍ قديمة — راجِع هذا السطر: "
+                "حوِّله لنوعٍ آخر أو احذفه. لا يُحتسَب في الأجر.", "invalid"))
+        elif rev == "free_retenue_ab":
+            res.invalid_fields.append(Problem(
+                r.cell_key("retenue"),
+                "اقتطاع حرّ في منطقة CNAS/IRG غير مدعوم — حوِّله إلى "
+                "Absence/Retard، أو انقله لأسفل IRG. لا يُحتسَب حالياً.",
+                "invalid"))
         #  السطر الحرّ (§37): GAIN و RETENUE معاً، أو RETENUE سالبة ⇒ غير
-        #  صالح شكلياً (أقوى من «ناقص»). عادةً يمنعهما الإدخال، لكن مسوّدةً
-        #  قديمة قد تحملهما.
+        #  صالح شكلياً. RETENUE حرّة خارج Zone C ⇒ غير مدعومة (§13).
         if r.kind == "free":
             g, ret = r.val("gain").strip(), r.val("retenue").strip()
             if g and ret:
@@ -161,6 +173,11 @@ def validate_screen(screen) -> ValidationResult:
                 res.invalid_fields.append(Problem(
                     r.cell_key("retenue"),
                     "سطر حرّ: RETENUE تُكتب موجبةً.", "invalid"))
+            if ret and not g and r.zone in ("A", "B") and not rev:
+                res.invalid_fields.append(Problem(
+                    r.cell_key("retenue"),
+                    "اقتطاع حرّ في منطقة CNAS/IRG غير مدعوم (§13) — "
+                    "استعمل Absence/Retard أو انقله لأسفل IRG.", "invalid"))
         started, complete, label = screen._row_status(r)
         if started and not complete:
             res.incomplete_rows.append(Problem(

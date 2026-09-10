@@ -22,12 +22,18 @@ except Exception:                                    # noqa: BLE001
     _HAS_QT = False
 
 if _HAS_QT:
+    import re as _re
     from programme import database, paths
     from programme.payroll import calc
     from programme.payroll.config_loader import load_params
+    import ui.hr.paie.template_simple as T
     import ui2.hr.paie.bulletin_template as mod
     from ui2.hr.paie.bulletin_template import BulletinTemplateScreen
     from ui2 import theme
+
+    def _money(s):
+        s = _re.sub(r"[^\d,\-]", "", str(s or "")).replace(",", ".")
+        return float(s) if s not in ("", "-", ".") else 0.0
 
 _HEADER = {
     "emp_raison_sociale": "SARL DATA NEWS", "emp_cnas": "16 412 078 56",
@@ -737,6 +743,163 @@ class BulletinTemplateWorkC1(unittest.TestCase):
         self._fill_min()
         self.scr._on_save()
         self.assertEqual(self.scr.work_badge(), "⚠️")
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class RendererFromViewC2(unittest.TestCase):
+    """Phase C2 — المُصيِّر من BulletinView (مصدر الحقيقة) + إصلاح
+    Absence/Retard + اتزان العمودين + Panier/Transport بصفر + «/»."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_c2_")
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        mod.confirm = lambda *_a, **_k: True
+        self.scr = BulletinTemplateScreen(conn=None)
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        os.environ.pop(paths._LOCAL_STATE_ENV_OVERRIDE, None)
+
+    def _row(self, kind, occ=-1):
+        rs = [r for r in self.scr._rows if r.kind == kind]
+        return rs[occ] if rs else None
+
+    def _full(self, **kw):
+        w = self.scr._widgets
+        w["id_nom"].setText("BENALI"); w["id_prenom"].setText("Karim")
+        w["mois"].setText("OCTOBRE"); w["annee"].setText("2026")
+        w["id_date_embauche"].set_iso("2016-06-14")
+        self._row("salaire").set_val("gain", "45000")
+        self._row("salaire").set_val("nbase", "26")
+        self._row("panier").set_val("gain", "3000")
+        self._row("transport").set_val("gain", "2500")
+        self._row("prime").set_val("libelle", "PRIME DE RENDEMENT")
+        self._row("prime").set_val("gain", "8000")
+        for kind, cells in kw.items():
+            self.scr._add_row(kind)
+            for c, v in cells.items():
+                self._row(kind, -1).set_val(c, v)
+        self.scr._recompute()
+
+    def _rows(self):
+        return T._bulletin_rows_from_view(
+            self.scr._bulletin_view, self.scr._employee_data(),
+            jours=self.scr._calc_input.jours)
+
+    # ---- الاختبارات ----
+    def test_all_dynamic_rubriques_rendered(self):
+        self._full(iep={}, hs={"qty": "10", "coef": "100%"},
+                   absence={"qty": "2", "mode": "Absence (jours)"},
+                   retard={"qty": "3"},
+                   avance={"libelle": "AVANCE", "montant": "10000"},
+                   autre={"sens": "Gain", "libelle": "BONUS", "montant": "1500"})
+        libs = " ".join(r["libelle"] for r in self._rows())
+        for token in ("SALAIRE DE BASE", "PRIME DE RENDEMENT", "PANIER",
+                      "TRANSPORT", "RETENUE SÉCU", "RETENUE IRG", "AVANCE",
+                      "BONUS", "EXPÉRIENCE", "HEURES SUPP", "ABSENCE",
+                      "RETARD"):
+            self.assertIn(token, libs, token)
+
+    def test_absence_retard_are_negative_gain_not_retenue(self):
+        self._full(absence={"qty": "2", "mode": "Absence (jours)"},
+                   retard={"qty": "3"})
+        for r in self._rows():
+            lib = r["libelle"]
+            if "ABSENCE" in lib or "TÂCHE" in lib or "GHIAB" in lib \
+                    or r["code"] == "4000" or r["code"] == "4010" \
+                    or r["code"] == "4020":
+                self.assertTrue(r["gain"].strip().startswith("-"), r)
+                self.assertEqual(r["retenue"].strip(), "", r)
+
+    def test_columns_balance_to_net(self):
+        self._full(iep={}, hs={"qty": "10", "coef": "50%"},
+                   absence={"qty": "1", "mode": "Absence (jours)"},
+                   retard={"qty": "2"},
+                   avance={"libelle": "AV", "montant": "5000"})
+        rows = self._rows()
+        g = sum(_money(r["gain"]) for r in rows)
+        rr = sum(_money(r["retenue"]) for r in rows)
+        res = self.scr._bulletin_view.result
+        self.assertAlmostEqual(g, float(res.total_gains), places=1)
+        self.assertAlmostEqual(rr, float(res.total_retenues), places=1)
+        self.assertAlmostEqual(g - rr, float(self.scr._bulletin_view.e), places=1)
+
+    def test_totals_net_from_engine(self):
+        self._full()
+        cfg = load_params(date(2026, 10, 1))
+        exp = calc.compute(calc.PaieInput(
+            mois="OCTOBRE", annee="2026", jours=26.0, salaire_base=45000.0,
+            panier=3000.0, transport=2500.0,
+            primes=[calc.Prime(code="LIBRE", libelle="PRIME DE RENDEMENT",
+                               montant=8000.0, soumis_cotisation=True,
+                               imposable=True)]), cfg)
+        self.assertEqual(self.scr._bulletin_view.e, exp.net_a_payer)
+
+    def test_cnas_irg_rows_from_view(self):
+        self._full()
+        rows = {r["code"]: r for r in self._rows()}
+        v = self.scr._bulletin_view
+        cnas = rows[mod._C["cnas"]]
+        self.assertEqual(cnas["taux"], "9,00")
+        self.assertEqual(_money(cnas["retenue"]), float(v.b))
+        irg = rows[mod._C["irg"]]
+        self.assertEqual(_money(irg["retenue"]), float(v.d))
+
+    def test_panier_transport_zero_still_rendered(self):
+        self._full()
+        self._row("panier").set_val("gain", "0")
+        self._row("transport").set_val("gain", "0")
+        self.scr._recompute()
+        libs = [r["libelle"] for r in self._rows()]
+        self.assertIn("PANIER", libs)
+        self.assertTrue(any("TRANSPORT" in x for x in libs))
+
+    def test_situation_familiale_slash_render_only(self):
+        pairs = dict(T._ident_pairs({"situation_familiale": ""}))
+        self.assertEqual(pairs["SIT. FAMILIALE"], "/")
+        pairs2 = dict(T._ident_pairs({"situation_familiale": "M"}))
+        self.assertEqual(pairs2["SIT. FAMILIALE"], "M")
+        # القيمة الداخلية لا تُمسّ
+        self.assertEqual(self.scr._widgets["id_situation_familiale"].text(), "")
+
+    def test_docx_pdf_build_from_view(self):
+        self._full(absence={"qty": "2", "mode": "Absence (jours)"},
+                   hs={"qty": "6", "coef": "100%"})
+        tpl = T.get_renderer("simple")
+        for ext, builder in ((".docx", tpl.build_docx), (".pdf", tpl.build_pdf)):
+            p = os.path.join(self._tmp, "b" + ext)
+            try:
+                builder(p, self.scr._calc_input, self.scr._calc_result,
+                        self.scr._employer_data(), self.scr._employee_data(),
+                        view=self.scr._bulletin_view)
+            except Exception as exc:                       # noqa: BLE001
+                if "غير مثبّتة" in str(exc):
+                    self.skipTest(str(exc))
+                raise
+            self.assertTrue(os.path.exists(p) and os.path.getsize(p) > 0)
+
+    def test_docx_content_matches_view(self):
+        try:
+            from docx import Document
+        except ImportError:
+            self.skipTest("python-docx غير مثبّتة")
+        self._full(avance={"libelle": "AVANCE", "montant": "10000"})
+        p = os.path.join(self._tmp, "c.docx")
+        T.get_renderer("simple").build_docx(
+            p, self.scr._calc_input, self.scr._calc_result,
+            self.scr._employer_data(), self.scr._employee_data(),
+            view=self.scr._bulletin_view)
+        cells = [c.text for tbl in Document(p).tables for row in tbl.rows
+                 for c in row.cells]
+        blob = " ".join(cells)
+        self.assertIn("AVANCE", blob)
+        self.assertIn("NET À PAYER", blob)
+        self.assertIn(calc.fmt_montant(self.scr._bulletin_view.e), blob)
 
 
 if __name__ == "__main__":

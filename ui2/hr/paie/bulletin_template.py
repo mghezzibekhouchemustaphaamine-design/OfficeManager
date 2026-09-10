@@ -192,16 +192,19 @@ _ROW_SPECS = {
                _cs("coef", "taux", "choice", ("50%", "100%"), "50%")),
         to_entry=lambda r: {"type": _hs_type(r),
                             "values": {"heures": r.val("qty")}}),
+    #  Absence/Retard = Z1: تُنقِص وعاء [A] وTOTAL_GAINS [6]، لا تدخل
+    #  TOTAL_RETENUES [11]. تُرسَم **مبلغاً سالباً في عمود GAIN** — فيتّزن
+    #  العمودان مع الصافي (نفس تمثيل المُصيِّر، Phase C2 §19).
     "absence": dict(
         role="optional", code="ABS", lib="", primary="qty",
-        computed="retenue", lignes_key=_abs_type,
+        computed="gain", computed_neg=True, lignes_key=_abs_type,
         cells=(_cs("mode", "libelle", "choice",
                    ("Absence (jours)", "Absence (heures)"), "Absence (jours)"),
                _cs("qty", "nbase", "amount")),
         to_entry=_abs_entry),
     "retard": dict(
         role="optional", code="RET", lib="RETARD", primary="qty",
-        computed="retenue", lignes_key="retard",
+        computed="gain", computed_neg=True, lignes_key="retard",
         cells=(_cs("qty", "nbase", "amount"),),
         to_entry=lambda r: {"type": "retard", "values": {"heures": r.val("qty")}}),
     "panier": dict(
@@ -538,9 +541,11 @@ class _SheetCanvas(QWidget):
             else:
                 # المبلغ المحسوب (IEP/Absence/Retard/HS) — خلية للقراءة، تُرسَم
                 # من BulletinView. لا تُرسَم «0,00» إن لم يكن الحساب ممكناً.
-                col = _ROW_SPECS[row.kind].get("computed")
+                spec = _ROW_SPECS[row.kind]
+                col = spec.get("computed")
                 if col and computed and row._amount is not None:
-                    cell(col, i, fmt_montant(row._amount), "e", cc)
+                    amt = -row._amount if spec.get("computed_neg") else row._amount
+                    cell(col, i, fmt_montant(amt), "e", cc)
 
         # لا تُرسَم TOTAL/NET كـ«0,00» إذا كان الحساب غير ممكن — «غير محسوبة»
         # ≠ «صفر حقيقي».
@@ -1845,8 +1850,10 @@ class BulletinTemplateScreen(Screen):
         path = self._resolve_out_path(ext)
         try:
             builder = tpl.build_docx if kind == "docx" else tpl.build_pdf
+            #  المُصيِّر من BulletinView (مصدر حقيقة الشاشة نفسه، Phase C2)
             builder(path, self._calc_input, self._calc_result,
-                    self._employer_data(), self._employee_data())
+                    self._employer_data(), self._employee_data(),
+                    view=self._bulletin_view)
         except TemplateNotReady as exc:
             warn(self, self.TITLE, [str(exc)])
             return

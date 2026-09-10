@@ -413,6 +413,91 @@ def _n(x):
     return str(int(f)) if f == int(f) else f"{f:.2f}"
 
 
+# ============================================================================
+#  مصدر الحقيقة الموحّد للمُصيِّر (Phase C2): BulletinView — نفس محرّك الشاشة
+#  (‏lignes.compute_bulletin). لا حساب هنا؛ المجاميع/الصافي من view.result.
+#
+#  Absence/Retard (Z1 — RETENUE خاضعة) تُنقِص TOTAL_GAINS [6] في المحرّك،
+#  ولا تدخل TOTAL_RETENUES [11]. فالتمثيل المتّسق حسابياً: **مبلغ سالب في
+#  عمود GAIN** — عندها Σعمود GAIN − Σعمود RETENUE = NET بالضبط.
+# ============================================================================
+_VIEW_ORDER = {
+    "salaire_base": 0, "iep": 10, "pri": 12, "nuit": 15,
+    "hs_50": 30, "hs_100": 31, "conge_paye": 35,
+    "abs_jours": 40, "abs_heures": 41, "retard": 50,
+    "panier": 60, "transport": 70, "alloc_fam": 75,
+    "avance": 100, "syndicat": 105,
+}
+_BASE_REDUCERS = {"abs_jours", "abs_heures", "retard"}
+
+#  المستند فرنسيّ — تسميات أنواع المحرّك عربية في LINE_TYPES، فنُترجمها
+#  هنا (نفس تسميات شاشة ui2). السطر الحرّ (libre) يحتفظ بتسمية المستخدم.
+_FR_LIBELLE = {
+    "salaire_base": "SALAIRE DE BASE",
+    "iep": "IND. EXPÉRIENCE PROF.", "pri": "PRIME DE RENDEMENT",
+    "hs_50": "HEURES SUPP. 50 %", "hs_100": "HEURES SUPP. 100 %",
+    "abs_jours": "ABSENCE (JOURS)", "abs_heures": "ABSENCE (HEURES)",
+    "retard": "RETARD", "panier": "PANIER", "transport": "(R+) TRANSPORT",
+    "avance": "AVANCE / ACOMPTE", "syndicat": "COTISATION SYNDICALE",
+    "nuit": "PRIME DE NUIT", "conge_paye": "CONGÉ PAYÉ",
+    "alloc_fam": "ALLOCATIONS FAMILIALES",
+}
+
+
+def _view_order(lv):
+    o = _VIEW_ORDER.get(lv.key)
+    if o is not None:
+        return o
+    #  سطر حرّ (libre): مكسب ≈ Prime · اقتطاع ≈ Avance
+    return 20 if lv.sens != "RETENUE" else 100
+
+
+def _bulletin_rows_from_view(view, employee, *, jours=None):
+    """أسطر جدول الكشف من :class:`~programme.payroll.lignes.BulletinView`.
+
+    كلّ رُبريكة ديناميكية في ``view.lignes`` تُمثَّل؛ CNAS/IRG سطران
+    نظاميّان من ‎[A]/[B]‎ و‎[C]/[D]‎؛ Panier/Transport يظهران دائماً حتى
+    بصفر (§22). لا خلايا بلا معنى."""
+    c = PAIE_DEFAULT_CODES
+    res = view.result
+    gains, retenues = [], []
+    seen_pt = set()
+    for lv in sorted(view.lignes, key=_view_order):
+        neg = lv.key in _BASE_REDUCERS
+        lib = (_FR_LIBELLE.get(lv.key)
+               or (lv.libelle or "").strip().upper() or lv.key.upper())
+        row = {"code": (lv.code or "").strip(), "libelle": lib,
+               "nbase": _n(jours) if lv.key == "salaire_base" else "",
+               "taux": "", "gain": "", "retenue": "", "_ord": _view_order(lv)}
+        amt = fmt_montant(-lv.montant if neg else lv.montant)
+        if lv.key in ("panier", "transport"):
+            seen_pt.add(lv.key)
+            row["gain"] = amt
+            gains.append(row)
+        elif neg or lv.sens != "RETENUE":
+            row["gain"] = amt
+            gains.append(row)
+        else:
+            row["retenue"] = amt
+            retenues.append(row)
+    for key, code, lab, ordv in (("panier", c["panier"], "PANIER", 60),
+                                 ("transport", c["transport"],
+                                  "(R+) TRANSPORT", 70)):
+        if key not in seen_pt:
+            gains.append({"code": code, "libelle": lab, "nbase": "", "taux": "",
+                          "gain": fmt_montant(0), "retenue": "", "_ord": ordv})
+    gains.sort(key=lambda r: r["_ord"])
+    rows = [{k: v for k, v in r.items() if k != "_ord"} for r in gains]
+    rows.append({"code": c["cnas"], "libelle": "RETENUE SÉCU. SOCIALE",
+                 "nbase": fmt_montant(res.assiette_cnas), "taux": "9,00",
+                 "gain": "", "retenue": fmt_montant(res.retenue_cnas)})
+    rows.append({"code": c["irg"], "libelle": "RETENUE IRG",
+                 "nbase": fmt_montant(res.assiette_irg), "taux": "",
+                 "gain": "", "retenue": fmt_montant(res.irg)})
+    rows += [{k: v for k, v in r.items() if k != "_ord"} for r in retenues]
+    return rows
+
+
 def _period_label(pin):
     m = pin.mois.strip()
     y = str(pin.annee).strip()
@@ -421,13 +506,16 @@ def _period_label(pin):
 
 def _ident_pairs(employee):
     g = employee.get
+    #  §23: الحالة العائلية فارغةً تُطبَع «/» **عند التصيير فقط** — القيمة
+    #  الداخلية في Work Data تبقى "" (لا تُحوَّل).
+    sit = (g("situation_familiale", "") or "").strip() or "/"
     return [
         ("NOM", g("nom", "")),
         ("PRÉNOM", g("prenom", "")),
         ("DATE DE NAISSANCE", g("date_naissance", "")),
         ("LIEU DE NAISSANCE", g("lieu_naissance", "")),
         ("N° SS", g("num_ss", "")),
-        ("SIT. FAMILIALE", g("situation_familiale", "")),
+        ("SIT. FAMILIALE", sit),
         ("DATE D'ENTRÉE", g("date_embauche", "")),
         ("MATRICULE", g("matricule", "")),
         ("FONCTION", g("fonction", "")),
@@ -543,7 +631,7 @@ class SimpleBulletinTemplate:
 
     # ===================== إخراج Word (.docx) =====================
     @staticmethod
-    def build_docx(path, pin, res, employer, employee):
+    def build_docx(path, pin, res, employer, employee, *, view=None):
         try:
             from docx import Document
             from docx.shared import Pt, Mm, RGBColor
@@ -607,8 +695,9 @@ class SimpleBulletinTemplate:
 
         doc.add_paragraph()
 
-        # جدول الرُّبريكات
-        rows = _bulletin_rows(pin, res)
+        # جدول الرُّبريكات — من BulletinView إن مُرّر (مصدر الحقيقة، Phase C2)
+        rows = (_bulletin_rows_from_view(view, employee, jours=pin.jours)
+                if view is not None else _bulletin_rows(pin, res))
         rt = doc.add_table(rows=1 + len(rows) + 2, cols=6)
         rt.style = "Table Grid"
         heads = [c[4] for c in COLS]
@@ -655,7 +744,7 @@ class SimpleBulletinTemplate:
 
     # ===================== إخراج PDF =====================
     @staticmethod
-    def build_pdf(path, pin, res, employer, employee):
+    def build_pdf(path, pin, res, employer, employee, *, view=None):
         try:
             from reportlab.lib.pagesizes import A4
             from reportlab.lib.units import mm
@@ -722,7 +811,8 @@ class SimpleBulletinTemplate:
             story.append(Paragraph("☑ Handicapé / Retraité", small))
         story.append(Spacer(1, 4 * mm))
 
-        rows = _bulletin_rows(pin, res)
+        rows = (_bulletin_rows_from_view(view, employee, jours=pin.jours)
+                if view is not None else _bulletin_rows(pin, res))
         data = [[c[4] for c in COLS]]
         for r in rows:
             data.append([r.get(k, "") for k, *_ in COLS])

@@ -3363,3 +3363,63 @@ golden 14/14 · galleries `ALLOK`.
 
 معدَّل: `programme/database.py` · `ui2/hr/paie/bulletin_template.py` ·
 `ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.
+
+---
+
+## Phase C2 — 2026-09-10: المُصيِّر من BulletinView + إصلاح Absence/Retard
+
+**مصدر حساب واحد**: المُصيِّر (Word/PDF) صار يُغذَّى من
+`lignes.BulletinView` — نفس ناتج محرّك الشاشة — بدل إعادة بناء الصفوف من
+`PaieInput.primes/autres_retenues`. لا حساب في المُصيِّر؛ المجاميع/الصافي
+من `view.result` مباشرة.
+
+### `_bulletin_rows_from_view(view, employee, *, jours)` (‏`template_simple.py`)
+
+- كلّ رُبريكة في `view.lignes` تُمثَّل؛ CNAS/IRG سطران نظاميّان من
+  ‎[A]/[B]‎ و‎[C]/[D]‎ (`view.result.assiette_cnas` … `.irg`).
+- التسميات فرنسية عبر `_FR_LIBELLE` (تسميات المحرّك عربية)؛ السطر الحرّ
+  (Prime/Avance/Autre) يحتفظ بتسمية المستخدم.
+- Panier/Transport يظهران **دائماً** حتى بصفر (§22) — يُضافان صراحةً إن
+  غابا عن `view.lignes`.
+- ترتيب دلاليّ: Salaire · IEP · Prime · HS · Absence · Retard · Panier ·
+  Transport · CNAS · IRG · Avance · Autre.
+
+### إصلاح فجوة Absence/Retard (Phase A المعروفة)
+
+المحرّك يطرح `retenue_absence` (غياب + تأخّر، Z1) من `TOTAL_GAINS` [6]،
+ولا يضعها في `TOTAL_RETENUES` [11]. لذا تُرسَم الآن **مبلغاً سالباً في
+عمود GAIN** (لا في RETENUE). النتيجة:
+
+    Σ عمود GAIN − Σ عمود RETENUE = NET À PAYER  ✅ (يتّزن)
+
+بلا تعديل المحرّك ولا `total_retenue` (المعنى المحاسبيّ محفوظ). الشاشة
+غُيِّرت بالمثل: `_ROW_SPECS["absence"/"retard"]` صار `computed="gain"` +
+`computed_neg=True`، فيُرسَم المبلغ المحسوب سالباً في عمود GAIN —
+Screen = DOCX = PDF دلالياً وحسابياً (§19).
+
+### Situation familiale (§23)
+
+`_ident_pairs`: الحالة العائلية الفارغة تُطبَع «/» **عند التصيير فقط** —
+القيمة الداخلية في Work Data تبقى `""` (لا تُحوَّل). قيمة موجودة تُطبَع
+كما هي.
+
+### التوافق
+
+`build_docx`/`build_pdf` أخذتا `view=None` اختيارياً: بلا `view` ⇒ المسار
+القديم (`_bulletin_rows(pin, res)`) كما هو — لا كسر لأيّ مستدعٍ آخر.
+معاينة tkinter القديمة (`paint`) لم تُلمَس.
+
+### الاختبارات
+
+`ui2/hr/paie/tests` **73 OK** (‏+9 C2: كلّ الرُبريكات الديناميكية تُصيَّر ·
+Absence/Retard سالبة في GAIN لا RETENUE · العمودان يتّزنان مع NET ·
+totals/net من المحرّك · CNAS/IRG من `view` · Panier/Transport بصفر ·
+«/» عند التصيير فقط · DOCX/PDF يُبنيان من `view` · محتوى DOCX يطابق
+`view`). `ui2/tests` 42 · `ui2/paie/tests` 17 · `programme/payroll/tests`
+49 · `programme/tests` 6 · golden 14/14 · galleries `ALLOK`.
+
+### الملفات المتأثرة
+
+معدَّل: `ui/hr/paie/template_simple.py` ·
+`ui2/hr/paie/bulletin_template.py` ·
+`ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.

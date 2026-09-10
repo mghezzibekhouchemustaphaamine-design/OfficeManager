@@ -3069,3 +3069,96 @@ transport دائمة و0 صالح، صفوف النظام غير قابلة لل
 معدَّل: `ui2/hr/paie/bulletin_template.py` ·
 `ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md` ·
 `docs/baseline_screenshots/A2_{45,100,200}.png` (جديدة).
+
+## Phase A2.3 — 2026-09-10: أنواع Rubrique متكيّفة (كشف الراتب)
+
+على البنية التحتية لـ A2 (نموذج الصفوف + `_DocView` + الهندسة الديناميكية).
+
+### تصحيح — Autre
+
+`Autre` لم تعد Retenue صامتة. صار في السطر محدِّد صريح **Gain / Retenue**
+(‏`QComboBox`)؛ عند Gain يظهر محدِّد تصنيف مُعلَن بثلاث حالات
+(`CNAS + IRG` · `IRG seul` · `Net (ni CNAS ni IRG)`، افتراضه Net —
+الأكثر تحفّظاً). لا تخمين مالِيّ صامت، ولا Zones/Convention UX عامّة —
+الخيار داخل سطر `Autre` وحده.
+
+### نموذج الخلايا
+
+`_Row` صار يدعم خلايا `QComboBox` بجانب `QLineEdit`، و**عمود ديناميكيّ**
+لكلّ خلية (‏`_Row.column(cell)` — دالّة أو نصّ)، و**خلية مبلغ محسوبة**
+ليست widgetاً (`_amount`) تُرسَم من `BulletinView` مثل CNAS/IRG. أنواع
+A2.3:
+
+| نوع | الإدخال داخل السطر | المبلغ |
+|---|---|---|
+| **IEP / Ancienneté** | نسبة (مقترَحة تلقائياً) | GAIN محسوب |
+| **Heures supplémentaires** | ساعات + `50%`/`100%` | GAIN محسوب |
+| **Absence** | `Absence (jours)`/`(heures)` + الكمية | RETENUE محسوب |
+| **Retard** | ساعات (رقميّ) | RETENUE محسوب |
+| **Prime / Indemnité** | Libellé + montant + `CNAS+IRG`/`IRG seul`/`Net` | GAIN مُدخَل |
+
+- **IEP**: `lignes.suggest_iep_taux` من تاريخ الدخول + الفترة (بلا Employé
+  registry، `employe_taux_iep=None`). النسبة تُوضَع تلقائياً؛ تعديلها يدوياً
+  ⇒ **Manual Override** لا يُسحق بتغيّر تاريخ الدخول/الفترة؛ **تفريغها**
+  يُعيد الاقتراح (لفتة خفيفة، بلا زرّ). لا تظهر افتراضياً.
+- **Absence**: خيار واحد في `+ Ajouter`؛ jours/heures/… محدِّد **داخل
+  السطر** يبدّل الـ mapping إلى `abs_jours`/`abs_heures` في `lignes` مع
+  بقاء السطر نفسه. (`justifiée` غير مُتاحة — لا `LINE_TYPE` لها والحساب
+  مطابق لـ `heures`؛ خارج A2.3.)
+- **HS**: `hs_50`/`hs_100` خياران **داخل السطر** لا في القائمة؛ يُسمح
+  بسطرَي HS (50% + 100%).
+- **Prime**: خاصيّة الخضوع صارت **لكلّ سطر** (بدل خيار عامّ واحد) —
+  3 خيارات مُعلَنة النتيجة، لا مصطلحات Zones.
+
+### حساب / تنقّل
+
+- `_build_entries` من الصفوف → `lignes.compute_bulletin` (المصدر الوحيد).
+  `_assign_computed_amounts` يربط كل صفٍّ متكيّف بـ`LineView` المطابِق
+  (بالمفتاح، بترتيب الإضافة — يدعم سطرَي HS). المبلغ = `None` حين لا يمكن
+  الحساب (‏«صفر حقيقي» ≠ «غير محسوب»).
+- خلايا المبلغ المحسوب ليست في `_widgets` ⇒ ليست Tab stops ولا قابلة
+  للتحرير/اللصق. `_rebuild_nav` يُعاد من النموذج بعد كلّ إضافة/حذف/تبديل
+  نوع فرعيّ — Tab على خلايا الإدخال فقط، `select=False` للانتقال التلقائي
+  محفوظ (Phase 55).
+- الترتيب الدلاليّ الثابت (§7): salaire · iep · prime · hs · absence ·
+  retard · panier · transport · cnas · irg · avance · autre.
+
+### Matrix — Screen / DOCX / PDF
+
+| Rubrique | Screen | DOCX | PDF |
+|---|---|---|---|
+| Prime / Indemnité | ✅ | ✅ | ✅ |
+| Avance / Retenue | ✅ | ✅ | ✅ |
+| Autre (Retenue) | ✅ | ✅ | ✅ |
+| Autre (Gain) | ✅ | ✅ | ✅ |
+| IEP / Ancienneté | ✅ | ✅ | ✅ |
+| Heures supp. (50/100) | ✅ | ✅ | ✅ |
+| **Absence** | ✅ | ⚠️ | ⚠️ |
+| **Retard** | ✅ | ⚠️ | ⚠️ |
+
+⚠️ **Absence/Retard**: المُصيِّر الحاليّ يسردهما في عمود RETENUE، بينما
+`total_retenue` من المحرّك (Z1 — تخفض [A]) لا يشملهما ⇒ عمود RETENUE في
+المستند **لا يتّزن** مع مجموعه المطبوع. **NET À PAYER والمجاميع صحيحة
+دائماً** (من المحرّك). يُعالَج عند إعادة تصميم المُصيِّر (Phase C). لا
+يُوحى بأن المستند يحتوي رُبريكة لا يدعمها — الأرقام كلّها من المحرّك.
+
+### Gap متبقٍّ في تصنيف Prime
+
+لا شيء — نُقلت الخاصيّة إلى مستوى كلّ سطر Prime (كان gap A2). لا
+Convention، لا Zones UI ثقيل.
+
+### الاختبارات
+
+`ui2/hr/paie/tests` **27 OK** (‏+IEP اقتراح/override/تفاعل مع التاريخ ·
+Absence jours/heures · Retard · HS 50/100 · سطرا HS · خلايا المبلغ ليست
+Tab stops · Autre Gain/Retenue بلا تصنيف صامت · Prime لكلّ سطر · إعادة
+بناء nav · false-0 · ترتيب · مسوّدة v4). `ui2/tests` 42 · `ui2/paie/tests`
+17 (محميّة) · `programme/payroll/tests` 49 · `programme/tests` 6 · golden
+14/14 · galleries `ALLOK`. Word/PDF يُولَّدان بلا استثناء مع كلّ الأنواع.
+صور: `docs/baseline_screenshots/A23_{45,100,200}.png`.
+
+### الملفات المتأثرة
+
+معدَّل: `ui2/hr/paie/bulletin_template.py` ·
+`ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md` ·
+`docs/baseline_screenshots/A23_*.png` (جديدة).

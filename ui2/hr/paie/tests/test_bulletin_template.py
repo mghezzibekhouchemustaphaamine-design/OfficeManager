@@ -22,7 +22,7 @@ except Exception:                                    # noqa: BLE001
     _HAS_QT = False
 
 if _HAS_QT:
-    from programme import paths
+    from programme import database, paths
     from programme.payroll import calc
     from programme.payroll.config_loader import load_params
     import ui2.hr.paie.bulletin_template as mod
@@ -584,6 +584,159 @@ class BulletinTemplateValidation(unittest.TestCase):
         self.scr._on_clear()
         self.assertFalse(self.scr._warnings_active)
         self.assertFalse(self.scr._restored_incomplete)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateWorkC1(unittest.TestCase):
+    """Phase C1 — عمل دائم: Save incomplete · معرّف مستقرّ · reopen ·
+    ثبات الصفوف الديناميكية · auto-draft ≠ عمل محفوظ."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_c1_")
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        os.environ[paths._DATA_DIR_ENV_OVERRIDE] = self._tmp
+        database.init_db()
+        mod.confirm = lambda *_a, **_k: True
+        self.scr = BulletinTemplateScreen(conn=None)
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        os.environ.pop(paths._LOCAL_STATE_ENV_OVERRIDE, None)
+        os.environ.pop(paths._DATA_DIR_ENV_OVERRIDE, None)
+
+    # ---- أدوات ----
+    def _row(self, kind, occ=-1):
+        rs = [r for r in self.scr._rows if r.kind == kind]
+        return rs[occ] if rs else None
+
+    def _fill_min(self):
+        w = self.scr._widgets
+        w["id_nom"].setText("BENALI")
+        w["id_prenom"].setText("Karim")
+        w["mois"].setText("OCTOBRE")
+        w["annee"].setText("2026")
+        self._row("salaire").set_val("gain", "45000")
+        self.scr._recompute()
+
+    def _reopen(self):
+        rid = self.scr._work_id
+        other = BulletinTemplateScreen(conn=None)
+        other.load_work(database.get_hr_document(rid))
+        return other
+
+    # ---- الاختبارات ----
+    def test_save_incomplete_creates_work(self):
+        self._fill_min()                              # ناقص (لا شركة/عنوان…)
+        self.scr._on_save()
+        self.assertIsNotNone(self.scr._work_id)
+        self.assertEqual(self.scr._work_state, "incomplete")
+        row = database.get_hr_document(self.scr._work_id)
+        self.assertEqual(row["state"], "incomplete")
+        self.assertEqual(row["file_path"], "")        # لا مستند نهائيّ
+        self.assertEqual(row["screen_key"], "hr_bulletin_paie")
+
+    def test_save_never_blocked_by_incomplete(self):
+        # شاشة شبه فارغة — الحفظ يمرّ رغم النقص
+        self.scr._on_save()
+        self.assertIsNotNone(self.scr._work_id)
+
+    def test_stable_work_id_on_resave(self):
+        self._fill_min()
+        self.scr._on_save()
+        wid = self.scr._work_id
+        self.scr._widgets["id_prenom"].setText("Kamel")
+        self.scr._on_save()
+        self.assertEqual(self.scr._work_id, wid)      # نفس المعرّف
+        rows = database.list_hr_documents(screen_key="hr_bulletin_paie")
+        self.assertEqual(len([r for r in rows if r["id"] == wid]), 1)
+        self.assertEqual(database.get_hr_document(wid)["employee_name"],
+                         "BENALI Kamel")
+
+    def test_reopen_incomplete_restores_and_warns(self):
+        self._fill_min()
+        self.scr._add_row("hs")
+        self._row("hs", -1).set_val("qty", "8")
+        self._row("hs", -1).set_val("coef", "100%")
+        self.scr._recompute()
+        self.scr._on_save()
+        other = self._reopen()
+        self.assertEqual(other._widgets["id_nom"].text(), "BENALI")
+        self.assertEqual(other._work_state, "incomplete")
+        self.assertTrue(other._warnings_active)       # ⚠️ عند إعادة الفتح (§5)
+        h = [r for r in other._rows if r.kind == "hs"]
+        self.assertTrue(h and h[-1].val("qty") == "8" and h[-1].val("coef") == "100%")
+        other.deleteLater()
+
+    def test_classifications_persist(self):
+        self._fill_min()
+        self._row("prime").set_val("soumis", "Net (ni CNAS ni IRG)")
+        self.scr._add_row("autre")
+        self._row("autre", -1).set_val("sens", "Gain")
+        self._row("autre", -1).set_val("libelle", "BONUS")
+        self._row("autre", -1).set_val("montant", "1000")
+        self.scr._add_row("iep")
+        self._row("iep", -1).set_val("taux", "0.19")   # يدويّ
+        self.scr._recompute()
+        self.scr._on_save()
+        other = self._reopen()
+        self.assertEqual([r for r in other._rows if r.kind == "prime"][0]
+                         .val("soumis"), "Net (ni CNAS ni IRG)")
+        a = [r for r in other._rows if r.kind == "autre"][-1]
+        self.assertEqual(a.val("sens"), "Gain")
+        ie = [r for r in other._rows if r.kind == "iep"][-1]
+        self.assertTrue(ie._iep_manual and ie.val("taux") == "0.19")
+        other.deleteLater()
+
+    def test_autodraft_is_not_saved_work(self):
+        self._fill_min()
+        self.scr.mark_dirty()
+        self.scr.flush_draft()
+        self.assertIsNotNone(self.scr.load_draft())   # مسوّدة تلقائية موجودة
+        self.scr._on_save()
+        self.assertIsNone(self.scr.load_draft())      # الحفظ يَجُبّها
+        self.assertIsNotNone(self.scr._work_id)
+        fresh = BulletinTemplateScreen(conn=None)
+        self.assertIsNone(fresh._work_id)             # شاشة جديدة = بلا هويّة
+        fresh.deleteLater()
+
+    def test_dirty_flag_clean_after_load(self):
+        self._fill_min()
+        self.scr._on_save()
+        other = self._reopen()
+        self.assertFalse(other.has_unsaved_changes())  # محمَّل وغير ملموس
+        other._widgets["id_prenom"].setText("Z")
+        self.assertTrue(other.has_unsaved_changes())
+        other.deleteLater()
+
+    def test_clear_drops_work_identity(self):
+        self._fill_min()
+        self.scr._on_save()
+        self.assertIsNotNone(self.scr._work_id)
+        self.scr._on_clear()
+        self.assertIsNone(self.scr._work_id)
+        self.assertIsNone(self.scr._work_state)
+
+    def test_backward_compatible_with_legacy_log_rows(self):
+        # صفّ قديم عبر log_hr_document (بلا state) يبقى مقروءاً
+        rid = database.log_hr_document(
+            {"screen_key": "hr_bulletin_paie", "doc_label": "Bulletin de paie",
+             "employee_name": "OLD X", "file_path": "/x/old.docx"},
+            full_data={"legacy": True})
+        row = database.get_hr_document(rid)
+        self.assertIsNotNone(row)
+        self.assertIsNone(row["state"])
+        self.assertEqual(mod.BulletinTemplateScreen._WORK_BADGE.get(row["state"], ""), "")
+
+    def test_work_badge(self):
+        self.assertEqual(self.scr.work_badge(), self.scr.incomplete_badge())
+        self._fill_min()
+        self.scr._on_save()
+        self.assertEqual(self.scr.work_badge(), "⚠️")
 
 
 if __name__ == "__main__":

@@ -635,6 +635,14 @@ class BulletinTemplateScreen(Screen):
         self._warnings_active = False          # عرض تحذيرات الإلزاميّ (§6)
         self._restored_incomplete = False      # مسوّدة محفوظة كـ«غير مكتملة» (Phase C)
 
+        # ---- دورة حياة العمل (Phase C) ----
+        self._work_id = None                   # معرّف hr_documents المستقرّ (None = لم يُحفَظ)
+        self._work_state = None                # None | "incomplete" | "final"
+        self._locked = False                   # 🔒 — المدخلات للقراءة فقط
+        self._has_final_artifacts = False      # وُلِّدت DOCX/PDF نهائيّان مرّةً
+        self._final_docx = None
+        self._final_pdf = None
+
         self._calc_input = calc.PaieInput()
         self._calc_result = calc.compute(self._calc_input, self._load_cfg())
         self._bulletin_view = None                      # lignes.BulletinView (المحرّك)
@@ -648,6 +656,7 @@ class BulletinTemplateScreen(Screen):
         self.on_activate()
         QTimer.singleShot(0, self._relayout)
         self._recompute()
+        self._dirty = False        # بناء الشاشة الافتراضية ليس «تعديل مستخدم»
 
     # ======================= نموذج الصفوف (Phase A2) =======================
     def _init_default_rows(self):
@@ -667,6 +676,8 @@ class BulletinTemplateScreen(Screen):
         return self._visible_body_rows().index(row)
 
     def _add_row(self, kind: str):
+        if self._locked:                          # 🔒 — لا تعديل بنية
+            return
         if len([r for r in self._rows if r.role != "system"]) + 2 >= _MAX_BODY_ROWS:
             from ui2.alerts import warn
             warn(self, self.TITLE,
@@ -686,7 +697,7 @@ class BulletinTemplateScreen(Screen):
             self._widgets[r.cell_key(cells[0]["name"])].setFocus()
 
     def _remove_row(self, row: "_Row"):
-        if not row.can_delete() or row not in self._rows:
+        if self._locked or not row.can_delete() or row not in self._rows:
             return
         if not row.is_empty() and not confirm(
                 self, "حذف السطر", "هذا السطر يحتوي بيانات — حذفه؟"):
@@ -796,6 +807,7 @@ class BulletinTemplateScreen(Screen):
             self._add_menu.addAction(label,
                                      lambda k=kind: self._add_row(k))
         add_btn.setMenu(self._add_menu)
+        self._add_btn = add_btn
         lay.addWidget(add_btn)
 
         hint = QLabel("تصنيف كلّ Prime (CNAS/IRG) داخل سطرها.")
@@ -815,6 +827,9 @@ class BulletinTemplateScreen(Screen):
         bf = QFrame()
         bf.setFrameShape(QFrame.StyledPanel)
         bl = QVBoxLayout(bf)
+        self._save_btn = QPushButton("💾 حفظ")
+        self._save_btn.clicked.connect(self._on_save)
+        bl.addWidget(self._save_btn)
         for txt, fn in (("توليد Word", lambda: self._on_generate("docx")),
                         ("توليد PDF", lambda: self._on_generate("pdf")),
                         ("السجلّ", self._on_history),
@@ -1395,6 +1410,117 @@ class BulletinTemplateScreen(Screen):
         v = self._validation
         return "⚠️" if (v is not None and v.is_incomplete) else ""
 
+    # ===================== دورة حياة العمل (Phase C) =====================
+    #  SAVE يحمي عمل المستخدم · FINALIZE يصدر الوثيقة · LOCK يحمي النهائيّ.
+    #  حالتان مرئيّتان فقط: ⚠️ Incomplete · 🔒 Final. Auto-draft آليّة
+    #  استرداد داخلية لا حالة مستند.
+
+    WORK_VERSION = 1
+
+    def work_data(self) -> dict:
+        """Work Data كاملة — مصدر إعادة بناء الشاشة (لا DOCX/PDF). تلفّ
+        ``draft_state()`` (header + الصفوف الديناميكية + تصنيفاتها +
+        ``iep_manual``) بـ metadata و``work_version``. مفصولة عن auto-draft
+        من حيث دورة الحياة، لكنها تعيد استعمال نفس التسلسل."""
+        d = self.draft_state()
+        d["work_version"] = self.WORK_VERSION
+        d["screen_key"] = "hr_bulletin_paie"
+        d["employer"] = self._employer_data()
+        d["employee"] = self._employee_data()
+        d["period"] = {"mois": self._w("mois"), "annee": self._w("annee")}
+        d["has_final_artifacts"] = bool(self._has_final_artifacts)
+        d["final_docx"] = self._final_docx
+        d["final_pdf"] = self._final_pdf
+        return d
+
+    def _work_record(self, state, docx="", pdf=None) -> dict:
+        return {
+            "screen_key": "hr_bulletin_paie", "doc_label": self.DOC_LABEL,
+            "employer_name": self._w("emp_raison_sociale"),
+            "employee_name": self._employee_fullname(),
+            "doc_date": f"{self._w('mois')} {self._w('annee')}".strip(),
+            "client_id": None, "file_path": docx or "", "pdf_path": pdf,
+            "state": state,
+        }
+
+    def load_work(self, row: dict):
+        """يفتح عملاً محفوظاً (صفّ ``hr_documents``) للتحرير: يعيد بناء
+        الشاشة من ``full_data_json``، يثبّت المعرّف، ويستعيد حالة
+        ⚠️/🔒. عمل ⚠️ مُعاد فتحه ⇒ تُفعَّل تحذيرات الإلزاميّ (§5)."""
+        import json as _json
+        raw = row.get("full_data_json") or ""
+        try:
+            data = _json.loads(raw) if raw else {}
+        except ValueError:
+            data = {}
+        self.apply_draft(data)
+        self._work_id = row.get("id")
+        self._work_state = row.get("state") or None
+        self._has_final_artifacts = bool(data.get("has_final_artifacts"))
+        self._final_docx = data.get("final_docx") or row.get("file_path") or None
+        self._final_pdf = data.get("final_pdf") or row.get("pdf_path") or None
+        if self._work_state == "final":
+            self._set_locked(True)
+        elif self._work_state == "incomplete":
+            self.show_required_warnings()
+        # نظّف بعد كلّ إعادة البناء: عملٌ مُحمَّل حديثاً = «غير ملموس»
+        # (‏auto-draft لا يطغى عليه) — §26/§14.
+        self._dirty = False
+        self.clear_draft()
+        self._update_incomplete_indicator()
+        self.status.setText("فُتح العمل: %s" % (self.work_badge() or "—"))
+
+    def work_badge(self) -> str:
+        """«⚠️» | «🔒» | «» — للاستهلاك الخارجيّ (مستكشف الملفّات لاحقاً)."""
+        if self._work_state == "final":
+            return "🔒"
+        if self._work_state == "incomplete":
+            return "⚠️"
+        return self.incomplete_badge()
+
+    def _on_save(self):
+        """يحفظ التقدّم — **لا يُمنَع أبداً** بنقص المعلومات (§4). ينتج/يحدّث
+        عملاً بحالة ⚠️ (لا DOCX/PDF نهائيَّين، لا قفل). عمل كان 🔒 ثمّ
+        عُدِّل بعد فتح القفل ⇒ يعود ⚠️ ولا تُلمَس ملفّاته النهائية القديمة
+        (§16)."""
+        self._recompute()
+        state = "incomplete"                      # SAVE لا يُنتج نهائياً أبداً
+        rec = self._work_record(state)
+        wd = self.work_data()
+        try:
+            if self._work_id is None:
+                self._work_id = database.save_hr_work(rec, wd)
+            else:
+                database.update_hr_work(self._work_id, rec, wd)
+        except Exception as exc:                              # noqa: BLE001
+            logger.warning("حفظ العمل فشل", exc_info=True)
+            from ui2.alerts import warn
+            warn(self, self.TITLE, [f"تعذّر حفظ العمل: {exc}"])
+            return
+        self._work_state = state
+        self._dirty = False
+        self.clear_draft()
+        self._update_incomplete_indicator()
+        v = self._validation
+        tail = ("⚠️ غير مكتمل" if (v is not None and v.is_incomplete)
+                else "قابل للإصدار النهائيّ")
+        self.status.setText(f"💾 حُفظ العمل — {tail}")
+
+    def _set_locked(self, locked: bool):
+        """🔒: كلّ مدخلات الوثيقة للقراءة فقط (حقول الترويسة + خلايا كلّ
+        صفّ ديناميكيّ + ``+ Ajouter``). لا يمسّ Zoom/Ctrl+Wheel/التمرير
+        (على ``_canvas``) ولا أزرار المعاينة/الحفظ باسم."""
+        self._locked = bool(locked)
+        for w in self._widgets.values():
+            if isinstance(w, QComboBox):
+                w.setEnabled(not locked)
+            elif hasattr(w, "setReadOnly"):
+                w.setReadOnly(locked)
+        if hasattr(self, "_add_btn"):
+            self._add_btn.setEnabled(not locked)
+        if hasattr(self, "_canvas"):
+            self._canvas.update()
+
     # ----------------------- البيانات والحساب -----------------------
     def _w(self, key):
         return self._widgets[key].text().strip()
@@ -1490,7 +1616,7 @@ class BulletinTemplateScreen(Screen):
         return sr is not None and _num(sr.val("gain")) > 0
 
     def _on_row_edit(self, key):
-        if key in self._suspend:
+        if key in self._suspend or self._locked:
             return
         relayout = False
         for r in self._rows:
@@ -1553,7 +1679,7 @@ class BulletinTemplateScreen(Screen):
                 self._style_field(r.cell_key(cell))
 
     def _on_slot_write(self, key):
-        if key in self._suspend:
+        if key in self._suspend or self._locked:
             return
         if key in ("mois", "annee"):
             self._cfg = None
@@ -1763,26 +1889,53 @@ class BulletinTemplateScreen(Screen):
                        dataclasses.asdict(self._calc_result).items()},
         }
 
+    _WORK_BADGE = {"final": "🔒", "incomplete": "⚠️"}
+
     def _on_history(self):
-        from PySide6.QtWidgets import QDialog, QTableWidget, QTableWidgetItem
+        from PySide6.QtWidgets import (QDialog, QTableWidget, QTableWidgetItem,
+                                       QAbstractItemView)
         rows = database.list_hr_documents(screen_key="hr_bulletin_paie", limit=200)
         dlg = QDialog(self)
         dlg.setWindowTitle(f"سجلّ — {self.DOC_LABEL}")
-        dlg.resize(760, 420)
-        tw = QTableWidget(len(rows), 4, dlg)
-        tw.setHorizontalHeaderLabels(["التاريخ", "الأجير", "المكتب", "الملف"])
+        dlg.resize(780, 440)
+        tw = QTableWidget(len(rows), 5, dlg)
+        tw.setHorizontalHeaderLabels(["", "التاريخ", "الأجير", "المكتب", "الملف"])
+        tw.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        tw.setSelectionBehavior(QAbstractItemView.SelectRows)
         for i, r in enumerate(rows):
+            badge = self._WORK_BADGE.get(r.get("state"), "")
             for j, v in enumerate((
-                    r.get("doc_date", ""), r.get("employee_name", ""),
+                    badge, r.get("doc_date", ""), r.get("employee_name", ""),
                     r.get("employer_name", ""),
                     os.path.basename(r.get("file_path", "")))):
                 tw.setItem(i, j, QTableWidgetItem(str(v)))
-        QVBoxLayout(dlg).addWidget(tw)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("نقرة مزدوجة على سطر لفتح العمل للتحرير."))
+        lay.addWidget(tw)
+
+        def _open(row_idx):
+            r = rows[row_idx]
+            rid = r.get("id")
+            if rid is None:
+                return
+            full = database.get_hr_document(rid)
+            if not full:
+                return
+            dlg.accept()
+            self.load_work(full)
+
+        tw.cellDoubleClicked.connect(lambda rr, _c: _open(rr))
         dlg.exec()
 
     def _on_clear(self):
         if not confirm(self, "تأكيد", "مسح كل الحقول في هذه الشاشة؟"):
             return
+        if self._locked:
+            self._set_locked(False)
+        self._work_id = None                   # مسح ⇒ عمل جديد بلا هويّة
+        self._work_state = None
+        self._has_final_artifacts = False
+        self._final_docx = self._final_pdf = None
         self._suspend = set(self._widgets)
         try:
             for s in self._header_slots:
@@ -1811,4 +1964,6 @@ class BulletinTemplateScreen(Screen):
         self._relayout()
 
     def has_unsaved_changes(self):
-        return not self.is_empty()
+        #  Phase C §26: تغييرات فعلية منذ آخر حفظ/تحميل — لا «فيه محتوى».
+        #  عملٌ مُحمَّل وغير ملموس ⇒ False؛ أوّل تعديل ⇒ True؛ Save ⇒ False.
+        return self._dirty

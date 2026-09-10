@@ -183,6 +183,15 @@ def init_db():
     # (مصدر "آخر تعديل" بالشريط الجانبي/السجل، بدل وقت الملف الفيزيائي).
     if "updated_at" not in existing_cols:
         cur.execute("ALTER TABLE cd_documents ADD COLUMN updated_at TEXT")
+    # hr_documents: دورة حياة «العمل» (Phase C — كشف الراتب PySide6). نفس
+    # نمط full_data_json/updated_at أعلاه: PRAGMA ثم ALTER لو ناقص، فقواعد
+    # المستخدمين الموجودة تترقّى بلا فقدان بيانات. state ∈ NULL (سجلّ توليد
+    # قديم) | 'incomplete' (⚠️ عمل محفوظ ناقص) | 'final' (🔒 عمل نهائي).
+    existing_hr_cols = {row[1] for row in cur.execute("PRAGMA table_info(hr_documents)")}
+    if "state" not in existing_hr_cols:
+        cur.execute("ALTER TABLE hr_documents ADD COLUMN state TEXT")
+    if "updated_at" not in existing_hr_cols:
+        cur.execute("ALTER TABLE hr_documents ADD COLUMN updated_at TEXT")
     existing_client_cols = {row[1] for row in cur.execute("PRAGMA table_info(clients)")}
     # clients.folder_name: اسم مجلد الزبون الفعلي على القرص — يُحسب مرة
     # وحدة عند إنشاء الزبون (create_client) ويبقى ثابتاً بعدها حتى لو
@@ -482,3 +491,74 @@ def list_hr_documents(screen_key=None, query="", limit=100):
     rows = conn.execute("\n".join(sql), params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_hr_document(row_id):
+    """صف ``hr_documents`` واحد (dict) بمعرّفه، أو ``None`` — يُستخدم لفتح
+    عملٍ محفوظ للتحرير (Phase C). ``full_data_json`` يبقى نصّاً كما هو
+    (يفكّه المستدعي حسب شكله)."""
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM hr_documents WHERE id=?", (row_id,)).fetchone()
+    conn.close()
+    return dict(row) if row is not None else None
+
+
+def save_hr_work(record, work_data):
+    """يُدرج **عمل موارد بشرية جديداً** (Phase C — ليس مجرّد سجلّ توليد):
+    يُخزّن ``work_data`` (قاموس Work Data كامل) في ``full_data_json``،
+    و``state`` (‏``incomplete`` / ``final``)، ويضبط ``updated_at``. يرجّع
+    ``id`` الصفّ الجديد — المعرّف المستقرّ للعمل.
+
+    ``record``: ``screen_key`` (إلزامي) + ``doc_label`` / ``employer_name``
+    / ``employee_name`` / ``doc_date`` / ``client_id`` / ``file_path``
+    (docx) / ``pdf_path`` / ``state``. ``file_path`` قد يكون ``""`` لعملٍ
+    محفوظ بلا مستند نهائي بعد."""
+    conn = get_connection()
+    cur = conn.execute(
+        """
+        INSERT INTO hr_documents
+            (screen_key, doc_label, employer_name, employee_name, doc_date,
+             client_id, file_path, pdf_path, full_data_json, state, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
+        """,
+        (
+            record["screen_key"], record.get("doc_label"),
+            record.get("employer_name"), record.get("employee_name"),
+            record.get("doc_date"), record.get("client_id"),
+            record.get("file_path", "") or "", record.get("pdf_path"),
+            json.dumps(work_data, ensure_ascii=False)
+            if work_data is not None else None,
+            record.get("state"),
+        ),
+    )
+    row_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def update_hr_work(row_id, record, work_data):
+    """يحدّث **نفس** العمل (‏``id`` ثابت) — لا صفّ جديد لكل حفظ. يُحدِّث
+    ``full_data_json`` و``state`` والمسارات و``updated_at``. ``screen_key``
+    و``created_at`` لا يُلمسان."""
+    conn = get_connection()
+    conn.execute(
+        """
+        UPDATE hr_documents SET
+            doc_label=?, employer_name=?, employee_name=?, doc_date=?,
+            client_id=?, file_path=?, pdf_path=?, full_data_json=?, state=?,
+            updated_at=datetime('now','localtime')
+        WHERE id=?
+        """,
+        (
+            record.get("doc_label"), record.get("employer_name"),
+            record.get("employee_name"), record.get("doc_date"),
+            record.get("client_id"),
+            record.get("file_path", "") or "", record.get("pdf_path"),
+            json.dumps(work_data, ensure_ascii=False)
+            if work_data is not None else None,
+            record.get("state"), row_id,
+        ),
+    )
+    conn.commit()
+    conn.close()

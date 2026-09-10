@@ -3284,3 +3284,82 @@ galleries `ALLOK`.
 جديد: `ui2/hr/paie/validation.py`.
 معدَّل: `ui2/hr/paie/bulletin_template.py` ·
 `ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.
+
+---
+
+## Phase C1 — 2026-09-10: عمل دائم (Save incomplete + reopen)
+
+أوّل مرحلة من دورة حياة كشف الراتب (Phase C كبيرة — مُقسَّمة C1→C4).
+المبدأ: **SAVE يحمي عمل المستخدم** — لا يُمنَع أبداً بنقص المعلومات، ولا
+يُنتج مستنداً نهائياً، ولا يقفل.
+
+### التخزين — امتداد `hr_documents` (لا سجلّ `bulletin` الثقيل)
+
+سجلّ `programme/payroll` (‏`bulletin`/`bulletin_ligne`) يفرض سلسلة
+`entreprise → employe → convention` المرفوضة لهذه الشاشة. البديل: عمودان
+على `hr_documents` (‏`ALTER` متوافق خلفياً في `init_db`، نفس نمط
+الهجرات القائمة):
+
+- `state` ∈ `NULL` (سجلّ توليد قديم) · `'incomplete'` (⚠️) · `'final'` (🔒).
+- `updated_at`.
+
+`full_data_json` = **Work Data** كاملة، `file_path` = docx، `pdf_path` =
+pdf. دوالّ جديدة: `get_hr_document(id)` · `save_hr_work(record, work_data)`
+(‏INSERT، يرجّع المعرّف المستقرّ) · `update_hr_work(id, …)` (نفس الصفّ، لا
+تكرار). `log_hr_document` القديمة تبقى كما هي للتوافق.
+
+### Work Data — `work_data()`
+
+يلفّ `draft_state()` (header ISO + الصفوف الديناميكية + الأنواع الفرعية +
+`soumis`/`sens`/`classe` + `iep_manual` + `incomplete`) بـ:
+`work_version` · `screen_key` · `employer`/`employee`/`period` (‏metadata
+للبحث) · `has_final_artifacts` + `final_docx`/`final_pdf` (تُملأ في C3).
+إعادة البناء عبر `apply_draft()` الموجود — **لا تسلسل ثانٍ موازٍ**.
+
+**Auto-draft ≠ عمل محفوظ**: auto-draft يبقى آلية استرداد (ملف JSON في
+`get_local_state_dir()`، debounce، `maybe_restore_draft`)؛ العمل المحفوظ
+صفّ DB بمعرّف `_work_id`. حفظ ناجح ⇒ `clear_draft()` (العمل يَجُبّ
+المسوّدة). شاشة جديدة بلا تحميل ⇒ `_work_id = None`.
+
+### Save incomplete + reopen
+
+- `_on_save()` (زرّ «💾 حفظ» في الشريط): `_recompute` ثمّ `save_hr_work` /
+  `update_hr_work` — `state` دائماً `'incomplete'` (SAVE لا يُنتج نهائياً
+  أبداً). لا يمسح الشاشة، لا يقفل، لا يجبر الإكمال. المعرّف يبقى ثابتاً
+  عبر كلّ حفظ لاحق.
+- `load_work(row)`: يفكّ `full_data_json` → `apply_draft` → يثبّت
+  `_work_id`/`_work_state` → عمل `incomplete` مُعاد فتحه يُفعّل
+  `show_required_warnings()` (§5) → عمل `final` يُقفَل.
+- سجلّ «السجلّ» صار قابلاً للفتح: نقرة مزدوجة على سطر ⇒ `load_work`،
+  وعمود شارة (⚠️/🔒/—).
+- `work_badge()` → `"⚠️" | "🔒" | ""` — للاستهلاك الخارجيّ لاحقاً
+  (مستكشف الملفّات) بلا معرفة داخليّات الشاشة.
+
+### dirty flag حقيقيّ (§26)
+
+`has_unsaved_changes()` كان يرجع `not is_empty()` («فيه محتوى»). صار
+يرجع `self._dirty` (تعديل فعليّ منذ آخر حفظ/تحميل): بناء الشاشة الافتراضي
+وتحميل عمل لا يجعلانها «قذرة»؛ أوّل تعديل ⇒ `True`؛ `Save` ⇒ `False`. ليست
+حالة مرئية ثالثة.
+
+### قفل مبدئيّ (يكتمل في C3)
+
+`_set_locked(bool)`: كلّ حقول الترويسة + خلايا الصفوف الديناميكية للقراءة
+فقط، `+ Ajouter` معطَّل، `_add_row`/`_remove_row`/`_on_row_edit`/
+`_on_slot_write` محروسة بـ`_locked`. الزوم/`Ctrl+Wheel`/التمرير (على
+`_canvas`) تبقى تعمل. فتح القفل + Finalize + Save As = C3/C4.
+
+### الاختبارات
+
+`ui2/hr/paie/tests` **64 OK** (27 A2.3 + 27 B + **10 C1**: Save ينشئ عملاً
+⚠️ · Save لا يُمنَع بالنقص · معرّف مستقرّ عبر إعادة الحفظ · reopen يستعيد
+كلّ شيء ويُظهر التحذيرات · التصنيفات (`soumis`/`sens`/`iep_manual`) تبقى ·
+auto-draft ≠ عمل محفوظ · dirty نظيف بعد التحميل · المسح يُسقط الهويّة ·
+توافق مع صفوف `log_hr_document` القديمة · `work_badge`). `ui2/tests` 42 ·
+`ui2/paie/tests` 17 · `programme/payroll/tests` 49 · `programme/tests` 6 ·
+golden 14/14 · galleries `ALLOK`.
+
+### الملفات المتأثرة
+
+معدَّل: `programme/database.py` · `ui2/hr/paie/bulletin_template.py` ·
+`ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.

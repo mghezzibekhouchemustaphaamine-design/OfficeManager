@@ -761,6 +761,124 @@ class BulletinTemplateSmartLibelleR3(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateR4(unittest.TestCase):
+    """UX Redesign R4 — تحقّق السطر الحرّ + Smart Next + حرّاس القفل +
+    اتّساق المُصيِّر."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_r4_")
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        os.environ[paths._DATA_DIR_ENV_OVERRIDE] = self._tmp
+        open(os.path.join(self._tmp, "office_system.db"), "a").close()
+        database.init_db()
+        mod.confirm = lambda *_a, **_k: True
+        self.scr = BulletinTemplateScreen(conn=None)
+        self._fill_ident()
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        for k in (paths._LOCAL_STATE_ENV_OVERRIDE, paths._DATA_DIR_ENV_OVERRIDE):
+            os.environ.pop(k, None)
+
+    def _fill_ident(self):
+        w = self.scr._widgets
+        for k, v in {"emp_raison_sociale": "SARL X", "emp_adresse": "12 RUE",
+                     "emp_cnas": "16 412 078 56", "mois": "OCTOBRE",
+                     "annee": "2026", "id_nom": "BENALI", "id_prenom": "Karim",
+                     "id_lieu_naissance": "ALGER",
+                     "id_fonction": "COMPTABLE"}.items():
+            w[k].setText(v)
+        w["id_date_naissance"].set_iso("1990-05-10")
+        w["id_date_embauche"].set_iso("2016-06-14")
+        [r for r in self.scr._rows if r.kind == "salaire"][0].set_val("gain",
+                                                                      "45000")
+        self.scr._recompute()
+
+    # ---------- تحقّق السطر الحرّ (§37) ----------
+    def test_empty_free_row_ignored(self):
+        self.scr._insert_free_row("A")
+        self.scr._recompute()
+        self.assertTrue(self.scr.validate().ready_for_final)
+
+    def test_free_row_libelle_only_is_incomplete(self):
+        r = self.scr._insert_free_row("A")
+        r.set_val("libelle", "Prime")
+        self.scr._recompute()
+        v = self.scr.validate()
+        self.assertFalse(v.ready_for_final)
+        self.assertTrue(v.incomplete_rows)
+
+    def test_free_row_both_gain_and_retenue_invalid(self):
+        #  مسوّدة قديمة تحمل الحقلين معاً (يمنعهما الإدخال الحيّ) — نتجاوز
+        #  الفرض الحيّ بكتم المفتاحين.
+        r = self.scr._insert_free_row("A")
+        self.scr._suspend |= {r.cell_key("gain"), r.cell_key("retenue")}
+        r.set_val("gain", "1000")
+        r.set_val("retenue", "200")
+        self.scr._suspend = set()
+        self.scr._recompute()
+        v = self.scr.validate()
+        self.assertTrue(any(p.kind == "invalid" for p in v.invalid_fields))
+
+    # ---------- Smart Next (§27) ----------
+    def test_smart_next_carries_free_prime_drops_free_retenue(self):
+        pr = self.scr._insert_free_row("A")
+        pr.set_val("libelle", "Prime fidélité")
+        pr.set_val("gain", "6000")
+        av = self.scr._insert_free_row("C")
+        av.set_val("libelle", "Avance perso")
+        av.set_val("retenue", "3000")
+        self.scr._recompute()
+        self.scr._on_save()
+        self.scr.create_next_period_work()
+        kinds = [(r.kind, r.val("libelle")) for r in self.scr._rows
+                 if r.kind == "free"]
+        self.assertIn(("free", "Prime fidélité"), kinds)
+        self.assertNotIn(("free", "Avance perso"), kinds)
+        self.assertEqual(self.scr._widgets["mois"].text(), "NOVEMBRE")
+
+    # ---------- حرّاس القفل (§28/§29) ----------
+    def test_lock_keeps_combobox_enabled_but_inert(self):
+        from PySide6.QtWidgets import QComboBox
+        self.scr._add_row("prime")
+        self.scr._recompute()
+        self.scr._set_locked(True)
+        combos = [w for w in self.scr._widgets.values()
+                  if isinstance(w, QComboBox)]
+        self.assertTrue(combos)
+        for c in combos:
+            self.assertTrue(c.isEnabled())          # لا رمادي (§29)
+        self.assertFalse(self.scr._add_row("prime"))  # البنية محروسة
+        # سهم LIBELLÉ الذكيّ معطَّل في القفل
+        for w in self.scr._widgets.values():
+            if isinstance(w, mod._SmartLibelle):
+                self.assertFalse(w._arrow.isEnabled())
+
+    def test_unlock_reenables_smart_arrow(self):
+        self.scr._add_row("iep")
+        self.scr._set_locked(True)
+        self.scr._set_locked(False)
+        for w in self.scr._widgets.values():
+            if isinstance(w, mod._SmartLibelle):
+                self.assertTrue(w._arrow.isEnabled())
+
+    # ---------- اتّساق المُصيِّر (§36) ----------
+    def test_free_row_reaches_renderer_input(self):
+        r = self.scr._insert_free_row("A")
+        r.set_val("libelle", "PRIME SPECIALE")
+        r.set_val("gain", "7000")
+        self.scr._recompute()
+        pin = self.scr._build_input()
+        self.assertTrue(any(p.libelle == "PRIME SPECIALE" and p.montant == 7000
+                            for p in pin.primes))
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
 class BulletinTemplateValidation(unittest.TestCase):
     """Phase B — تحقّق مرن + ⚠️ غير مكتمل."""
 

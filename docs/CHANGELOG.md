@@ -3847,3 +3847,61 @@ ComboBox (§21/§23) · تلميع الخلايا المحسوبة كنصّ (§1
 معدَّل: `ui2/hr/paie/bulletin_template.py` ·
 `ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.
 لقطات: `docs/baseline_screenshots/R3_smart_libelle_{100,200}.png`.
+
+## UX Redesign R4 — 2026-09-10: تحقّق السطر الحرّ + Smart Next + حرّاس القفل
+
+المرحلة الرابعة (الأخيرة): إغلاق التحقّق ودورة الحياة على نموذج المناطق.
+
+### تحقّق السطر الحرّ (§37)
+
+`_row_status` نال فرع `free`: فارغٌ تماماً ⇒ يُتجاهَل · بدأه المستخدم
+(اسم/رمز أو قيمة) وبلا مبلغٍ صالح ⇒ ناقص. `validate_screen` يُبرِز
+`invalid` عند: GAIN و RETENUE معاً، أو RETENUE سالبة (يمنعهما الإدخال
+الحيّ، لكن مسوّدةً قديمة قد تحملهما).
+
+### Smart Next (§27)
+
+`create_next_period_work`: يُنقَل السطر الحرّ إلى الشهر التالي **فقط** إن
+كان مكسباً مستقرّاً (قيمة في GAIN وبلا RETENUE) — أي Prime؛ الحرّ
+باقتطاع أو الفارغ ⇒ عرضيّ، يُحذَف. الأنواع الذكيّة العرضيّة
+(Absence/Retard/HS/Avance) تُحذَف كما كانت؛ IEP وجودُها ينتقل بنسبةٍ
+جديدة. `zone`/`code`/`code_manual`/`libelle` تنتقل ضمن Work Data.
+
+### حرّاس القفل — بلا رمادي (§28/§29)
+
+عند 🔒: `QComboBox` يبقى **مفعَّلاً** (لا يتحوّل رمادياً)، والتفاعل معه
+(نقر/عجلة/مفتاح) يُبتلَع في `eventFilter`. سهم `▾` في LIBELLÉ الذكيّ
+يُعطَّل. حقول النصّ read-only (تبقى صفراء). فتح القفل يُعيد كلّ ذلك.
+
+### اتّساق المُصيِّر (§36)
+
+`_build_input` يشتقّ primes/retenues من `view.lignes` (مخرَج المحرّك) —
+والسطر الحرّ والذكيّ يمرّان جميعاً عبر `compute_bulletin`، فيظهران في
+DOCX/PDF بنفس ترتيب المناطق ودلالتها بلا عملٍ إضافيّ. اختبارٌ يثبت وصول
+سطرٍ حرّ إلى `PaieInput.primes`.
+
+### الاختبارات
+
+`ui2/hr/paie/tests` **153 OK** (‏146 + **7 R4**: سطر حرّ فارغ يُتجاهَل ·
+LIBELLÉ وحده ناقص · GAIN+RETENUE معاً غير صالح · Smart Next ينقل
+Prime الحرّ ويُسقط الاقتطاع الحرّ · القفل يُبقي ComboBox مفعَّلاً وخاملاً
++ يُعطّل سهم LIBELLÉ · فتح القفل يُعيد السهم · السطر الحرّ يصل إلى مدخل
+المُصيِّر). `ui2/tests` 42 · `ui2/paie/tests` 17 ·
+`programme/payroll/tests` 49 · `programme/tests` 6 · golden 14/14 ·
+galleries `ALLOK`.
+
+### بقيت خارج نطاق هذه الدفعة (تحسينات لاحقة)
+
+* السهم الأيمن للإكمال السطريّ في LIBELLÉ (§15) — QCompleter بوضع
+  `PopupCompletion` فقط حالياً.
+* مُنتقيا jours/heures و 50%/100% ما زالا `QComboBox` (مُنمَّق أصفر، غير
+  رماديّ) بدل popup/selector مخصَّص (§21/§23).
+* «الإدراج في الموضع بالضبط» يضع السطر الجديد آخِر حزمة منطقته (الترتيب
+  داخل الحزمة = ترتيب الإضافة، §3) لا بين صفَّين محدَّدَين.
+
+### الملفات المتأثرة
+
+معدَّل: `ui2/hr/paie/bulletin_template.py` · `ui2/hr/paie/validation.py` ·
+`ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.
+لقطات: `docs/baseline_screenshots/R4_fresh_100.png` ·
+`R4_full_{45,100,200}.png` · `R4_locked_100.png`.

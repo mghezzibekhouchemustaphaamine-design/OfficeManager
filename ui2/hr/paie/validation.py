@@ -147,6 +147,20 @@ def validate_screen(screen) -> ValidationResult:
     for r in screen._rows:
         if r.role == "system" or r.kind == "salaire":
             continue
+        #  السطر الحرّ (§37): GAIN و RETENUE معاً، أو RETENUE سالبة ⇒ غير
+        #  صالح شكلياً (أقوى من «ناقص»). عادةً يمنعهما الإدخال، لكن مسوّدةً
+        #  قديمة قد تحملهما.
+        if r.kind == "free":
+            g, ret = r.val("gain").strip(), r.val("retenue").strip()
+            if g and ret:
+                res.invalid_fields.append(Problem(
+                    r.cell_key("retenue"),
+                    "سطر حرّ: قيمة في GAIN و RETENUE معاً — احذف إحداهما.",
+                    "invalid"))
+            if ret.startswith("-"):
+                res.invalid_fields.append(Problem(
+                    r.cell_key("retenue"),
+                    "سطر حرّ: RETENUE تُكتب موجبةً.", "invalid"))
         started, complete, label = screen._row_status(r)
         if started and not complete:
             res.incomplete_rows.append(Problem(

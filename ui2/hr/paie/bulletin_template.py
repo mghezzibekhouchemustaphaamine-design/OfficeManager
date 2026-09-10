@@ -1607,6 +1607,12 @@ class BulletinTemplateScreen(Screen):
 
     def eventFilter(self, obj, ev):                       # noqa: N802 (Qt)
         t = ev.type()
+        #  §28: في القفل، تُبتلَع كلّ محاولة تحرير عبر ComboBox (يبقى
+        #  مفعَّلاً فلا يتحوّل رمادياً، لكنه لا يستجيب).
+        if self._locked and isinstance(obj, QComboBox) and t in (
+                QEvent.MouseButtonPress, QEvent.MouseButtonDblClick,
+                QEvent.MouseButtonRelease, QEvent.KeyPress, QEvent.Wheel):
+            return True
         if t == QEvent.Wheel:
             if ev.modifiers() & Qt.ControlModifier:
                 self._zoom_wheel(ev)                      # Ctrl+عجلة → زوم الوثيقة
@@ -1831,6 +1837,15 @@ class BulletinTemplateScreen(Screen):
                   and bool(r.val("sens"))
                   and (not need_class or bool(r.val("classe"))))
             return started, ok, "سطر «Autre»"
+        if k == "free":
+            #  §37: سطرٌ حرّ فارغٌ تماماً ⇒ يُتجاهَل. بدأه المستخدم (اسم/رمز
+            #  أو قيمة) وبلا مبلغٍ صالح ⇒ ناقص. GAIN و RETENUE معاً، أو
+            #  RETENUE سالبة ⇒ غير صالح (يُبرَز في validate_screen).
+            g, ret = r.val("gain").strip(), r.val("retenue").strip()
+            started_free = bool(r.val("libelle") or r.val("code") or g or ret)
+            has_amount = _num(g) > 0 or _num(ret) > 0
+            ok = has_amount and not (g and ret) and not ret.startswith("-")
+            return started_free, ok, "سطر حرّ"
         return started, True, ""
 
     def _row_problem_key(self, r) -> str:
@@ -2016,9 +2031,13 @@ class BulletinTemplateScreen(Screen):
         self._locked = bool(locked)
         for w in self._widgets.values():
             if isinstance(w, QComboBox):
-                w.setEnabled(not locked)
+                #  §28/§29: لا رمادي — يبقى مفعَّلاً، والتفاعل يُبتلَع في
+                #  ``eventFilter`` عند القفل.
+                w.setEnabled(True)
             elif hasattr(w, "setReadOnly"):
                 w.setReadOnly(locked)
+            if isinstance(w, _SmartLibelle):
+                w._arrow.setEnabled(not locked)
         if hasattr(self, "_add_btn"):
             self._add_btn.setEnabled(not locked)
         if locked:
@@ -2588,7 +2607,15 @@ class BulletinTemplateScreen(Screen):
         new_rows = []
         for row in wd.get("rows", []):
             k = row.get("kind")
-            if k not in _SMART_NEXT_CARRY:
+            cells = row.get("cells") or {}
+            if k == "free":
+                #  §27: يُنقَل السطر الحرّ فقط إن كان **مكسباً مستقرّاً**
+                #  (Prime): قيمة في GAIN وبلا RETENUE. الحرّ باقتطاع أو
+                #  الفارغ ⇒ عرضيّ، يُحذَف.
+                if not (cells.get("gain") or "").strip() \
+                        or (cells.get("retenue") or "").strip():
+                    continue
+            elif k not in _SMART_NEXT_CARRY:
                 continue                                  # §5/§6: يُحذَف
             row = dict(row)
             if k == "iep":

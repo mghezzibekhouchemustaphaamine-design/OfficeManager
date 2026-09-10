@@ -33,6 +33,7 @@ from programme.payroll import calc, lignes, registry
 from programme.payroll.calc import fmt_montant
 from programme.payroll.config_loader import PayrollConfigError, load_params
 from ui.hr.constants import MOIS_FR
+from ui.hr.paie import layout_spec as L        # هندسة الوثيقة (مليمتر، بلا زوم)
 from ui.hr.paie import template_simple as T
 from ui.hr.render import TemplateNotReady
 from ui2 import theme
@@ -44,10 +45,10 @@ from ui2.screen import Screen
 logger = logging.getLogger(__name__)
 
 _ENTRY_FONT = T.FORM_FONT                       # "Helvetica" — نفس خط النموذج
-# معايرة عمودية لمنطقة بيانات العامل في الشاشة الجديدة فقط — الأصل بدا
-# أكثر انفراجاً؛ نزيد إيقاع صفوف الهوية بمقدار SPACE["sm"] لكل فجوة،
-# وتُزاح كتلة الجدول أسفلها بنفس المجموع (بلا تداخل مع ترويسة الجدول).
-_IDENT_ROW_EXTRA_PX = theme.SPACE["sm"]
+#  Phase E.1 §3: أُزيلت المعايرة العمودية المعتمِدة على البكسل
+#  (‏``theme.SPACE["sm"] / scale``). إيقاع صفوف الهوية وموضع الجدول
+#  ثابتان بالمليمتر في :mod:`ui.hr.paie.layout_spec` (‏``IDENT_ROW_STEP_MM``
+#  · ``TABLE_HEAD_Y_MM``) — لا يتغيّران مع الزوم.
 # ---- إحداثيات الوثيقة → إحداثيات اللوحة: تحويلٌ واحد لكل شيء (Phase 55) ----
 _FONT_K = 0.62                # مليمتر ارتفاع الخط × scale × K = نقاط الخط
 _ENTRY_CHROME_MM = 1.2       # كروم QLineEdit العمودي (حدّ+حشو) — بالمليمتر فيتبع الزوم
@@ -86,27 +87,16 @@ class _DocView:
         return f
 
     def tfont(self, token):
-        """خطّ من نظام الخطوط الموحَّد (:data:`_TXT`)."""
-        mm_h, bold = _TXT[token]
+        """خطّ من نظام الخطوط الموحَّد المشترك (:data:`layout_spec.TEXT`) —
+        نفس الرموز يحوّلها المُصيِّر إلى Helvetica + نقطة (§9)."""
+        mm_h, bold = L.TEXT[token]
         return self.font(mm_h, bold)
 
 
-#  ===================== نظام الخطوط الموحَّد (Phase E §4) =====================
-#  مصدرٌ واحد لأحجام خطوط الكشف: (ارتفاع الخط بالمليمتر، Bold). يُحوَّل عبر
-#  ``_DocView.font`` إلى نقاطٍ تتبع الزوم، فيبقى الرسمُ والحقولُ والقيَمُ
-#  المحسوبةُ وTOTAL/NET على نفس العائلة والمقاييس. أيّ سطرٍ يُضاف لاحقاً
-#  يمرّ بنفس الجدول.
-_TXT = {
-    "header_company":  (5.0, True),    # A — اسم/عنوان المكتب
-    "header_title":    (5.0, True),    # B — شريط BULLETIN DE PAIE
-    "block_labels":    (3.2, True),    # C — تسميات صناديق الهوية
-    "table_header":    (3.0, True),    # D — ترويسة أعمدة الجدول
-    "table_body_text": (3.2, False),   # E — نصّ ثابت في الصفوف (code/libellé)
-    "editable_cell":   (3.2, False),   # F — حقول الإدخال داخل الجدول
-    "computed_value":  (3.2, False),   # G — القيَم المحسوبة
-    "total_row":       (3.4, True),    # H — سطر TOTAL
-    "net_row":         (4.4, True),    # I — سطر NET À PAYER
-}
+#  نظام الخطوط: مصدرٌ واحد مشترك في :mod:`ui.hr.paie.layout_spec` — Qt
+#  يحوّله إلى ``QFont`` عبر ``_DocView.tfont``، وReportLab إلى نقطة عبر
+#  ``layout_spec.pdf_font`` (§9). لا قيَم خطّ متناثرة في أيٍّ من المُصيِّرَين.
+_TXT = L.TEXT                       # اسمٌ بديل تاريخيّ
 
 #  مفتاح خليّة جدول ديناميكيّ: ``r{rid}_{cell}``.
 _ROW_CELL_KEY = re.compile(r"^r\d+_[a-z]+$")
@@ -722,22 +712,20 @@ class _SheetCanvas(QWidget):
         base_text(3, T.BAND_BASELINE, "BULLETIN DE PAIE",
                   v.tfont("header_title"), QColor("white"))
 
-        # صندوق الهوية + تسمياته (القيَم حقول حيّة) — إيقاع عمودي مُعاير
+        # صندوق الهوية + تسمياته — إيقاع عموديّ ثابتٌ بالمليمتر (§3)
         p.setPen(ink)
         p.drawRect(int(X(0)), int(Y(T.IDENT_Y)),
-                   int(X(T.CONTENT_W) - X(0)), int(sc._ident_h(scale) * scale))
+                   int(X(T.CONTENT_W) - X(0)), int(v.px(sc._ident_h())))
         for _k, lbl, xl, xv, wv, row, _ml, kind in T.IDENT_FIELDS:
             if lbl:
-                base_text(xl, sc._ident_row_y(row, scale), f"{lbl} :",
+                base_text(xl, sc._ident_row_y(row), f"{lbl} :",
                           v.tfont("block_labels"))
-        a_x, _lieu_x = sc._row1_layout(scale)
-        base_text(a_x, sc._ident_row_y(1, scale), "à", v.tfont("block_labels"))
+        a_x, _lieu_x = sc._row1_layout()
+        base_text(a_x, sc._ident_row_y(1), "à", v.tfont("block_labels"))
 
-        # كتلة الجدول مُزاحة لأسفل بمقدار توسيع منطقة الهوية
-        ys = sc._y_shift(scale)
-
+        # كتلة الجدول: مواضعها مليمترٌ مطلق من المواصفة (لا إزاحة معتمِدة زوم)
         def Yt(mm):
-            return Y(mm + ys)
+            return Y(mm)
 
         # ---- جسم الجدول: نموذج المناطق (R1) ----
         #  ``nb`` = الصفوف الفعليّة (محتوى)؛ ``nb_drawn`` = أسطر الشبكة
@@ -784,7 +772,7 @@ class _SheetCanvas(QWidget):
                 px = col_x(f1) - 2.5 * scale
             else:
                 px = col_x(f0) + 2.5 * scale
-            tok = "computed_value" if color is cc else "table_body_text"
+            tok = "computed_value" if color is cc else "table_body"
             f = v.tfont(tok)
             f.setBold(bool(bold) or f.bold())
             self._cell(p, px, Yt(row_mid(i)),
@@ -879,7 +867,7 @@ class BulletinTemplateScreen(Screen):
     #  أدنى عدد أسطر مرسومة تحت IRG (منطقة Zone C + فراغ) قبل TOTAL/NET —
     #  يُبقي أسفل الوثيقة ثابتاً بصرياً مهما قلّت الأسطر (§4). المساحة
     #  الزائدة شبكةٌ فارغة مرسومة، لا widgets وهميّة.
-    MIN_BODY_SLOTS = 5
+    MIN_BODY_SLOTS = L.MIN_BODY_SLOTS
 
     TARGET_W = 720
     ZOOM_MIN, ZOOM_MAX, ZOOM_STEP, ZOOM_DEFAULT = 30, 260, 20, 100
@@ -1082,9 +1070,8 @@ class BulletinTemplateScreen(Screen):
         """المنطقة التي يقع فيها إحداثيّ y (مليمتر ورقة) داخل جسم الجدول:
         فوق CNAS ⇒ A · بين النقل و IRG ⇒ B · تحت IRG ⇒ C (§6)."""
         rows = self._visible_body_rows()
-        ys = self._y_shift(self._view().scale)
         idx = {r.kind: i for i, r in enumerate(rows)}
-        row_at = int(max(0, (mm_y - ys - T.BODY_TOP) // T.ROW_H))
+        row_at = int(max(0, (mm_y - T.BODY_TOP) // T.ROW_H))
         i_cnas = idx.get("cnas", 0)
         i_trans = idx.get("transport", i_cnas)
         i_irg = idx.get("irg", len(rows))
@@ -1146,10 +1133,9 @@ class BulletinTemplateScreen(Screen):
         if self._locked or not hasattr(self, "_btn_plus"):
             return
         v = self._view()
-        ys = self._y_shift(v.scale)
         mm_x = (canvas_pos.x() - v.x0) / v.scale - T.MARGIN_L
         mm_y = (canvas_pos.y() - v.y0) / v.scale
-        top = T.BODY_TOP + ys
+        top = T.BODY_TOP
         n = self._n_body_drawn()
         bot = top + n * T.ROW_H
         if not (top - 2.0 <= mm_y <= bot + 2.0):
@@ -1558,31 +1544,17 @@ class BulletinTemplateScreen(Screen):
         return ((v.x0, v.y0, v.x0 + v.sheet_w, v.y0 + v.sheet_h),
                 v.scale, v.cw, v.ch)
 
-    def _row1_layout(self, scale):
-        """موضعا «à» وحقل المكان في سطر تاريخ الميلاد — **بالمليمتر خالصاً**
-        (لا قياس خطّ بكسل يتسرّب إلى تخطيط الوثيقة). حقل التاريخ = عرض نصّه
-        + زرّ التقويم، ثمّ «à»، ثمّ حقل المكان."""
-        date_w_mm = 20.0 + _DATE_BTN_MM          # عرض DateField لسطر الميلاد
-        a_x = T._VAL_L + date_w_mm + 3.0
-        lieu_x = a_x + 3.0 + 3.0
-        return a_x, lieu_x
+    #  Phase E.1 §3/§5: هندسة الوثيقة كلّها من :mod:`layout_spec` بالمليمتر
+    #  — لا معايرة بكسل، لا اعتماد على ``scale``. الزوم = ``_DocView`` فقط.
+    def _row1_layout(self):
+        """‏``(a_x, lieu_x)`` بالمليمتر لسطر تاريخ الميلاد (من المواصفة)."""
+        return L.row1_layout()
 
-    # --- معايرة الإيقاع العمودي لمنطقة الهوية (الشاشة الجديدة فقط) ---
-    def _ident_extra_mm(self, scale):
-        return _IDENT_ROW_EXTRA_PX / scale
+    def _ident_row_y(self, r):
+        return L.ident_row_y(r)
 
-    def _ident_row_y(self, r, scale):
-        """نظير ``template_simple._ident_row_y`` بفجوة أوسع قليلاً لتقارب
-        إيقاع الأصل بصرياً (لا يُلمَس الثابت المشترك)."""
-        return T.IDENT_Y + 9.0 + r * (9.0 + self._ident_extra_mm(scale))
-
-    def _y_shift(self, scale):
-        """مجموع الزيادة عبر فجوات صفوف الهوية الأربع — تُزاح به كتلة
-        الجدول (ترويسة/أسطر/TOTAL/NET) لأسفل."""
-        return 4 * self._ident_extra_mm(scale)
-
-    def _ident_h(self, scale):
-        return T.IDENT_H + self._y_shift(scale)
+    def _ident_h(self):
+        return L.IDENT_H_MM
 
     # --- هندسة جسم الجدول (R1: أسفل ثابت بصرياً — §4/§31) ---
     def _n_body(self):
@@ -1706,18 +1678,18 @@ class BulletinTemplateScreen(Screen):
 
             x_mm = slot.x_mm
             if slot.key == "id_lieu_naissance":
-                x_mm = self._row1_layout(v.scale)[1]
+                x_mm = self._row1_layout()[1]
 
-            # ---- عمودياً ----
+            # ---- عمودياً (كلّه مليمترٌ ثابت من المواصفة) ----
             if slot.key in self._ident_row:
-                ref_mm = self._ident_row_y(self._ident_row[slot.key], v.scale)
+                ref_mm = self._ident_row_y(self._ident_row[slot.key])
                 top_px = v.y(ref_mm) - fm.ascent() - chrome
                 h_px = int(fm.height() + 2 * chrome)
             elif slot.baseline_mm is not None:
                 top_px = v.y(slot.baseline_mm) - fm.ascent() - chrome
                 h_px = int(fm.height() + 2 * chrome)
-            else:                                          # خانة جدول — مُزاحة لأسفل
-                top_px = v.y(slot.y_mm + self._y_shift(v.scale))
+            else:                                          # خانة جدول
+                top_px = v.y(slot.y_mm)
                 h_px = int(v.px(T.ROW_H - 0.8))
 
             # ---- عرضاً (كلّه بالمليمتر ثمّ يُحوَّل — لا ثابت بكسل) ----
@@ -1741,11 +1713,10 @@ class BulletinTemplateScreen(Screen):
             w.move(int(v.x(x_mm)), int(top_px))
 
         # ---- خلايا صفوف الجسم الديناميكية ----
-        ys = self._y_shift(v.scale)
-        f_row = v.tfont("editable_cell")          # نفس نظام الخطوط (§E.4)
+        f_row = v.tfont("table_body")             # نظام الخطوط المشترك (§9)
         h_row = int(v.px(T.ROW_H - 0.8))
         for i, row in enumerate(self._visible_body_rows()):
-            top_mm = T.BODY_TOP + i * T.ROW_H + 0.7 + ys
+            top_mm = T.BODY_TOP + i * T.ROW_H + 0.7
             for cell, w in row.widgets.items():
                 # خلية «classe» في «Autre» تظهر فقط حين sens = Gain
                 if row.kind == "autre" and cell == "classe":

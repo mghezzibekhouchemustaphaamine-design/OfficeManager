@@ -12,41 +12,34 @@ import tkinter.font as tkfont
 from programme.payroll import registry
 from programme.payroll.calc import fmt_montant
 from ui.hr.constants import MOIS_FR, PAIE_DEFAULT_CODES
+from ui.hr.paie import layout_spec as L
 from ui.hr.render import TemplateNotReady
 
-# خط الاستمارة الموحّد — نفس عائلة الخط للجزء الثابت المرسوم وخانات
-# الإدخال فوقه (لا Courier) حتى تطابق كتابة المستخدم مظهر النموذج الأصلي.
-FORM_FONT = "Helvetica"
+# ============================================================================
+#  Phase E.1: كلّ هندسة الوثيقة الآن من ``ui.hr.paie.layout_spec`` (مليمتر
+#  A4 خالص، بلا زوم/بكسل). الأسماء التاريخية أدناه أسماءٌ بديلة تشير إليه
+#  فيبقى بقيّة الملف والشاشة والاختبارات دون تغيير.
+# ============================================================================
+FORM_FONT = L.FONT_FAMILY
 
-# ------- تخطيط الصفحة (مليمترات على ورقة 210×297) -------
-MARGIN_L = 14.0
-MARGIN_R = 14.0
-MARGIN_T = 12.0
-CONTENT_W = 210.0 - MARGIN_L - MARGIN_R          # 182
+MARGIN_L = L.MARGIN_L_MM
+MARGIN_R = L.MARGIN_R_MM
+MARGIN_T = L.MARGIN_T_MM
+CONTENT_W = L.CONTENT_W_MM
+COLS = L.COLS
 
-# حدود الأعمدة نسبةً إلى عرض المحتوى (0..1)
-COLS = [
-    ("code",    0.000, 0.077, "c", "CODE"),
-    ("libelle", 0.077, 0.450, "l", "LIBELLÉ"),
-    ("nbase",   0.450, 0.615, "r", "N/BASE"),
-    ("taux",    0.615, 0.755, "r", "TAUX"),
-    ("gain",    0.755, 0.878, "r", "GAIN"),
-    ("retenue", 0.878, 1.000, "r", "RETENUE"),
-]
-
-BAND_TITLE_Y = 40.0
-BAND_TITLE_H = 8.0
-IDENT_Y = 50.0
-IDENT_H = 52.0
-TABLE_HEAD_Y = 105.0
-ROW_H = 6.2
+BAND_TITLE_Y = L.BAND_TITLE_Y_MM
+BAND_TITLE_H = L.BAND_TITLE_H_MM
+IDENT_Y = L.IDENT_Y_MM
+IDENT_H = L.IDENT_H_MM
+TABLE_HEAD_Y = L.TABLE_HEAD_Y_MM
+ROW_H = L.ROW_H_MM
 TABLE_BOTTOM = 250.0
 
-COMPUTED_COLOR = "#1a56b0"   # لون القيَم المحسوبة تلقائياً (تمييزها عن المكتوب يدوياً)
+COMPUTED_COLOR = L.COMPUTED   # لون القيَم المحسوبة تلقائياً
 
-# ------- شبكة التحرير الثابتة (نمط CD: حقول فوق الاستمارة مباشرة) -------
-# جسم الجدول = 10 أسطر ثابتة الترتيب (لا تتحرك) — كل موضع معروف مسبقاً:
-BODY_TOP = TABLE_HEAD_Y + ROW_H + 1.0
+# ------- شبكة التحرير الثابتة القديمة (للشاشة Tkinter غير المسجَّلة فقط) -------
+BODY_TOP = L.BODY_TOP_MM
 N_PRIME_SLOTS = 3
 N_AUTRE_SLOTS = 2
 ROW_SALAIRE = 0
@@ -69,12 +62,13 @@ def _colf(col_key):
     raise KeyError(col_key)
 
 
-def _cell_mm(col_key, row_idx, pad=2.0):
-    """(x_mm من حافة المحتوى اليسرى، y_mm من أعلى الورقة، w_mm) لخانة جدول."""
+def _cell_mm(col_key, row_idx, pad=L.CELL_PAD_MM):
+    """(x_mm من حافة المحتوى اليسرى، y_mm من أعلى الورقة، w_mm) لخانة جدول —
+    من :mod:`layout_spec` (نفس ما تستهلكه الشاشة)."""
     f0, f1, _al = _colf(col_key)
     x = f0 * CONTENT_W + pad
     w = (f1 - f0) * CONTENT_W - 2 * pad
-    y = BODY_TOP + row_idx * ROW_H + 0.7
+    y = L.body_row_y(row_idx) + 0.7
     return x, y, w
 
 
@@ -103,12 +97,12 @@ class Slot:
 # ---- مستطيل هوية الأجير: 5 أسطر، عمودان + سطر ميلاد كامل العرض ----
 # _VAL_L موحّد لكل حقول العمود الأيسر (تبدأ كلها تحت بعضها على نفس x)،
 # ومختار ليسع أطول تسمية «DATE DE NAISSANCE :».
-_LBL_L, _VAL_L, _W_L = 4.0, 38.0, 49.0
-_LBL_R, _VAL_R, _W_R = 93.0, 124.0, 55.0
+_LBL_L, _VAL_L, _W_L = (L.IDENT_LABEL_L_X_MM, L.IDENT_VALUE_L_X_MM, 49.0)
+_LBL_R, _VAL_R, _W_R = (L.IDENT_LABEL_R_X_MM, L.IDENT_VALUE_R_X_MM, 55.0)
 
 
 def _ident_row_y(r):
-    return IDENT_Y + 9.0 + r * 9.0
+    return L.ident_row_y(r)
 
 
 # (key, label, x_label, x_value, w_value, row, maxlen, kind) — label=None: خانة تتبع سابقتها
@@ -143,10 +137,10 @@ IDENT_FIELD_H = 5.0          # ارتفاع خانة الهوية الاسمي (
 
 # خطوط الأساس (مم من أعلى الورقة) لحقول الترويسة — التسمية الثابتة تُرسَم
 # على نفس القيمة، والخانة تُوضَع بحيث يقع نصّها عليها بالضبط.
-RAISON_BASELINE = 10.5
-ADRESSE_BASELINE = 18.5
-ADHERENT_BASELINE = 26.5
-BAND_BASELINE = BAND_TITLE_Y + BAND_TITLE_H / 2.0 + 1.6
+RAISON_BASELINE = L.RAISON_BASELINE_MM
+ADRESSE_BASELINE = L.ADRESSE_BASELINE_MM
+ADHERENT_BASELINE = L.ADHERENT_BASELINE_MM
+BAND_BASELINE = L.BAND_BASELINE_MM
 
 
 def build_field_slots():
@@ -555,6 +549,94 @@ def _ident_pairs(employee):
     ]
 
 
+def _ident_value(employee, key):
+    if key == "situation_familiale":
+        return (employee.get(key, "") or "").strip() or "/"      # §23
+    return employee.get(key, "") or ""
+
+
+class _PageCanvas:
+    """رسمٌ **إحداثيّ بالمليمتر** على ورقة A4 عبر ``reportlab.pdfgen`` —
+    نفس إطار الشاشة تماماً: ``x`` من أصل المحتوى (الهامش الأيسر)، ``y`` من
+    **أعلى** الورقة. التحويل الوحيد إلى نظام ReportLab (الأصل أسفل اليسار)
+    محصورٌ هنا: ``pdf_y = (PAGE_H_MM − y_top_mm)``. لا conversions
+    متناثرة في الملف (§6)."""
+
+    def __init__(self, path):
+        from reportlab.pdfgen import canvas as _canvas
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import mm
+        from reportlab.lib import colors
+        self._mm, self._colors = mm, colors
+        self.c = _canvas.Canvas(path, pagesize=A4)
+
+    # -- تحويلات الإحداثيات (الوحيدة) --
+    def x(self, mm_val):
+        return (L.MARGIN_L_MM + mm_val) * self._mm
+
+    def y_from_top(self, mm_from_top):
+        return (L.PAGE_H_MM - mm_from_top) * self._mm
+
+    def _hc(self, hexc):
+        return self._colors.HexColor(hexc)
+
+    # -- عناصر الرسم --
+    def draw_rect(self, x_mm, y_top_mm, w_mm, h_mm, *, fill=None, stroke=None,
+                  lw=0.5):
+        self.c.saveState()
+        if fill:
+            self.c.setFillColor(self._hc(fill))
+        if stroke:
+            self.c.setStrokeColor(self._hc(stroke))
+            self.c.setLineWidth(lw)
+        self.c.rect(self.x(x_mm), self.y_from_top(y_top_mm + h_mm),
+                    w_mm * self._mm, h_mm * self._mm,
+                    fill=1 if fill else 0, stroke=1 if stroke else 0)
+        self.c.restoreState()
+
+    def draw_line(self, x0_mm, y0_mm, x1_mm, y1_mm, *, color=L.INK, lw=0.5):
+        self.c.saveState()
+        self.c.setStrokeColor(self._hc(color))
+        self.c.setLineWidth(lw)
+        self.c.line(self.x(x0_mm), self.y_from_top(y0_mm),
+                    self.x(x1_mm), self.y_from_top(y1_mm))
+        self.c.restoreState()
+
+    def draw_text(self, x_mm, baseline_mm, s, token, *, color=L.INK, align="l"):
+        if s is None or str(s) == "":
+            return
+        name, pt = L.pdf_font(token)
+        self.c.saveState()
+        self.c.setFillColor(self._hc(color))
+        self.c.setFont(name, pt)
+        xp, yp = self.x(x_mm), self.y_from_top(baseline_mm)
+        if align == "r":
+            self.c.drawRightString(xp, yp, str(s))
+        elif align == "c":
+            self.c.drawCentredString(xp, yp, str(s))
+        else:
+            self.c.drawString(xp, yp, str(s))
+        self.c.restoreState()
+
+    def draw_cell_text(self, col_key, row_i, s, token, *, color=L.INK):
+        """نصٌّ داخل خليّة جدول — نفس محاذاة العمود والتوسيط العموديّ للشاشة."""
+        x0, x1, al = L.col_bounds(col_key)
+        base = L.body_row_y(row_i) + L.ROW_H_MM / 2 + 0.35 * L.TEXT[token][0]
+        if al == "r":
+            self.draw_text(x1 - L.CELL_PAD_MM, base, s, token, color=color,
+                           align="r")
+        elif al == "c":
+            self.draw_text((x0 + x1) / 2, base, s, token, color=color,
+                           align="c")
+        else:
+            self.draw_text(x0 + L.CELL_PAD_MM, base, s, token, color=color,
+                           align="l")
+
+    def save(self):
+        self.c.showPage()
+        self.c.save()
+
+
 class SimpleBulletinTemplate:
     # المفتاح والتسمية مصدرهما سجلّ الموديلات في طبقة الحساب (لا تكرار)
     KEY = "simple"
@@ -735,9 +817,10 @@ class SimpleBulletinTemplate:
         doc.add_paragraph()
 
         # جدول الرُّبريكات — من BulletinView إن مُرّر (مصدر الحقيقة، Phase C2)
+        #  المسار عبر view مبطَّنٌ أصلاً حتى MIN_ZONE_C (SCREEN = PDF)؛ المسار
+        #  القديم بلا view يأخذ الحدّ الأدنى الإجماليّ.
         rows = (_bulletin_rows_from_view(view, employee, jours=pin.jours)
-                if view is not None else _bulletin_rows(pin, res))
-        rows = _pad_rows(rows)                    # فراغ تحت IRG (SCREEN = PDF)
+                if view is not None else _pad_rows(_bulletin_rows(pin, res)))
         rt = doc.add_table(rows=1 + len(rows) + 2, cols=6)
         rt.style = "Table Grid"
         heads = [c[4] for c in COLS]
@@ -785,110 +868,112 @@ class SimpleBulletinTemplate:
     # ===================== إخراج PDF =====================
     @staticmethod
     def build_pdf(path, pin, res, employer, employee, *, view=None):
+        """المُصيِّر **الإحداثيّ** (Phase E.1 §6): يرسم كشفاً ثابت الهندسة
+        بالمليمتر من نفس :mod:`layout_spec` التي تستهلكها الشاشة — لا
+        Platypus، لا Spacer، لا ارتفاعات تلقائية. الناتج = بنية الشاشة
+        بالضبط (§7) بلا chrome تحرير (§8)."""
         try:
-            from reportlab.lib.pagesizes import A4
-            from reportlab.lib.units import mm
-            from reportlab.lib import colors
-            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-            from reportlab.platypus import (
-                SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-            )
+            import reportlab                              # noqa: F401
         except ImportError as exc:
-            raise TemplateNotReady("مكتبة reportlab غير مثبّتة — تعذّر توليد ملف PDF.") from exc
+            raise TemplateNotReady(
+                "مكتبة reportlab غير مثبّتة — تعذّر توليد ملف PDF.") from exc
 
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        styles = getSampleStyleSheet()
-        small = ParagraphStyle("small", parent=styles["Normal"], fontSize=8, leading=10)
-        big = ParagraphStyle("big", parent=styles["Normal"], fontSize=13, leading=15, spaceAfter=2)
-
-        doc = SimpleDocTemplate(
-            path, pagesize=A4,
-            leftMargin=MARGIN_L * mm, rightMargin=MARGIN_R * mm,
-            topMargin=MARGIN_T * mm, bottomMargin=MARGIN_T * mm,
-        )
+        pg = _PageCanvas(path)
         eg = employer.get
-        story = [
-            Paragraph(f"<b>{eg('raison_sociale', '') or '—'}</b>", big),
-        ]
+        C0, CW = L.MAIN_LEFT_MM, L.CONTENT_W_MM
+        RH = L.ROW_H_MM
+        white = "#ffffff"
+
+        # ---------- الترويسة (نفس خطوط أساس الشاشة، نفس الأصل §10) ----------
+        pg.draw_text(C0, L.RAISON_BASELINE_MM, eg("raison_sociale", "") or "—",
+                     "header_company")
         if eg("adresse", ""):
-            story.append(Paragraph(eg("adresse", ""), small))
-        adh = eg("cnas_employeur", "")
-        story.append(Paragraph(f"N° ADHÉRENT&nbsp;&nbsp;&nbsp;{adh}".rstrip(), small))
-        story.append(Spacer(1, 6 * mm))
+            pg.draw_text(C0, L.ADRESSE_BASELINE_MM, eg("adresse", ""),
+                         "header_address")
+        pg.draw_text(L.ADHERENT_LABEL_X_MM, L.ADHERENT_BASELINE_MM,
+                     "N° ADHÉRENT", "block_labels")
+        pg.draw_text(L.ADHERENT_VALUE_X_MM, L.ADHERENT_BASELINE_MM,
+                     eg("cnas_employeur", ""), "block_values")
 
-        full_w = (210 - MARGIN_L - MARGIN_R) * mm
-        title = Table([["BULLETIN DE PAIE", _period_label(pin)]],
-                      colWidths=[full_w * 0.5, full_w * 0.5])
-        title.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#111111")),
-            ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
-            ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 11),
-            ("ALIGN", (1, 0), (1, 0), "RIGHT"),
-            ("TOPPADDING", (0, 0), (-1, -1), 5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ]))
-        story.append(title)
-        story.append(Spacer(1, 4 * mm))
+        # ---------- شريط العنوان الأسود ----------
+        pg.draw_rect(C0, L.BAND_TITLE_Y_MM, CW, L.BAND_TITLE_H_MM,
+                     fill=L.BAND_BLACK)
+        pg.draw_text(L.BAND_LABEL_X_MM, L.BAND_BASELINE_MM, "BULLETIN DE PAIE",
+                     "header_title", color=white)
+        pg.draw_text(L.MOIS_X_MM, L.BAND_BASELINE_MM,
+                     (pin.mois or "").strip().upper(), "header_title",
+                     color=white)
+        pg.draw_text(L.ANNEE_X_MM, L.BAND_BASELINE_MM,
+                     str(pin.annee or "").strip(), "header_title", color=white)
 
-        pairs = _ident_pairs(employee)
-        id_data = []
-        for i in range(0, len(pairs), 2):
-            left = pairs[i]
-            right = pairs[i + 1] if i + 1 < len(pairs) else ("", "")
-            id_data.append([f"{left[0]} :", left[1], f"{right[0]} :" if right[0] else "", right[1]])
-        idt = Table(id_data, colWidths=[full_w * 0.18, full_w * 0.32, full_w * 0.18, full_w * 0.32])
-        idt.setStyle(TableStyle([
-            ("BOX", (0, 0), (-1, -1), 0.6, colors.black),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-            ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ]))
-        story.append(idt)
-        if employee.get("handicape_retraite") or getattr(pin, "handicape_retraite", False):
-            story.append(Paragraph("☑ Handicapé / Retraité", small))
-        story.append(Spacer(1, 4 * mm))
+        # ---------- صندوق الهوية ----------
+        pg.draw_rect(C0, L.IDENT_Y_MM, CW, L.IDENT_H_MM, stroke=L.INK)
+        a_x, lieu_x = L.row1_layout()
+        for key, lbl, xl, xv, _wv, row, _ml, _kd in L.IDENT_FIELDS:
+            if lbl:
+                pg.draw_text(xl, L.ident_row_y(row), f"{lbl} :", "block_labels")
+            vx = lieu_x if key == "lieu_naissance" else xv
+            pg.draw_text(vx, L.ident_row_y(row), _ident_value(employee, key),
+                         "block_values")
+        pg.draw_text(a_x, L.ident_row_y(1), "à", "block_labels")
 
+        # ---------- جدول الرُبريكات ----------
         rows = (_bulletin_rows_from_view(view, employee, jours=pin.jours)
-                if view is not None else _bulletin_rows(pin, res))
-        rows = _pad_rows(rows)                    # فراغ تحت IRG (SCREEN = PDF)
-        data = [[c[4] for c in COLS]]
-        for r in rows:
-            data.append([r.get(k, "") for k, *_ in COLS])
-        data.append(["TOTAL", "", "", "", fmt_montant(res.total_gain), fmt_montant(res.total_retenue)])
-        data.append(["NET À PAYER", "", "", "", "", fmt_montant(res.net_a_payer)])
+                if view is not None else _pad_rows(_bulletin_rows(pin, res)))
+        n = len(rows)                                     # == screen _n_body_drawn
+        head_y = L.TABLE_HEAD_Y_MM
+        head_h = RH + 1.0
+        body_bottom = L.body_row_y(n)
+        total_y = L.total_y_mm(n)
+        net_y = L.net_y_mm(n)
+        tbl_bot = L.table_bottom_mm(n)
+        tx1 = L.col_bounds("taux")[1]
+        gx1 = L.col_bounds("gain")[1]
+        rx1 = L.col_bounds("retenue")[1]
 
-        cw = [full_w * (c[2] - c[1]) for c in COLS]
-        rt = Table(data, colWidths=cw)
-        n = len(rows)
-        rt.setStyle(TableStyle([
-            ("GRID", (0, 0), (-1, n), 0.5, colors.black),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("ALIGN", (2, 1), (5, n), "RIGHT"),
-            ("ALIGN", (0, 1), (0, n), "CENTER"),
-            # TOTAL
-            ("SPAN", (0, n + 1), (3, n + 1)),
-            ("ALIGN", (0, n + 1), (3, n + 1), "RIGHT"),
-            ("ALIGN", (4, n + 1), (5, n + 1), "RIGHT"),
-            ("FONTNAME", (0, n + 1), (-1, n + 1), "Helvetica-Bold"),
-            ("LINEABOVE", (0, n + 1), (-1, n + 1), 0.8, colors.black),
-            ("LINEBELOW", (4, n + 1), (5, n + 1), 0.8, colors.black),
-            # NET À PAYER
-            ("SPAN", (0, n + 2), (4, n + 2)),
-            ("ALIGN", (0, n + 2), (4, n + 2), "RIGHT"),
-            ("ALIGN", (5, n + 2), (5, n + 2), "RIGHT"),
-            ("FONTNAME", (0, n + 2), (-1, n + 2), "Helvetica-Bold"),
-            ("FONTSIZE", (5, n + 2), (5, n + 2), 11),
-            ("BACKGROUND", (5, n + 2), (5, n + 2), colors.HexColor("#111111")),
-            ("TEXTCOLOR", (5, n + 2), (5, n + 2), colors.white),
-            ("TOPPADDING", (0, n + 2), (-1, n + 2), 6),
-            ("BOTTOMPADDING", (0, n + 2), (-1, n + 2), 6),
-        ]))
-        story.append(rt)
-        doc.build(story)
+        pg.draw_rect(C0, head_y, CW, head_h, stroke=L.INK)
+        for key, f0, _f1, _al, title in L.COLS:
+            cx = f0 * CW
+            pg.draw_line(cx, head_y, cx, body_bottom)
+            pg.draw_text(cx + L.CELL_PAD_MM, head_y + head_h / 2 + 1.0, title,
+                         "table_header")
+        pg.draw_line(CW, head_y, CW, body_bottom)
+        for r in range(n + 1):
+            yy = L.body_row_y(r)
+            pg.draw_line(C0, yy, CW, yy, color=L.GRID_LINE)
+        for i, rowd in enumerate(rows):
+            for key, *_ in L.COLS:
+                pg.draw_cell_text(key, i, rowd.get(key, ""), "table_body")
+
+        # ---------- TOTAL ----------
+        pg.draw_line(C0, total_y, CW, total_y)
+        pg.draw_text(tx1 - 3.0, total_y + RH / 2 + 1.0, "TOTAL", "total_row",
+                     align="r")
+        pg.draw_text(gx1 - L.CELL_PAD_MM, total_y + RH / 2 + 1.0,
+                     fmt_montant(res.total_gain), "total_row", align="r")
+        pg.draw_text(rx1 - L.CELL_PAD_MM, total_y + RH / 2 + 1.0,
+                     fmt_montant(res.total_retenue), "total_row", align="r")
+
+        # ---------- NET À PAYER — شريط أسود بنصٍّ أبيض ----------
+        pg.draw_rect(C0, net_y, CW, RH, fill=L.BAND_BLACK)
+        pg.draw_text(tx1 - 3.0, net_y + RH / 2 + 1.3, "NET À PAYER", "net_row",
+                     color=white, align="r")
+        pg.draw_text(rx1 - L.CELL_PAD_MM, net_y + RH / 2 + 1.3,
+                     fmt_montant(res.net_a_payer), "net_row", color=white,
+                     align="r")
+
+        # ---------- إطار خارجيّ متّصل من ترويسة الجدول حتى أسفل NET ----------
+        pg.draw_line(C0, head_y + head_h, C0, tbl_bot)
+        pg.draw_line(CW, head_y + head_h, CW, tbl_bot)
+        pg.draw_line(C0, tbl_bot, CW, tbl_bot)
+
+        if (employee.get("handicape_retraite")
+                or getattr(pin, "handicape_retraite", False)):
+            pg.draw_text(C0, tbl_bot + 6.0, "☑ Handicapé / Retraité",
+                         "block_values")
+
+        pg.save()
         return path
 
 

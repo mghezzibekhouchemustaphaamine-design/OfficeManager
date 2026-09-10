@@ -584,7 +584,7 @@ class BulletinTemplateFreeRowR2(unittest.TestCase):
     # ---------- خريطة y → منطقة ----------
     def test_zone_at_doc_y(self):
         rows = self.scr._visible_body_rows()
-        ys = self.scr._y_shift(self.scr._view().scale)
+        ys = 0.0   # Phase E.1: هندسة الوثيقة بلا إزاحة معتمِدة زوم
         i = {r.kind: k for k, r in enumerate(rows)}
         y_above = ys + T.BODY_TOP + i["cnas"] * T.ROW_H - 0.1
         y_below = ys + T.BODY_TOP + (i["irg"] + 1.5) * T.ROW_H
@@ -595,7 +595,7 @@ class BulletinTemplateFreeRowR2(unittest.TestCase):
     def _canvas_pt(self, mm_x, row_boundary):
         from PySide6.QtCore import QPoint
         v = self.scr._view()
-        ys = self.scr._y_shift(v.scale)
+        ys = 0.0   # Phase E.1
         return QPoint(int(v.x(mm_x)),
                       int(v.y(ys + T.BODY_TOP + row_boundary * T.ROW_H)))
 
@@ -931,7 +931,7 @@ class BulletinTemplatePhaseE(unittest.TestCase):
             self.scr._set_zoom(zoom)
             self.scr._relayout()
             v = self.scr._view()
-            ys = self.scr._y_shift(v.scale)
+            ys = 0.0   # Phase E.1
             ty0 = v.y(ys + T.BODY_TOP)
             ty1 = v.y(ys + T.BODY_TOP + self.scr._n_body_drawn() * T.ROW_H)
             for row in self.scr._visible_body_rows():
@@ -973,7 +973,7 @@ class BulletinTemplatePhaseE(unittest.TestCase):
     # ---------- §4 نظام الخطوط ----------
     def test_typography_tokens_defined(self):
         for k in ("header_company", "header_title", "block_labels",
-                  "table_header", "table_body_text", "editable_cell",
+                  "table_header", "table_body", "block_values",
                   "computed_value", "total_row", "net_row"):
             self.assertIn(k, mod._TXT)
 
@@ -981,7 +981,7 @@ class BulletinTemplatePhaseE(unittest.TestCase):
     def test_plus_left_minus_right(self):
         fr = self.scr._insert_free_row("A")
         v = self.scr._view()
-        ys = self.scr._y_shift(v.scale)
+        ys = 0.0   # Phase E.1
         i = self.scr._visible_body_rows().index(fr)
         yb = int(v.y(ys + T.BODY_TOP + (i + 0.5) * T.ROW_H))
         # ＋ في الهامش الأيسر
@@ -1006,7 +1006,7 @@ class BulletinTemplatePhaseE(unittest.TestCase):
         img = QImage(w, h, QImage.Format_ARGB32)
         img.fill(0xFFFFFFFF)
         self.scr._canvas.render(img)
-        ys = self.scr._y_shift(v.scale)
+        ys = 0.0   # Phase E.1
         y_net = int(v.y(ys + self.scr._net_y_mm() + T.ROW_H / 2))
         y_tot = int(v.y(ys + self.scr._total_y_mm() + T.ROW_H / 2))
 
@@ -1057,6 +1057,148 @@ class BulletinTemplatePhaseE(unittest.TestCase):
                 self.assertTrue(w.isEnabled())
                 self.assertIn(theme.FIELD_EMPTY.lstrip("#"),
                               w.styleSheet().replace("#", ""))
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateE1(unittest.TestCase):
+    """Phase E.1 — هندسة وثيقة ثابتة بالمليمتر + عقد screen↔PDF."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_e1_")
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        os.environ[paths._DATA_DIR_ENV_OVERRIDE] = self._tmp
+        open(os.path.join(self._tmp, "office_system.db"), "a").close()
+        database.init_db()
+        mod.confirm = lambda *_a, **_k: True
+        self.scr = BulletinTemplateScreen(conn=None)
+        self.scr._scroll.viewport().resize(950, 1250)
+        w = self.scr._widgets
+        w["mois"].setText("OCTOBRE"); w["annee"].setText("2026")
+        [r for r in self.scr._rows if r.kind == "salaire"][0].set_val("gain",
+                                                                      "45000")
+        self.scr._recompute()
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        for k in (paths._LOCAL_STATE_ENV_OVERRIDE, paths._DATA_DIR_ENV_OVERRIDE):
+            os.environ.pop(k, None)
+
+    def _conv(self, zone, lib, **cells):
+        r = self.scr._insert_free_row(zone)
+        r.widgets["libelle"].setText(lib)
+        r.widgets["libelle"].committed.emit(lib)
+        nr = [x for x in self.scr._rows if x.rid == r.rid][0]
+        for c, v in cells.items():
+            nr.set_val(c, v)
+        self.scr._recompute()
+        return nr
+
+    # ---------- §13 هندسة الوثيقة لا تعتمد الزوم ----------
+    def test_document_mm_invariant_across_zoom(self):
+        from PySide6.QtGui import QFontMetricsF
+        self._conv("A", "Heures supplémentaires", qty="5", coef="50%")
+        self._conv("C", "Avance", montant="1000")
+        self.scr._recompute()
+        ref = None
+        for zoom in (45, 100, 180, 200, 260):
+            self.scr._set_zoom(zoom)
+            self.scr._relayout()
+            v = self.scr._view()
+            rows = self.scr._visible_body_rows()
+            i_cnas = [k for k, r in enumerate(rows) if r.kind == "cnas"][0]
+            i_irg = [k for k, r in enumerate(rows) if r.kind == "irg"][0]
+            hs = [r for r in self.scr._rows if r.kind == "hs"][0]
+            wy = self.scr._widgets[hs.cell_key("qty")].y()
+            wy_mm = (wy - v.y0) / v.scale                # px → mm (round-trip)
+            wleft = self.scr._widgets[hs.cell_key("qty")].x()
+            wleft_mm = (wleft - v.x0) / v.scale - T.MARGIN_L
+            # حقل هوية حقيقيّ (سطر الميلاد) → mm عبر ascent الخطّ
+            dn = self.scr._widgets["id_date_naissance"]
+            fm = QFontMetricsF(dn._edit.font() if hasattr(dn, "_edit")
+                               else dn.font())
+            ident1_mm = (dn.y() + fm.ascent() + v.px(1.2) - v.y0) / v.scale
+            got = {
+                "ident_row1": round(self.scr._ident_row_y(1), 2),
+                "ident_row4": round(self.scr._ident_row_y(4), 2),
+                "table_head_y": round(T.TABLE_HEAD_Y, 2),
+                "first_body_y": round(T.BODY_TOP, 2),
+                "cnas_row_y": round(T.BODY_TOP + i_cnas * T.ROW_H, 2),
+                "irg_row_y": round(T.BODY_TOP + i_irg * T.ROW_H, 2),
+                "total_y": round(self.scr._total_y_mm(), 2),
+                "net_y": round(self.scr._net_y_mm(), 2),
+                "hs_cell_top_mm": round(wy_mm, 1),
+                "hs_cell_left_mm": round(wleft_mm, 1),
+                "ident_dn_baseline_mm": round(ident1_mm, 1),
+            }
+            if ref is None:
+                ref = got
+            else:
+                for k, val in got.items():
+                    self.assertAlmostEqual(
+                        val, ref[k], delta=0.6,
+                        msg=f"{k} @ {zoom}% = {val}, ref {ref[k]}")
+
+    # ---------- §14 عقد الهندسة المشترك screen ↔ PDF ----------
+    def test_screen_pdf_share_one_layout_spec(self):
+        import ui.hr.paie.layout_spec as LS
+        self.assertEqual(T.MARGIN_L, LS.MARGIN_L_MM)
+        self.assertEqual(T.MARGIN_R, LS.MARGIN_R_MM)
+        self.assertEqual(T.CONTENT_W, LS.CONTENT_W_MM)
+        self.assertEqual(T.ROW_H, LS.ROW_H_MM)
+        self.assertEqual(T.BODY_TOP, LS.BODY_TOP_MM)
+        self.assertEqual(T.TABLE_HEAD_Y, LS.TABLE_HEAD_Y_MM)
+        self.assertEqual(T.IDENT_Y, LS.IDENT_Y_MM)
+        self.assertEqual(T.IDENT_H, LS.IDENT_H_MM)
+        self.assertEqual(T.BAND_TITLE_Y, LS.BAND_TITLE_Y_MM)
+        self.assertEqual(T.BAND_TITLE_H, LS.BAND_TITLE_H_MM)
+        self.assertIs(T.COLS, LS.COLS)
+        # نفس رموز الخطوط للاثنين
+        self.assertIs(mod._TXT, LS.TEXT)
+        for tok in LS.TEXT:
+            name, pt = LS.pdf_font(tok)
+            self.assertTrue(name.startswith("Helvetica"))
+            self.assertGreater(pt, 4)
+
+    def test_pdf_row_count_equals_screen_n_body_drawn(self):
+        from programme.payroll import lignes
+        self._conv("A", "Heures supplémentaires", qty="8", coef="100%")
+        self._conv("A", "Prime x", gain="3000")
+        self._conv("C", "Avance", montant="2000")
+        self.scr._recompute()
+        view = self.scr._bulletin_view
+        rows = T._bulletin_rows_from_view(view, self.scr._employee_data(),
+                                          jours=30)
+        self.assertEqual(len(rows), self.scr._n_body_drawn())
+        # وأصلها الأيسر: الترويسة والجدول من نفس x المطلق (§10)
+        import ui.hr.paie.layout_spec as LS
+        self.assertEqual(LS.MAIN_LEFT_MM, 0.0)
+        self.assertEqual(LS.ADHERENT_LABEL_X_MM, 0.0)
+        self.assertEqual(LS.RAISON_BASELINE_MM, LS.RAISON_BASELINE_MM)
+
+    def test_generated_pdf_opens_and_has_one_page(self):
+        import pymupdf
+        w = self.scr._widgets
+        for k, val in {"emp_raison_sociale": "SARL X", "emp_adresse": "12 RUE",
+                       "emp_cnas": "16 412 078 56", "id_nom": "BENALI",
+                       "id_prenom": "Karim", "id_lieu_naissance": "ALGER",
+                       "id_fonction": "COMPTABLE"}.items():
+            w[k].setText(val)
+        w["id_date_naissance"].set_iso("1990-05-10")
+        w["id_date_embauche"].set_iso("2016-06-14")
+        self._conv("A", "Prime", gain="5000")
+        self.scr._recompute()
+        self.assertTrue(self.scr._on_finalize.__doc__ is not None)
+        self.scr._on_finalize()
+        pdf = self.scr._final_pdf
+        self.assertTrue(pdf and os.path.exists(pdf))
+        d = pymupdf.open(pdf)
+        self.assertEqual(d.page_count, 1)
+        d.close()
 
 
 @unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")

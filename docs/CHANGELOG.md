@@ -3989,3 +3989,106 @@ PDF شبكةٌ بسيطة بإيقاعٍ يختلف قليلاً عن معاير
 · `ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.
 لقطات: `docs/baseline_screenshots/E_fresh_100.png` ·
 `E_filled_{45,100,180,200}.png` · `E_locked_100.png` · `E_pdf_page1.png`.
+
+## Phase E.1 — 2026-09-11: هندسة وثيقة ثابتة بالمليمتر (True WYSIWYG)
+
+المشكل المؤكَّد: الشاشة إحداثيّة (`QPainter` + `_DocView` + مليمتر) بينما
+PDF كان تدفّقيّاً (`SimpleDocTemplate` + `Paragraph` + `Spacer` + Platypus
+`Table`) — فيتشابهان لا يتطابقان هندسياً. هذه الدفعة تجعل الاثنين
+يقرآن **مواصفةً واحدةً بالمليمتر**، وPDF يُرسَم إحداثيّاً.
+
+### §3/§4 مواصفة تخطيط مشتركة — `ui/hr/paie/layout_spec.py` (جديد)
+
+وحدةٌ **خالية من Qt/Tk/ReportLab** وبلا أيّ مفهوم زوم/بكسل: الصفحة
+والهوامش و`CONTENT_W`؛ خطوط أساس الترويسة؛ شريط العنوان (X/Y/W/H + مواضع
+الشهر والسنة **منفصلةً**)؛ صندوق الهوية (`IDENT_Y_MM` · `IDENT_ROW_STEP_MM`
+· `IDENT_H_MM` · X التسمية/القيمة · `row1_layout()`)؛ الجدول
+(`TABLE_HEAD_Y_MM` · `ROW_H_MM` · `BODY_TOP_MM` · `COLS` · `CELL_PAD_MM` ·
+`MIN_BODY_SLOTS`)؛ الأسفل (`total_y_mm` · `net_y_mm` · `table_bottom_mm`)؛
+والتيبوغرافيا (`TEXT` رموز + `pdf_font()`).
+
+### §2/§3 إزالة الهندسة المعتمِدة على البكسل
+
+حُذف من `bulletin_template.py`: `_IDENT_ROW_EXTRA_PX = theme.SPACE["sm"]`
+و`_ident_extra_mm(scale)` و`_y_shift(scale)` وتوقيعات `scale` على
+`_ident_row_y`/`_ident_h`/`_row1_layout`. القيمة المُجمَّدة:
+`IDENT_ROW_STEP_MM = 10.75` (= 9 + 6px÷scale@100٪)، `IDENT_H_MM = 59`،
+`TABLE_HEAD_Y_MM = 112` (105 + 7 إزاحة صارت ثابتة). أُزيل `+ ys` من
+`_paint_form`/`_relayout`/`_zone_at_doc_y`/`_gutter_mouse_move`. النتيجة:
+**نفس نقطة الوثيقة = نفس المليمتر على كلّ زوم** (45/100/180/200/260٪).
+
+### §5 الشاشة تستهلك المواصفة
+
+`_relayout` و`_paint_form` لا يصنعان هندسةً ثانية: كلّ x/y/w/h من
+`layout_spec` بالمليمتر عبر `_DocView` فقط. أيّ سطر Free/Smart يستعمل نفس
+`ROW_H`/`COLS`/`CELL_PAD`/رمز الخطّ.
+
+### §6/§7 مُصيِّر PDF إحداثيّ
+
+`build_pdf` أُعيدت كتابته على `reportlab.pdfgen.canvas` عبر `_PageCanvas`
+(‏`x(mm)` · `y_from_top(mm)` · `draw_rect` · `draw_line` · `draw_text` ·
+`draw_cell_text`). تحويلٌ واحدٌ محصور: `pdf_y = (PAGE_H_MM − y_top_mm)`.
+تُرسَم الترويسة وشريط العنوان (الشهر/السنة في موضعَيهما المنفصلَين)
+وصندوق الهوية (نفس المستطيل الخارجيّ ونفس خطوط أساس الصفوف ونفس X
+التسمية/القيمة) والجدول (نفس `BODY_TOP`/`ROW_H`/`COLS`/عدد الأسطر) و`TOTAL`
+و`NET À PAYER` (شريط `#111111` نصّه أبيض، ارتفاعه `ROW_H` بالضبط) — كلّها
+من نفس المواصفة. لا Platypus، لا `Spacer`، لا ارتفاعات تلقائية.
+
+### §8 لا chrome تحرير في PDF
+
+PDF بلا خلفيات صفراء/حدود تركيز/سهام/أزرار ＋/－. المواضع والخطوط
+والارتفاعات والحدود وتعبئات الوثيقة (شريطا العنوان وNET) مطابقة.
+
+### §9 نظام خطوط واحد
+
+`layout_spec.TEXT` (‏`header_company` … `net_row`): Qt يحوّله عبر
+`_DocView.tfont`، وReportLab عبر `layout_spec.pdf_font` (Helvetica[-Bold]
++ نقطة، `PDF_PT_PER_MM = 2.55`). `bulletin_template._TXT` صار اسماً
+بديلاً لـ `layout_spec.TEXT`. لا مقاسات 8pt/11pt/13pt متناثرة.
+
+### §10/§11 محاذاة اليسار وبيانات الجدول
+
+كلّ الكتل من `MAIN_LEFT_MM = 0` (اختُبر عددياً، لا بالعين). ترتيب صفوف
+المُصيِّر (Zone A → CNAS → PANIER → TRANSPORT → Zone B → IRG → Zone C +
+حشو `MIN_ZONE_C`) وعدد أسطره = `_n_body_drawn()` للشاشة بالضبط (اختبار).
+
+### §12 DOCX
+
+بقي editable fallback؛ خطّ `Normal` = `Helvetica/9pt`، ونفس ترتيب/بيانات
+الصفوف — بلا مطالبة pixel-perfect.
+
+### §13/§14 اختبارات جديدة
+
+`test_document_mm_invariant_across_zoom`: عند 45/100/180/200/260٪،
+`_ident_row_y` وTABLE_HEAD_Y وأوّل صفّ جسم وصفّ CNAS/IRG وTOTAL/NET
+**ومواضع widgets فعليّة بعد px→mm** كلّها ضمن ‎0.6mm‎. `test_screen_pdf_
+share_one_layout_spec`: الهوامش/شريط العنوان/صندوق الهوية/`COLS`/`ROW_H`/
+مواضع الصفوف/TOTAL/NET كلّها من نفس `layout_spec` (تأكيدات مباشرة، لا
+لقطات). `test_pdf_row_count_equals_screen_n_body_drawn`.
+`test_generated_pdf_opens_and_has_one_page`.
+
+### النتائج
+
+`ui2/hr/paie/tests` **166 OK** (‏162 + **4 E.1**) · `ui2/tests` 42 ·
+`ui2/paie/tests` 17 · `programme/payroll/tests` 49 · `programme/tests` 6 ·
+golden 14/14 · galleries `ALLOK`. حُدِّثت مساعِدات اختبار Phase E التي
+كانت تشير إلى `_y_shift` المحذوف.
+
+### فروقٌ هندسيّة باقية (§16 — ليست cosmetic)
+
+* **ارتفاع سطر ترويسة الجدول**: `_PageCanvas` يرسم عنوان العمود على خطّ
+  أساس ثابت `head_y + head_h/2 + 1.0mm`؛ الشاشة تحسبه من `QFontMetricsF`
+  للخطّ الفعليّ. فرقٌ رأسيّ محتمل ≤ ‎0.5mm‎ في نصّ ترويسة الأعمدة فقط
+  (لا في الشبكة ولا الصفوف).
+* **القيَم المحسوبة**: زرقاء على الشاشة (تمييز تحرير)، سوداء في PDF
+  (§8) — لونٌ لا هندسة.
+* **الحالة العائلية الفارغة**: تُطبَع «/» في PDF/DOCX، وتبقى `""` على
+  الشاشة (سلوك تصيير مقصود، §23).
+
+### الملفات المتأثرة
+
+جديد: `ui/hr/paie/layout_spec.py`. معدَّل: `ui/hr/paie/template_simple.py`
+· `ui2/hr/paie/bulletin_template.py` ·
+`ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.
+لقطات: `docs/baseline_screenshots/E1_screen_{100,200,260}.png` ·
+`E1_pdf_page1.png` · `E1_side_by_side.png`.

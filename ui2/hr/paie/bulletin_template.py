@@ -101,6 +101,11 @@ _SEMANTIC_ORDER = {"salaire": 0, "iep": 10, "prime": 20, "hs": 30,
                    "absence": 40, "retard": 50, "panier": 60, "transport": 70,
                    "cnas": 80, "irg": 90, "avance": 100, "autre": 110}
 
+#  Smart Next (Phase D): ما يُنقَل إلى الشهر التالي. الباقي (absence /
+#  retard / hs / avance / autre) يُحذَف بالكامل — عرضيّ/شهريّ لا يتكرّر.
+_SMART_NEXT_CARRY = {"salaire", "iep", "prime", "panier", "transport",
+                     "cnas", "irg"}
+
 #  تصنيف مالِيّ مُعلَن (بلا مصطلحات Zones): 3 خيارات تُترجَم إلى
 #  (cotisable, imposable) — لا تخمين صامت (§0/§6).
 _SOUMIS_CHOICES = ("CNAS + IRG", "IRG seul", "Net (ni CNAS ni IRG)")
@@ -861,6 +866,11 @@ class BulletinTemplateScreen(Screen):
         self._finalize_btn = QPushButton("✅ إصدار نهائيّ (Word + PDF)")
         self._finalize_btn.clicked.connect(self._on_finalize)
         bl.addWidget(self._finalize_btn)
+        self._next_btn = QPushButton("📅 الشهر التالي")
+        self._next_btn.setToolTip(
+            "ينشئ كشفاً جديداً مستقلاً للشهر التالي — الأصل لا يتغيّر.")
+        self._next_btn.clicked.connect(self.create_next_period_work)
+        bl.addWidget(self._next_btn)
         for txt, fn in (("👁 معاينة / طباعة", self._on_preview),
                         ("💾 حفظ باسم…", self._on_save_as),
                         ("السجلّ", self._on_history),
@@ -910,6 +920,7 @@ class BulletinTemplateScreen(Screen):
         # الكتابة لا تُظهر تحذيرات الإلزاميّ (§14)؛ تفعيلها عند فتح عملٍ
         # محفوظ رسمياً كـ«غير مكتمل» = Phase C عبر ``show_required_warnings``.
         self._restored_incomplete = bool(data.get("incomplete"))
+        self._cfg = None          # الفترة قد تختلف ⇒ أعِد تحميل params
         self._suspend = set(self._widgets)
         try:
             for k, v in data.get("header", {}).items():
@@ -1474,10 +1485,13 @@ class BulletinTemplateScreen(Screen):
             "state": state,
         }
 
-    def load_work(self, row: dict):
+    def load_work(self, row: dict, *, show_warnings=None):
         """يفتح عملاً محفوظاً (صفّ ``hr_documents``) للتحرير: يعيد بناء
-        الشاشة من ``full_data_json``، يثبّت المعرّف، ويستعيد حالة
-        ⚠️/🔒. عمل ⚠️ مُعاد فتحه ⇒ تُفعَّل تحذيرات الإلزاميّ (§5)."""
+        الشاشة من ``full_data_json``، يثبّت المعرّف، ويستعيد حالة ⚠️/🔒.
+
+        ``show_warnings`` (افتراضياً ``None`` = «حسب الحالة»): عمل ⚠️ مُعاد
+        فتحه من السجلّ ⇒ تُفعَّل تحذيرات الإلزاميّ (§5). Smart Next يمرّر
+        ``False`` — نسخة وُلِّدت للتوّ لا تُفتَح بشاشة مليئة بالتحذيرات (Phase D §11)."""
         import json as _json
         raw = row.get("full_data_json") or ""
         try:
@@ -1490,9 +1504,11 @@ class BulletinTemplateScreen(Screen):
         self._has_final_artifacts = bool(data.get("has_final_artifacts"))
         self._final_docx = data.get("final_docx") or row.get("file_path") or None
         self._final_pdf = data.get("final_pdf") or row.get("pdf_path") or None
-        if self._work_state == "final":
-            self._set_locked(True)
-        elif self._work_state == "incomplete":
+        if show_warnings is None:
+            show_warnings = (self._work_state == "incomplete")
+        #  اضبط القفل صراحةً في الاتّجاهين — فتح عمل ⚠️ بعد عمل 🔒 يفتح القفل.
+        self._set_locked(self._work_state == "final")
+        if self._work_state != "final" and show_warnings:
             self.show_required_warnings()
         # نظّف بعد كلّ إعادة البناء: عملٌ مُحمَّل حديثاً = «غير ملموس»
         # (‏auto-draft لا يطغى عليه) — §26/§14.
@@ -2021,6 +2037,120 @@ class BulletinTemplateScreen(Screen):
         self._update_incomplete_indicator()
         self._update_state_indicator()
         self.status.setText("💾 أُنشئت نسخة مستقلّة (⚠️) — الأصل لم يتغيّر.")
+
+    # ===================== Smart Next (Phase D) =====================
+    def _next_period(self):
+        """‏``(mois_maj, annee)`` للشهر التالي مباشرةً — دلاليّاً لا بربط
+        نصوص. ``None`` إن كانت الفترة الحالية غير صالحة."""
+        try:
+            m = _MOIS_UP.index(self._w("mois").upper()) + 1
+            y = int(self._w("annee"))
+        except (ValueError, KeyError):
+            return None
+        if not (1 <= m <= 12 and 1900 <= y <= 2200):
+            return None
+        m2, y2 = (1, y + 1) if m == 12 else (m + 1, y)
+        return _MOIS_UP[m2 - 1], f"{y2:04d}"
+
+    def _find_period_work(self, nom, prenom, mois, annee):
+        """صفّ ``hr_documents`` لعملٍ محفوظ بنفس هويّة الأجير (اسم+لقب) ونفس
+        الفترة والخدمة — أبسط فحص آمن (لا سجلّ أجراء)؛ حدوده موثَّقة."""
+        import json as _json
+        for r in database.list_hr_documents(screen_key="hr_bulletin_paie",
+                                            limit=500):
+            try:
+                wd = _json.loads(r.get("full_data_json") or "{}")
+            except ValueError:
+                continue
+            emp = wd.get("employee") or {}
+            per = wd.get("period") or {}
+            if ((emp.get("nom") or "").strip().casefold()
+                    == (nom or "").strip().casefold()
+                    and (emp.get("prenom") or "").strip().casefold()
+                    == (prenom or "").strip().casefold()
+                    and (per.get("mois") or "").strip().upper() == mois
+                    and str(per.get("annee") or "").strip() == annee):
+                return r
+        return None
+
+    def create_next_period_work(self):
+        """ينشئ **عملاً جديداً مستقلاً** لكشف الشهر التالي من الحالة الحالية
+        الظاهرة: ينقل الهويّة والبنية المستقرّة (أجر/سلة/نقل/Prime/وجود IEP)،
+        يحذف العرضيّ (Absence/Retard/HS/Avance/Autre)، يبدّل الفترة، ويعيد
+        الحساب لـ params الفترة الجديدة. الأصل لا يُلمَس (صفّه، حالته،
+        قفله، ملفّاته). يعمل من 🔒 بلا فتح القفل (§14)."""
+        import copy
+        import json as _json
+        from ui2.alerts import warn
+
+        nxt = self._next_period()
+        if nxt is None:
+            warn(self, self.TITLE,
+                 ["الفترة الحالية غير صالحة — حدّد شهراً وسنةً صحيحين قبل "
+                  "إنشاء كشف الشهر التالي."])
+            return
+        mois2, annee2 = nxt
+
+        # §26: لا نفقد تعديلاً غير محفوظ في الأصل (وليس مقفولاً) — نحفظه ⚠️.
+        if self._dirty and not self._locked:
+            self._on_save()
+
+        # §13: عمل محفوظ لنفس الأجير + الفترة الجديدة؟
+        nom, prenom = self._w("id_nom"), self._w("id_prenom")
+        existing = self._find_period_work(nom, prenom, mois2, annee2)
+        if existing is not None:
+            if confirm(self, self.TITLE,
+                       f"يوجد كشف محفوظ لـ {mois2} {annee2}.\nفتحه؟ "
+                       "(«لا» = إنشاء نسخة مستقلّة جديدة.)"):
+                self.load_work(existing)
+                return
+
+        # ---- بناء Work Data للفترة الجديدة ----
+        wd = copy.deepcopy(self.work_data())
+        wd["header"] = dict(wd.get("header") or {})
+        wd["header"]["mois"] = mois2
+        wd["header"]["annee"] = annee2
+        wd["period"] = {"mois": mois2, "annee": annee2}   # metadata متّسقة
+        new_rows = []
+        for row in wd.get("rows", []):
+            k = row.get("kind")
+            if k not in _SMART_NEXT_CARRY:
+                continue                                  # §5/§6: يُحذَف
+            row = dict(row)
+            if k == "iep":
+                #  §7: الوجود ينتقل؛ النسبة تعود لاقتراح المحرّك للفترة
+                #  الجديدة (لا نسخ مبلغ/نسبة قديمة، لا قفل override دائم).
+                row["cells"] = {}
+                row["iep_manual"] = False
+            new_rows.append(row)
+        wd["rows"] = new_rows
+        wd["incomplete"] = True
+        wd["has_final_artifacts"] = False
+        wd["final_docx"] = wd["final_pdf"] = None
+        wd["source_work_id"] = self._work_id              # §12 — داخل JSON فقط
+        wd["source_period"] = {"mois": self._w("mois"), "annee": self._w("annee")}
+
+        rec = {
+            "screen_key": "hr_bulletin_paie", "doc_label": self.DOC_LABEL,
+            "employer_name": self._w("emp_raison_sociale"),
+            "employee_name": self._employee_fullname(),
+            "doc_date": f"{mois2} {annee2}".strip(),
+            "client_id": None, "file_path": "", "pdf_path": None,
+            "state": "incomplete",
+        }
+        try:
+            new_id = database.save_hr_work(rec, wd)
+        except Exception as exc:                              # noqa: BLE001
+            logger.warning("إنشاء كشف الشهر التالي فشل", exc_info=True)
+            warn(self, self.TITLE, [f"تعذّر إنشاء كشف الشهر التالي: {exc}"])
+            return
+
+        # الشاشة تنتقل لتحرّر الكشف الجديد — بلا تحذيرات إلزاميّ تلقائية (§11)،
+        # وبلا قفل مهما كانت حالة الأصل (§10/§14).
+        self.load_work(database.get_hr_document(new_id), show_warnings=False)
+        self._recompute()                                    # params الفترة الجديدة
+        self.status.setText(f"📅 أُنشئ كشف {mois2} {annee2} — راجِعه ثمّ "
+                            "احفظ/أصدِر. الأصل لم يتغيّر.")
 
     def _update_state_indicator(self):
         lbl = getattr(self, "_state_lbl", None)

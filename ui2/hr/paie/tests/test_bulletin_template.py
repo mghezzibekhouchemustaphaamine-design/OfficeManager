@@ -1226,5 +1226,283 @@ class SaveAsC4(unittest.TestCase):
         self.assertEqual(after, before + 1)
 
 
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class SmartNextD(unittest.TestCase):
+    """Phase D — Smart Next: كشف الشهر التالي كعمل مستقلّ، الأصل لا يُلمَس."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_d_")
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        os.environ[paths._TRAVAIL_ENV_OVERRIDE] = os.path.join(self._tmp, "travail")
+        _isolate_db(self._tmp)
+        mod.confirm = lambda *_a, **_k: False
+        import ui2.alerts as _al
+        self._al, self._al_warn = _al, _al.warn
+        _al.warn = lambda *_a, **_k: None
+        self.scr = BulletinTemplateScreen(conn=None)
+
+    def tearDown(self):
+        self._al.warn = self._al_warn
+        self.scr.deleteLater()
+        for k in (paths._LOCAL_STATE_ENV_OVERRIDE, paths._DATA_DIR_ENV_OVERRIDE,
+                  paths._TRAVAIL_ENV_OVERRIDE):
+            os.environ.pop(k, None)
+
+    def _row(self, kind, occ=-1):
+        rs = [r for r in self.scr._rows if r.kind == kind]
+        return rs[occ] if rs else None
+
+    def _fill(self, s=None, *, extras=True, mois="OCTOBRE", annee="2026"):
+        s = s or self.scr
+        w = s._widgets
+        for k, v in {"emp_raison_sociale": "SARL X", "emp_adresse": "12 RUE",
+                     "emp_cnas": "16 412 078 56", "mois": mois, "annee": annee,
+                     "id_nom": "BENALI", "id_prenom": "Karim",
+                     "id_lieu_naissance": "ALGER", "id_matricule": "M-7",
+                     "id_fonction": "COMPTABLE"}.items():
+            w[k].setText(v)
+        w["id_date_naissance"].set_iso("1990-05-10")
+        w["id_date_embauche"].set_iso("2016-06-14")
+        self._sr(s, "salaire").set_val("gain", "45000")
+        self._sr(s, "salaire").set_val("nbase", "26")
+        self._sr(s, "panier").set_val("gain", "0")
+        self._sr(s, "transport").set_val("gain", "0")
+        self._sr(s, "prime").set_val("libelle", "RENDEMENT")
+        self._sr(s, "prime").set_val("gain", "8000")
+        self._sr(s, "prime").set_val("soumis", "Net (ni CNAS ni IRG)")
+        if extras:
+            for kind, cells in (("iep", {}),
+                                ("hs", {"qty": "10", "coef": "100%"}),
+                                ("absence", {"qty": "2",
+                                             "mode": "Absence (jours)"}),
+                                ("retard", {"qty": "3"}),
+                                ("avance", {"libelle": "AV", "montant": "9000"}),
+                                ("autre", {"sens": "Gain", "libelle": "B",
+                                           "montant": "1000"})):
+                s._add_row(kind)
+                for c, v in cells.items():
+                    [r for r in s._rows if r.kind == kind][-1].set_val(c, v)
+        s._recompute()
+
+    @staticmethod
+    def _sr(s, kind):
+        return [r for r in s._rows if r.kind == kind][0]
+
+    def _wd(self, wid):
+        import json
+        return json.loads(database.get_hr_document(wid)["full_data_json"])
+
+    # ---- PERIOD ----
+    def test_next_period_simple(self):
+        self._fill(extras=False)
+        self.assertEqual(self.scr._next_period(), ("NOVEMBRE", "2026"))
+
+    def test_next_period_december_to_january(self):
+        self._fill(extras=False, mois="DÉCEMBRE", annee="2026")
+        self.assertEqual(self.scr._next_period(), ("JANVIER", "2027"))
+        self.scr.create_next_period_work()
+        self.assertEqual(self.scr._widgets["mois"].text(), "JANVIER")
+        self.assertEqual(self.scr._widgets["annee"].text(), "2027")
+
+    def test_invalid_period_blocks(self):
+        self.scr._widgets["mois"].setText("XYZ")
+        self.scr._widgets["annee"].setText("2026")
+        before = len(database.list_hr_documents(screen_key="hr_bulletin_paie"))
+        self.scr.create_next_period_work()
+        self.assertIsNone(self.scr._next_period())
+        self.assertEqual(
+            len(database.list_hr_documents(screen_key="hr_bulletin_paie")),
+            before)
+
+    # ---- CARRY ----
+    def test_identity_and_stable_structure_carried(self):
+        self._fill()
+        old_id = None
+        self.scr._on_save()
+        old_id = self.scr._work_id
+        self.scr.create_next_period_work()
+        new_id = self.scr._work_id
+        self.assertNotEqual(new_id, old_id)
+        wd = self._wd(new_id)
+        self.assertEqual(wd["employee"]["nom"], "BENALI")
+        self.assertEqual(wd["employee"]["prenom"], "Karim")
+        self.assertEqual(wd["employee"]["matricule"], "M-7")
+        self.assertEqual(wd["employer"]["raison_sociale"], "SARL X")
+        self.assertEqual(wd["period"], {"mois": "NOVEMBRE", "annee": "2026"})
+        kinds = [r["kind"] for r in wd["rows"]]
+        self.assertIn("salaire", kinds)
+        self.assertIn("panier", kinds)
+        self.assertIn("transport", kinds)
+        self.assertIn("prime", kinds)
+        prime = [r for r in wd["rows"] if r["kind"] == "prime"][0]
+        self.assertEqual(prime["cells"].get("gain"), "8000")
+        self.assertEqual(prime["cells"].get("soumis"), "Net (ni CNAS ni IRG)")
+
+    def test_situation_familiale_empty_stays_empty(self):
+        self._fill(extras=False)
+        self.scr.create_next_period_work()
+        self.assertEqual(
+            self.scr._widgets["id_situation_familiale"].text(), "")
+        self.assertEqual(self._wd(self.scr._work_id)["employee"]
+                         ["situation_familiale"], "")
+
+    def test_panier_transport_zero_carried(self):
+        self._fill(extras=False)
+        self.scr.create_next_period_work()
+        self.assertEqual(self._sr(self.scr, "panier").val("gain"), "0")
+        self.assertEqual(self._sr(self.scr, "transport").val("gain"), "0")
+
+    # ---- DROP ----
+    def test_monthly_rows_dropped(self):
+        self._fill()
+        self.scr.create_next_period_work()
+        kinds = [r.kind for r in self.scr._rows]
+        for gone in ("absence", "retard", "hs", "avance", "autre"):
+            self.assertNotIn(gone, kinds, gone)
+        # لا widgets ميتة لصفوف محذوفة
+        self.assertFalse(any(k.startswith("r") and "absence" in k
+                             for k in self.scr._widgets))
+        self.assertEqual(len(self.scr._nav_order),
+                         len([k for k in self.scr._nav_order]))
+
+    # ---- IEP ----
+    def test_iep_absent_stays_absent(self):
+        self._fill(extras=False)
+        self.scr.create_next_period_work()
+        self.assertFalse(any(r.kind == "iep" for r in self.scr._rows))
+
+    def test_iep_present_recomputed_no_stale(self):
+        self._fill()                                  # فيه IEP
+        old_amt = self._row("iep")._amount
+        self._row("iep").set_val("taux", "0.99")      # override يدويّ متطرّف
+        self.scr._recompute()
+        self.scr.create_next_period_work()
+        ie = [r for r in self.scr._rows if r.kind == "iep"]
+        self.assertTrue(ie)
+        ie = ie[-1]
+        self.assertFalse(ie._iep_manual)              # override لم يُنقَل
+        self.assertNotEqual(ie.val("taux"), "0.99")   # اقتراح جديد
+        self.assertTrue(ie.val("taux"))               # نسبة مُقترَحة موضوعة
+        self.assertIsNotNone(ie._amount)              # مبلغ محسوب جديد
+        wd = self._wd(self.scr._work_id)
+        iep_row = [r for r in wd["rows"] if r["kind"] == "iep"][0]
+        self.assertFalse(iep_row.get("iep_manual"))
+
+    # ---- COMPUTED ----
+    def test_engine_recomputed_for_new_period(self):
+        self._fill(extras=False)
+        self.scr.create_next_period_work()
+        self.assertTrue(self.scr._computed)
+        self.assertIsNotNone(self.scr._bulletin_view)
+        cfg = load_params(date(2026, 11, 1))
+        exp = calc.compute(calc.PaieInput(
+            mois="NOVEMBRE", annee="2026", jours=26.0, salaire_base=45000.0,
+            panier=0.0, transport=0.0,
+            primes=[calc.Prime(code="LIBRE", libelle="RENDEMENT",
+                               montant=8000.0, soumis_cotisation=False,
+                               imposable=False)]), cfg)
+        self.assertEqual(self.scr._bulletin_view.e, exp.net_a_payer)
+
+    # ---- LIFECYCLE ----
+    def test_new_work_independent_original_untouched(self):
+        self._fill()
+        self.scr._on_save()
+        old_id = self.scr._work_id
+        old_row = database.get_hr_document(old_id)
+        self.scr.create_next_period_work()
+        self.assertNotEqual(self.scr._work_id, old_id)
+        self.assertEqual(self.scr._work_state, "incomplete")
+        self.assertFalse(self.scr._locked)
+        self.assertFalse(self.scr._has_final_artifacts)
+        self.assertIsNone(self.scr._final_docx)
+        self.assertIsNone(self.scr._final_pdf)
+        self.assertEqual(database.get_hr_document(old_id)["full_data_json"],
+                         old_row["full_data_json"])   # الأصل لم يتغيّر
+        self.assertEqual(self._wd(self.scr._work_id)["source_work_id"], old_id)
+
+    def test_smart_next_from_locked_original(self):
+        self._fill(extras=False)
+        self.scr._on_finalize()
+        old_id, old_pdf = self.scr._work_id, self.scr._final_pdf
+        stamp = os.path.getmtime(old_pdf), os.path.getsize(old_pdf)
+        self.assertTrue(self.scr._locked)
+        self.scr.create_next_period_work()            # بلا فتح القفل
+        self.assertNotEqual(self.scr._work_id, old_id)
+        self.assertFalse(self.scr._locked)            # النسخة قابلة للتحرير
+        row_old = database.get_hr_document(old_id)
+        self.assertEqual(row_old["state"], "final")
+        self.assertEqual((os.path.getmtime(old_pdf),
+                          os.path.getsize(old_pdf)), stamp)
+
+    def test_smart_next_from_dirty_saves_original_first(self):
+        self._fill(extras=False)
+        self.scr._on_save()
+        oid = self.scr._work_id
+        self.scr._widgets["id_prenom"].setText("Kamel")   # dirty
+        self.assertTrue(self.scr.has_unsaved_changes())
+        self.scr.create_next_period_work()
+        self.assertIn("Kamel", database.get_hr_document(oid)["employee_name"])
+        self.assertNotEqual(self.scr._work_id, oid)
+
+    # ---- DUPLICATE ----
+    def test_duplicate_next_period_not_silently_overwritten(self):
+        self._fill(extras=False)
+        self.scr._on_save()
+        self.scr.create_next_period_work()            # ⇒ NOVEMBRE 2026
+        nov_id_1 = self.scr._work_id
+        # عُد إلى الأصل واطلب الشهر التالي ثانيةً
+        self.scr.load_work(database.get_hr_document(
+            [r for r in database.list_hr_documents(screen_key="hr_bulletin_paie")
+             if self._wd(r["id"]).get("period", {}).get("mois") == "OCTOBRE"][0]
+            ["id"]))
+        n_before = len(database.list_hr_documents(screen_key="hr_bulletin_paie"))
+        self.scr.create_next_period_work()            # confirm=False ⇒ نسخة جديدة
+        self.assertNotEqual(self.scr._work_id, nov_id_1)
+        self.assertEqual(
+            len(database.list_hr_documents(screen_key="hr_bulletin_paie")),
+            n_before + 1)
+        # النوفمبر الأوّل ما زال موجوداً كما هو
+        self.assertIsNotNone(database.get_hr_document(nov_id_1))
+
+    def test_duplicate_confirm_opens_existing(self):
+        self._fill(extras=False)
+        self.scr._on_save()
+        self.scr.create_next_period_work()
+        nov_id = self.scr._work_id
+        oct_id = [r["id"] for r in database.list_hr_documents(
+            screen_key="hr_bulletin_paie")
+            if self._wd(r["id"]).get("period", {}).get("mois") == "OCTOBRE"][0]
+        self.scr.load_work(database.get_hr_document(oct_id))
+        mod.confirm = lambda *_a, **_k: True          # «افتح الموجود»
+        self.scr.create_next_period_work()
+        self.assertEqual(self.scr._work_id, nov_id)
+
+    # ---- END TO END (§30) ----
+    def test_end_to_end_finalized_then_smart_next(self):
+        self._fill()                                  # كلّ الأنواع
+        self.scr._on_finalize()
+        old_id = self.scr._work_id
+        self.assertEqual(self.scr._work_state, "final")
+        self.scr.create_next_period_work()
+        # carry
+        kinds = [r.kind for r in self.scr._rows]
+        for keep in ("salaire", "prime", "iep", "panier", "transport"):
+            self.assertIn(keep, kinds, keep)
+        # drop
+        for gone in ("absence", "retard", "hs", "avance", "autre"):
+            self.assertNotIn(gone, kinds, gone)
+        # recompute + independence + no artifacts
+        self.assertTrue(self.scr._computed)
+        self.assertNotEqual(self.scr._work_id, old_id)
+        self.assertFalse(self.scr._locked)
+        self.assertFalse(self.scr._has_final_artifacts)
+        self.assertEqual(database.get_hr_document(old_id)["state"], "final")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3539,3 +3539,97 @@ galleries `ALLOK`.
 
 معدَّل: `ui2/hr/paie/bulletin_template.py` ·
 `ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.
+
+---
+
+## Phase D — 2026-09-10: Smart Next (كشف الشهر التالي)
+
+`create_next_period_work()` (زرّ «📅 الشهر التالي»): ينشئ **عملاً جديداً
+مستقلاً** لكشف الشهر التالي من الحالة الحالية الظاهرة. الأصل — صفّه،
+حالته، قفله، ملفّاته — **لا يُلمَس**. قريب مفاهيمياً من Save As لكن بقواعد
+carry/reset/recompute صريحة (لا clone حرفيّ).
+
+### الفترة التالية
+
+`_next_period()`: `_MOIS_UP.index(mois)+1` دلاليّاً — لا ربط نصوص.
+`12 → 1` مع `+1` للسنة (ديسمبر 2026 → جانفي 2027). فترة حالية غير صالحة
+⇒ تنبيه واحد، لا إنشاء.
+
+### ينتقل (§4/§16/§17/§18/§19)
+
+- **المؤسسة**: `raison sociale` · `adresse` · N° adhérent CNAS.
+- **الأجير**: nom · prénom · date de naissance · lieu · date d'entrée ·
+  fonction · matricule · N° SS · situation familiale (الفارغة تبقى `""`).
+- **البنية المستقرّة**: Salaire de base · Panier · Transport (حتى بصفر) ·
+  كلّ Prime/Indemnité بـ libellé + montant + تصنيف كلّ سطر.
+- الترتيب الدلاليّ يُعاد بناؤه من Row Model (لا نسخ ترتيب widgets).
+
+### يُحذَف بالكامل (§5/§6)
+
+Absence · Retard · Heures supplémentaires · Avance/Retenue · **Autre** —
+تُزال من Row Model (لا سطر بصفر). المستخدم يعيد إضافتها بـ `+ Ajouter`
+عند الحاجة. لا خيار «pin/keep» الآن.
+
+### IEP (§7)
+
+- IEP غائبة ⇒ تبقى غائبة (لا إضافة تلقائية).
+- IEP موجودة ⇒ **وجود السطر ينتقل**، لكن `taux` يُفرَّغ و`iep_manual`
+  يُصفَّر ⇒ `_recompute` يعيد تشغيل `suggest_iep_taux` على نفس
+  `date d'entrée` + الشهر/السنة الجديدين، ويحسب مبلغاً جديداً. **لا
+  نسخ مبلغ/نسبة قديمة، ولا نقل override كقفل دائم** — كلّ فترة تعيد
+  تقييم الأقدمية (اتجاه المنتَج الافتراضيّ).
+
+### الحساب و params الفترة الجديدة (§8/§9)
+
+لا نقل لأيّ نتيجة قديمة (CNAS/IRG/TOTAL/NET/مبالغ IEP…). `apply_draft`
+يصفّر `self._cfg` ⇒ `_recompute` يحمّل params الفترة الجديدة. لا params
+للفترة ⇒ لا crash: العمل يُنشأ ⚠️ وتظهر payroll validation (Phase B §12).
+
+### حالة النسخة الجديدة (§3/§10/§22/§23)
+
+`save_hr_work` فوراً ⇒ **معرّف جديد**، `state = incomplete`، بلا
+`file_path`/`pdf_path`، `has_final_artifacts = False`. الشاشة تنتقل
+لتحرّرها عبر `load_work(row, show_warnings=False)` — **بلا تحذيرات
+إلزاميّ تلقائية** (Phase B §11) و**بلا قفل** مهما كانت حالة الأصل. لا
+DOCX/PDF حتى Finalize.
+
+### من عمل مقفول / متّسخ (§14/§26)
+
+- من 🔒: يعمل **بلا فتح القفل** (غير مدمِّر) — الأصل يبقى 🔒 وملفّاته
+  سليمة.
+- الأصل به تعديل غير محفوظ (وغير مقفول) ⇒ يُحفَظ ⚠️ أوّلاً (`_on_save`)،
+  لا discard صامت.
+
+### تكرار الشهر التالي (§13)
+
+`_find_period_work(nom, prenom, mois, annee)` — أبسط فحص آمن على
+Work Data (هويّة الاسم + الفترة + الخدمة؛ لا سجلّ أجراء، حدوده موثَّقة).
+وُجد عمل ⇒ `confirm` واحد: «فتحه؟» (نعم ⇒ `load_work`) / «لا» ⇒ إنشاء
+نسخة مستقلّة جديدة. **لا استبدال صامت.**
+
+### رابط المصدر (§12)
+
+`source_work_id` + `source_period` داخل Work Data JSON فقط — لا عمود
+جديد، لا chain/history UX.
+
+### `load_work` — إصلاح القفل في الاتّجاهين
+
+صار يضبط `_set_locked(self._work_state == "final")` صراحةً: فتح عمل ⚠️
+بعد عمل 🔒 **يفتح القفل** (كان يبقى مقفولاً).
+
+### الاختبارات
+
+`ui2/hr/paie/tests` **104 OK** (‏+16 Phase D: الفترة البسيطة · ديسمبر→
+جانفي · فترة غير صالحة محجوبة · الهويّة والبنية المستقرّة تنتقل · الحالة
+العائلية الفارغة تبقى `""` · panier/transport بصفر · الصفوف الشهرية
+تُحذَف · IEP غائبة/موجودة + إعادة تقييم بلا مبلغ قديم · المحرّك يعيد
+الحساب لـ params الفترة الجديدة · نسخة مستقلّة والأصل لم يتغيّر · من عمل
+مقفول · من عمل متّسخ يحفظ الأصل أوّلاً · تكرار لا يُستبدَل صامتاً /
+confirm يفتح الموجود · end-to-end من 🔒). `ui2/tests` 42 · `ui2/paie/tests`
+17 · `programme/payroll/tests` 49 · `programme/tests` 6 · golden 14/14 ·
+galleries `ALLOK`.
+
+### الملفات المتأثرة
+
+معدَّل: `ui2/hr/paie/bulletin_template.py` ·
+`ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.

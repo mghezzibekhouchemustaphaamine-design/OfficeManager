@@ -95,11 +95,46 @@ class _DocView:
 _YES, _NO = "نعم", "لا"
 _C = T.PAIE_DEFAULT_CODES
 
-#  الترتيب الدلاليّ الثابت (§13). صفوف نفس النوع تحافظ على ترتيب الإضافة
-#  داخل حزمتها.
-_SEMANTIC_ORDER = {"salaire": 0, "iep": 10, "prime": 20, "hs": 30,
-                   "absence": 40, "retard": 50, "panier": 60, "transport": 70,
-                   "cnas": 80, "irg": 90, "avance": 100, "autre": 110}
+#  ======================= نموذج المناطق (UX Redesign — R1) =======================
+#  المبدأ: **مكان السطر = تصنيفه** (§1/§2). الجدول ثلاث مناطق حسابيّة:
+#    • Zone A — فوق CNAS: يدخل CNAS و IRG.
+#    • Zone B — بين CNAS/السلة/النقل و IRG: لا CNAS، يدخل IRG.
+#    • Zone C — تحت IRG: لا CNAS ولا IRG.
+#  أسماء Z1/Z2/Z3 لا تُعرَض للمستخدم — تخطيط داخليّ فقط. المنطقة قرار
+#  المستخدم (موضع السطر) ولا تتحرّك تلقائياً بتغيّر LIBELLÉ (§19).
+_ZONE_A, _ZONE_B, _ZONE_C = "A", "B", "C"
+_ZONES = (_ZONE_A, _ZONE_B, _ZONE_C)
+
+#  المنطقة الافتراضية لكلّ نوع اختياريّ عند إضافته (يبقى المستخدم حرّاً
+#  ينقله لاحقاً عبر إعادة الإضافة/الحذف — R2). Absence/Retard/HS/IEP تؤثّر
+#  قبل CNAS/IRG ⇒ Zone A (§21-§24). Prime الافتراضي «CNAS + IRG» ⇒ Zone A
+#  (§25). Avance/Autre تحفّظاً ⇒ Zone C.
+_DEFAULT_ZONE = {"iep": _ZONE_A, "hs": _ZONE_A, "absence": _ZONE_A,
+                 "retard": _ZONE_A, "prime": _ZONE_A,
+                 "avance": _ZONE_C, "autre": _ZONE_C}
+
+#  رُتب الترتيب: الصفوف الثابتة تُرسي حدود المناطق، والصفوف الاختيارية
+#  تقع داخل حزمة منطقتها بترتيب الإضافة (§3). Zone A بين الأجر و CNAS،
+#  Zone B بين النقل و IRG، Zone C تحت IRG.
+_ANCHOR_RANK = {"salaire": 0, "cnas": 20, "panier": 30, "transport": 40,
+                "irg": 60}
+_ZONE_RANK = {_ZONE_A: 10, _ZONE_B: 50, _ZONE_C: 70}
+
+
+def _legacy_zone(kind, cells):
+    """منطقة سطرٍ من Work/Draft قديم (< DRAFT_VERSION 5) لا يحمل ``zone``
+    صريحاً (§39): تُشتقّ من نوعه وتصنيفه القديم مرّة واحدة عند الاستعادة،
+    ثمّ تُحفَظ صريحةً بالنسخة الجديدة."""
+    cells = cells or {}
+    if kind in ("iep", "hs", "absence", "retard"):
+        return _ZONE_A
+    if kind == "prime":
+        cot, imp = _soumis_class(cells.get("soumis") or _SOUMIS_CHOICES[0])
+        return _ZONE_A if cot == _YES else (_ZONE_B if imp == _YES else _ZONE_C)
+    if kind == "autre" and (cells.get("sens") or "Retenue") == "Gain":
+        cot, imp = _soumis_class(cells.get("classe") or _SOUMIS_CHOICES[2])
+        return _ZONE_A if cot == _YES else (_ZONE_B if imp == _YES else _ZONE_C)
+    return _ZONE_C                                    # avance / autre-retenue
 
 #  Smart Next (Phase D): ما يُنقَل إلى الشهر التالي. الباقي (absence /
 #  retard / hs / avance / autre) يُحذَف بالكامل — عرضيّ/شهريّ لا يتكرّر.
@@ -263,7 +298,8 @@ class _Row:
     ``r{rid}_{cell}``). المبلغ المحسوب (IEP/Absence/Retard/HS) **ليس**
     widgetاً — يُرسَم من ``BulletinView``."""
 
-    def __init__(self, screen: "BulletinTemplateScreen", kind: str, rid: int):
+    def __init__(self, screen: "BulletinTemplateScreen", kind: str, rid: int,
+                 zone: str = None):
         self.screen = screen
         self.kind = kind
         self.rid = rid
@@ -271,6 +307,10 @@ class _Row:
         screen._row_seq += 1
         spec = _ROW_SPECS[kind]
         self.role = spec["role"]
+        #  المنطقة الحسابيّة (§1/§2) — للصفوف الاختيارية فقط؛ الثابتة
+        #  تُرتَّب بمرتكزاتها. تُمرَّر عند الاستعادة، وإلا الافتراض.
+        self.zone = (zone if zone in _ZONES
+                     else _DEFAULT_ZONE.get(kind, _ZONE_C))
         self.code = spec["code"]
         self.libelle = spec["lib"]
         self._cellspec = {c["name"]: c for c in spec["cells"]}
@@ -342,7 +382,12 @@ class _Row:
         return self.role == "optional"
 
     def sort_key(self):
-        return (_SEMANTIC_ORDER.get(self.kind, 999), self.seq)
+        #  الصفوف الثابتة تُرسي حدود المناطق؛ الاختيارية داخل حزمة منطقتها
+        #  بترتيب الإضافة (§3). لا ترتيب دلاليّ حسب النوع بعد اليوم — الموضع
+        #  قرار المستخدم (§1).
+        if self.role != "optional":
+            return (_ANCHOR_RANK.get(self.kind, 999), -1)
+        return (_ZONE_RANK.get(self.zone, _ZONE_RANK[_ZONE_C]), self.seq)
 
     def entry(self):
         return _ROW_SPECS[self.kind].get("to_entry", lambda _r: None)(self)
@@ -496,14 +541,19 @@ class _SheetCanvas(QWidget):
         def Yt(mm):
             return Y(mm + ys)
 
-        # ---- جسم الجدول: صفوف ديناميكية (Phase A2) ----
+        # ---- جسم الجدول: نموذج المناطق (R1) ----
+        #  ``nb`` = الصفوف الفعليّة (محتوى)؛ ``nb_drawn`` = أسطر الشبكة
+        #  المرسومة (فعليّة + حشو فارغ تحت IRG حتى MIN_BODY_SLOTS، §4).
         rows = sc._visible_body_rows()
         nb = len(rows)
-        bottom_mm = T.BODY_TOP + nb * T.ROW_H
-        total_mm = bottom_mm + 1.0
-        net_mm = total_mm + T.ROW_H + 4.0
+        nb_drawn = sc._n_body_drawn()
+        bottom_mm = T.BODY_TOP + nb_drawn * T.ROW_H
+        total_mm = bottom_mm                          # متّصل — لا فجوة (§31)
+        net_mm = total_mm + T.ROW_H
+        table_bot = net_mm + T.ROW_H                  # أسفل TOTAL/NET
 
-        # ترويسة الجدول + الأعمدة (تمتدّ لآخر صفّ فعليّ)
+        # ترويسة الجدول + الأعمدة — الإطار الخارجيّ امتدادٌ واحد من
+        # الترويسة حتى أسفل NET (§31: لا خطّ عائم).
         hy0, hy1 = Yt(T.TABLE_HEAD_Y), Yt(T.TABLE_HEAD_Y + T.ROW_H + 1)
         p.setPen(ink)
         p.drawRect(int(X(0)), int(hy0), int(X(T.CONTENT_W) - X(0)), int(hy1 - hy0))
@@ -515,11 +565,13 @@ class _SheetCanvas(QWidget):
             p.drawText(QPoint(int(col_x(f0) + 2.5 * scale),
                               int((hy0 + hy1) / 2 + fm.ascent() / 2 - fm.descent() / 2)),
                        title)
+        # الحوافّ العموديّة الخارجيّة تمتدّ حتى أسفل NET (جدول واحد متّصل)
         p.setPen(ink)
-        p.drawLine(int(X(T.CONTENT_W)), int(hy0), int(X(T.CONTENT_W)), int(Yt(bottom_mm)))
+        p.drawLine(int(X(0)), int(hy1), int(X(0)), int(Yt(table_bot)))
+        p.drawLine(int(X(T.CONTENT_W)), int(hy1), int(X(T.CONTENT_W)), int(Yt(table_bot)))
 
         p.setPen(QColor(theme.GRID_LINE))
-        for r in range(nb + 1):
+        for r in range(nb_drawn + 1):
             yy = Yt(T.BODY_TOP + r * T.ROW_H)
             p.drawLine(int(X(0)), int(yy), int(X(T.CONTENT_W)), int(yy))
 
@@ -561,30 +613,34 @@ class _SheetCanvas(QWidget):
                     amt = -row._amount if spec.get("computed_neg") else row._amount
                     cell(col, i, fmt_montant(amt), "e", cc)
 
-        # لا تُرسَم TOTAL/NET كـ«0,00» إذا كان الحساب غير ممكن — «غير محسوبة»
-        # ≠ «صفر حقيقي».
+        # ---- TOTAL / NET À PAYER: بنيتهما تُرسَم **دائماً** (§3/§30) ----
+        #  القيَم وحدها تبقى فارغة إذا تعذّر الحساب — «غير محسوبة» ≠ «صفر».
+        ty0 = Yt(total_mm)
+        p.setPen(ink)
+        p.drawLine(int(X(0)), int(ty0), int(X(T.CONTENT_W)), int(ty0))
+        p.drawLine(int(X(0)), int(Yt(net_mm)),
+                   int(X(T.CONTENT_W)), int(Yt(net_mm)))
+        mid = Yt(total_mm + T.ROW_H / 2)
+        self._cell(p, col_x(T._colf("taux")[1]) - 3 * scale, mid, "TOTAL",
+                   "e", font(3.4, True), ink)
         if computed:
-            ty0 = Yt(total_mm)
-            p.setPen(ink)
-            p.drawLine(int(X(0)), int(ty0), int(X(T.CONTENT_W)), int(ty0))
-            p.drawLine(int(X(0)), int(Yt(total_mm + T.ROW_H)),
-                       int(X(T.CONTENT_W)), int(Yt(total_mm + T.ROW_H)))
-            mid = Yt(total_mm + T.ROW_H / 2)
-            self._cell(p, col_x(T._colf("taux")[1]) - 3 * scale, mid, "TOTAL",
-                       "e", font(3.4, True), ink)
             self._cell(p, col_x(T._colf("gain")[1]) - 2.5 * scale, mid,
                        fmt_montant(res.total_gain), "e", font(3.4, True), cc)
             self._cell(p, col_x(T._colf("retenue")[1]) - 2.5 * scale, mid,
                        fmt_montant(res.total_retenue), "e", font(3.4, True), cc)
 
-            self._cell(p, col_x(0.60), Yt(net_mm + 5), "NET À PAYER", "e",
-                       font(4.2, True), ink)
-            p.fillRect(int(col_x(0.62)), int(Yt(net_mm)),
-                       int(X(T.CONTENT_W) - col_x(0.62)),
-                       int(Yt(net_mm + 10) - Yt(net_mm)), QColor(theme.BAND_BLACK))
-            self._cell(p, X(T.CONTENT_W - 3), Yt(net_mm + 5),
-                       fmt_montant(res.net_a_payer), "e", font(4.8, True),
-                       QColor("white"))
+        #  NET: صفٌّ من نفس الجدول — أثقل قليلاً (خطّ علويّ + Bold)، بلا
+        #  شريط أسود ولا بطاقة منفصلة (§30/§31). ``Yt(net_mm)`` هو خطّه
+        #  العلويّ (مرسوم أعلاه)؛ هنا نُغلق أسفله.
+        p.setPen(ink)
+        p.drawLine(int(X(0)), int(Yt(table_bot)),
+                   int(X(T.CONTENT_W)), int(Yt(table_bot)))
+        midn = Yt(net_mm + T.ROW_H / 2)
+        self._cell(p, col_x(T._colf("taux")[1]) - 3 * scale, midn,
+                   "NET À PAYER", "e", font(3.6, True), ink)
+        if computed:
+            self._cell(p, col_x(T._colf("retenue")[1]) - 2.5 * scale, midn,
+                       fmt_montant(res.net_a_payer), "e", font(4.0, True), ink)
 
     @staticmethod
     def _cell(p: QPainter, px, py, s, anchor, f: QFont, color: QColor):
@@ -612,7 +668,12 @@ class BulletinTemplateScreen(Screen):
     DOC_LABEL = "Bulletin de paie"
     OUTPUT_DIRNAME = "Bulletins de paie"
     DRAFT_NAME = "paie_template"
-    DRAFT_VERSION = 4          # Phase A2.3: خلايا choice + iep_manual
+    DRAFT_VERSION = 5          # R1: نموذج المناطق A/B/C + بلا Prime افتراضيّ
+
+    #  أدنى عدد أسطر مرسومة تحت IRG (منطقة Zone C + فراغ) قبل TOTAL/NET —
+    #  يُبقي أسفل الوثيقة ثابتاً بصرياً مهما قلّت الأسطر (§4). المساحة
+    #  الزائدة شبكةٌ فارغة مرسومة، لا widgets وهميّة.
+    MIN_BODY_SLOTS = 5
 
     TARGET_W = 720
     ZOOM_MIN, ZOOM_MAX, ZOOM_STEP, ZOOM_DEFAULT = 30, 260, 20, 100
@@ -678,19 +739,30 @@ class BulletinTemplateScreen(Screen):
         self._dirty = False        # بناء الشاشة الافتراضية ليس «تعديل مستخدم»
         self._update_state_indicator()
 
-    # ======================= نموذج الصفوف (Phase A2) =======================
+    # ================== نموذج الصفوف — نموذج المناطق (R1) ==================
+    #  النواة الثابتة فقط (§3): الأجر · CNAS · السلة · النقل · IRG. لا سطر
+    #  Prime افتراضيّ — الإضافة تصير من الجدول نفسه (R2). TOTAL/NET يُرسمان
+    #  دائماً بعدها.
+    _FIXED_KINDS = ("salaire", "panier", "transport", "cnas", "irg")
+
     def _init_default_rows(self):
-        for kind in ("salaire", "prime", "panier", "transport", "cnas", "irg"):
+        for kind in self._FIXED_KINDS:
             self._rows.append(_Row(self, kind, self._next_rid))
             self._next_rid += 1
-        self._widgets["r%d_nbase" % self._rows[0].rid].setText("30")  # jours
+        sr = next(r for r in self._rows if r.kind == "salaire")
+        self._widgets["r%d_nbase" % sr.rid].setText("30")           # jours
 
     def _ordered_rows(self):
         return sorted(self._rows, key=lambda r: r.sort_key())
 
     def _visible_body_rows(self):
-        """الصفوف بترتيبها الدلاليّ — CNAS/IRG دائماً بعد panier/transport."""
+        """الصفوف بترتيب المناطق (§3): الأجر → [Zone A] → CNAS → السلة →
+        النقل → [Zone B] → IRG → [Zone C]."""
         return self._ordered_rows()
+
+    def _zone_rows(self, zone):
+        return [r for r in self._rows
+                if r.role == "optional" and r.zone == zone]
 
     def _row_index(self, row) -> int:
         return self._visible_body_rows().index(row)
@@ -907,7 +979,7 @@ class BulletinTemplateScreen(Screen):
         return {
             "header": {s.key: self._hdr_val(self._widgets[s.key])
                        for s in self._header_slots},
-            "rows": [{"kind": r.kind,
+            "rows": [{"kind": r.kind, "zone": r.zone,
                       "cells": {c: r.val(c) for c in r.widgets},
                       "iep_manual": r._iep_manual}
                      for r in self._rows],
@@ -941,13 +1013,17 @@ class BulletinTemplateScreen(Screen):
                 kind = spec.get("kind")
                 if kind not in _ROW_SPECS:
                     continue
-                r = _Row(self, kind, self._next_rid)
+                cells = spec.get("cells") or {}
+                #  §39: عمل قديم (< DRAFT_VERSION 5) بلا ``zone`` ⇒ تُشتقّ
+                #  مرّة من النوع/التصنيف القديم ثمّ تُحفَظ صريحةً.
+                zone = spec.get("zone") or _legacy_zone(kind, cells)
+                r = _Row(self, kind, self._next_rid, zone=zone)
                 self._next_rid += 1
                 self._rows.append(r)
-                for c, val in (spec.get("cells") or {}).items():
+                for c, val in cells.items():
                     r.set_val(c, val)
                 r._iep_manual = bool(spec.get("iep_manual"))
-            for kind in ("salaire", "panier", "transport", "cnas", "irg"):
+            for kind in self._FIXED_KINDS:
                 if not any(r.kind == kind for r in self._rows):
                     self._rows.append(_Row(self, kind, self._next_rid))
                     self._next_rid += 1
@@ -1113,22 +1189,30 @@ class BulletinTemplateScreen(Screen):
     def _ident_h(self, scale):
         return T.IDENT_H + self._y_shift(scale)
 
-    # --- هندسة جسم الجدول الديناميكي (تُحسب من عدد الصفوف الفعليّ) ---
+    # --- هندسة جسم الجدول (R1: أسفل ثابت بصرياً — §4/§31) ---
     def _n_body(self):
+        """عدد الصفوف الفعليّة (widgets/رسم القيَم)."""
         return len(self._visible_body_rows())
 
+    def _n_body_drawn(self):
+        """عدد أسطر الشبكة المرسومة: الصفوف الفعليّة + حشوٌ فارغ تحت IRG
+        حتى ``MIN_BODY_SLOTS`` (§4). الفرق مساحة شبكة، لا widgets."""
+        c = len(self._zone_rows(_ZONE_C))
+        return self._n_body() + max(0, self.MIN_BODY_SLOTS - c)
+
     def _body_bottom_mm(self):
-        return T.BODY_TOP + self._n_body() * T.ROW_H
+        return T.BODY_TOP + self._n_body_drawn() * T.ROW_H
 
     def _total_y_mm(self):
-        return self._body_bottom_mm() + 1.0
+        #  متّصل بآخر سطر شبكة — لا فجوة عائمة (§31).
+        return self._body_bottom_mm()
 
     def _net_y_mm(self):
-        return self._total_y_mm() + T.ROW_H + 4.0
+        return self._total_y_mm() + T.ROW_H
 
     def _sheet_content_mm(self):
         """أدنى امتداد رأسيّ يلزم لاحتواء الوثيقة (لضبط طول اللوحة)."""
-        return self._net_y_mm() + 14.0
+        return self._net_y_mm() + T.ROW_H + 12.0
 
     def _set_zoom(self, pct):
         self.zoom = max(self.ZOOM_MIN, min(self.ZOOM_MAX, int(round(pct))))
@@ -1457,7 +1541,7 @@ class BulletinTemplateScreen(Screen):
     #  حالتان مرئيّتان فقط: ⚠️ Incomplete · 🔒 Final. Auto-draft آليّة
     #  استرداد داخلية لا حالة مستند.
 
-    WORK_VERSION = 1
+    WORK_VERSION = 2          # R1: نموذج المناطق A/B/C في كلّ صفّ
 
     def work_data(self) -> dict:
         """Work Data كاملة — مصدر إعادة بناء الشاشة (لا DOCX/PDF). تلفّ

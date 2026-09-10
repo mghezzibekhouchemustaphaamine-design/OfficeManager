@@ -3633,3 +3633,89 @@ galleries `ALLOK`.
 
 معدَّل: `ui2/hr/paie/bulletin_template.py` ·
 `ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.
+
+## UX Redesign R1 — 2026-09-10: نموذج المناطق A/B/C + هندسة أسفل ثابتة
+
+أوّل مرحلة من إعادة تصميم جدول Rubriques (R1→R4). المبدأ الجديد الحاكم:
+**مكان السطر يحدّد تصنيفه الحسابيّ، وLIBELLÉ يحدّد سلوكه** (§1/§2). لا
+تغيير على المحرّك ولا على مسار الحفظ/القفل/الزوم.
+
+### المناطق الثلاث (§2)
+
+الجدول ثلاث مناطق حسابيّة — أسماؤها الداخليّة فقط، لا تُعرَض للمستخدم:
+
+* **Zone A** — فوق CNAS: السطر يدخل CNAS و IRG.
+* **Zone B** — بين CNAS/السلة/النقل و IRG: لا CNAS، يدخل IRG.
+* **Zone C** — تحت IRG: لا CNAS ولا IRG.
+
+كلّ صفّ اختياريّ يحمل الآن `zone` (`"A"|"B"|"C"`). المنطقة قرار المستخدم
+(موضع السطر) ولا تتحرّك تلقائياً بتغيّر LIBELLÉ (§19 — يُطبَّق كاملاً في
+R3). المنطقة الافتراضية عند الإضافة: IEP/HS/Absence/Retard/Prime ⇒ A ·
+Avance/Autre ⇒ C.
+
+### النواة الثابتة (§3)
+
+ترتيب `_visible_body_rows()` صار حسب المناطق لا حسب النوع:
+
+```
+Salaire de base
+[ صفوف Zone A ]
+CNAS
+Panier
+Transport
+[ صفوف Zone B ]
+IRG
+[ صفوف Zone C ]
+[ فراغ حتى 5 خانات ]
+TOTAL
+NET À PAYER
+```
+
+الصفوف الاختيارية داخل حزمة منطقتها بترتيب الإضافة (`sort_key` =
+`(zone_rank, seq)`؛ الثابتة بمرتكزاتها). **حُذف سطر Prime الافتراضيّ** —
+النواة الآن خمسة صفوف فقط (الأجر · CNAS · السلة · النقل · IRG)؛ الإضافة
+تصير من الجدول نفسه في R2.
+
+### هندسة أسفل ثابتة (§4/§31)
+
+* `MIN_BODY_SLOTS = 5`: أدنى عدد أسطر مرسومة تحت IRG. إذا قلّت صفوف
+  Zone C عن 5، تبقى الخانات الفارغة مرسومة (شبكة، لا widgets وهميّة).
+  زيادتها فوق 5 تُنزِل TOTAL/NET حسب الحاجة.
+* `_total_y_mm()` صار = `_body_bottom_mm()` (كان `+1mm`)، و`_net_y_mm()`
+  = `_total_y_mm() + ROW_H` (كان `+ROW_H + 4mm`) — لا فجوة عائمة.
+* الإطار الخارجيّ خطٌّ واحد متّصل من ترويسة الجدول حتى أسفل NET.
+* **TOTAL و NET À PAYER يُرسمان دائماً** (بنيةً وتسميةً) حتى عند تعذّر
+  الحساب — القيَم وحدها تبقى فارغة (§3/§30). كانا مخفيَّين كلياً سابقاً.
+* NET صار صفّاً من نفس الجدول (خطّ علويّ أثقل + Bold) بلا الشريط الأسود
+  المنفصل (§30/§31).
+
+### توافق خلفيّ (§39)
+
+* `DRAFT_VERSION` 4→5 · `WORK_VERSION` 1→2.
+* `draft_state()` يحفظ `zone` لكلّ صفّ.
+* `apply_draft()`: صفٌّ من نسخة قديمة بلا `zone` ⇒ تُشتقّ مرّة عبر
+  `_legacy_zone(kind, cells)` (IEP/HS/Absence/Retard ⇒ A · Prime حسب
+  `soumis` القديم · Autre-Gain حسب `classe` · Avance/Retenue ⇒ C) ثمّ
+  تُحفَظ صريحةً. لا تعديل هدّام لصفوف قاعدة البيانات — الترقية في الذاكرة.
+
+### الاختبارات
+
+`ui2/hr/paie/tests` **116 OK** (‏104 سابقة + **12 R1**: الخريطة
+الافتراضية للمناطق · النواة الثابتة بلا Prime · Panier/Transport بين
+CNAS و IRG وغير قابلة للحذف · Zone A فوق CNAS · Zone C تحت IRG · أسفل
+متّصل بلا فجوة · 5 خانات دنيا تُثبّت موضع NET والسادسة تُنزِله · صفّ
+Zone A يُكبّر الوثيقة دائماً · هندسة TOTAL/NET مستقلّة عن إمكان الحساب ·
+الرسم بلا استثناء عند تعذّر الحساب · خريطة المناطق من نسخة قديمة بلا
+`zone` · دورة `draft` تحفظ المنطقة الصريحة). حُدِّثت اختبارات كانت تُرمِّز
+الترتيب الدلاليّ القديم أو تعتمد على سطر Prime الافتراضيّ
+(`test_default_row_sequence` · `test_zone_bucketed_order` بديلاً عن
+`test_semantic_order_with_adaptive_types` · مساعِدات `_fill*`).
+`ui2/tests` 42 · `ui2/paie/tests` 17 · `programme/payroll/tests` 49 ·
+`programme/tests` 6 · golden 14/14 · galleries `ALLOK`.
+
+### الملفات المتأثرة
+
+معدَّل: `ui2/hr/paie/bulletin_template.py` ·
+`ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.
+لقطات: `docs/baseline_screenshots/R1_fresh_{45,100,200}.png` ·
+`R1_filled_100.png`.

@@ -103,13 +103,15 @@ class BulletinTemplatePin(unittest.TestCase):
         self._set("salaire", gain="45000", nbase="30")
         self._set("panier", gain="3000")
         self._set("transport", gain="2500")
-        self._set("prime", libelle="PRIME DE RENDEMENT", gain="8000")
+        self._add("prime", libelle="PRIME DE RENDEMENT", gain="8000")
         self.scr._recompute()
 
     # ================= النواة / A2 =================
     def test_default_row_sequence(self):
+        #  R1: النواة الثابتة فقط — لا سطر Prime افتراضيّ؛ الترتيب §3:
+        #  الأجر → CNAS → السلة → النقل → IRG.
         self.assertEqual([r.kind for r in self.scr._visible_body_rows()],
-                         ["salaire", "prime", "panier", "transport", "cnas", "irg"])
+                         ["salaire", "cnas", "panier", "transport", "irg"])
 
     def test_panier_transport_permanent_and_zero_ok(self):
         for k in ("panier", "transport", "salaire"):
@@ -162,13 +164,17 @@ class BulletinTemplatePin(unittest.TestCase):
         self.scr._canvas.render(img)
 
     # ================= + Ajouter / حذف / ترتيب =================
-    def test_semantic_order_with_adaptive_types(self):
+    def test_zone_bucketed_order(self):
+        #  R1: الترتيب حسب المناطق (§3) لا حسب النوع. الاختيارية داخل حزمة
+        #  منطقتها بترتيب الإضافة. iep/hs/absence/retard/prime ⇒ Zone A
+        #  (فوق CNAS)؛ avance/autre ⇒ Zone C (تحت IRG).
+        self._add("prime", gain="1")
         for k in ("autre", "retard", "iep", "absence", "hs", "avance"):
             self.scr._add_row(k)
         kinds = [r.kind for r in self.scr._visible_body_rows()]
-        self.assertEqual(kinds, ["salaire", "iep", "prime", "hs", "absence",
-                                 "retard", "panier", "transport", "cnas",
-                                 "irg", "avance", "autre"])
+        self.assertEqual(kinds, ["salaire", "prime", "retard", "iep", "absence",
+                                 "hs", "cnas", "panier", "transport",
+                                 "irg", "autre", "avance"])
 
     def test_geometry_moves_with_row_count(self):
         n0 = self.scr._net_y_mm()
@@ -320,7 +326,7 @@ class BulletinTemplatePin(unittest.TestCase):
         self.scr._add_row("iep")
         self.scr._on_clear()
         self.assertEqual([r.kind for r in self.scr._visible_body_rows()],
-                         ["salaire", "prime", "panier", "transport", "cnas", "irg"])
+                         ["salaire", "cnas", "panier", "transport", "irg"])
 
     def test_draft_roundtrip_with_adaptive_rows(self):
         self._fill()
@@ -336,6 +342,134 @@ class BulletinTemplatePin(unittest.TestCase):
         self.assertTrue(h and h[-1].val("coef") == "100%" and h[-1].val("qty") == "8")
         a = [r for r in other._rows if r.kind == "autre"]
         self.assertTrue(a and a[-1].val("sens") == "Gain")
+        other.deleteLater()
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateZoneModelR1(unittest.TestCase):
+    """UX Redesign R1 — نموذج المناطق A/B/C + هندسة أسفل ثابتة + توافق خلفيّ."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_r1_")
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        mod.confirm = lambda *_a, **_k: True
+        self.scr = BulletinTemplateScreen(conn=None)
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        os.environ.pop(paths._LOCAL_STATE_ENV_OVERRIDE, None)
+
+    def _last(self, kind):
+        return [r for r in self.scr._rows if r.kind == kind][-1]
+
+    # ---------- المناطق ----------
+    def test_default_zone_mapping(self):
+        for kind, zone in (("iep", "A"), ("hs", "A"), ("absence", "A"),
+                           ("retard", "A"), ("prime", "A"),
+                           ("avance", "C"), ("autre", "C")):
+            self.scr._add_row(kind)
+            self.assertEqual(self._last(kind).zone, zone, kind)
+
+    def test_fixed_core_only_no_default_prime(self):
+        kinds = [r.kind for r in self.scr._visible_body_rows()]
+        self.assertEqual(kinds, ["salaire", "cnas", "panier", "transport", "irg"])
+
+    def test_panier_transport_between_cnas_and_irg(self):
+        rows = [r.kind for r in self.scr._visible_body_rows()]
+        self.assertLess(rows.index("cnas"), rows.index("panier"))
+        self.assertLess(rows.index("panier"), rows.index("transport"))
+        self.assertLess(rows.index("transport"), rows.index("irg"))
+        for k in ("panier", "transport", "cnas", "irg", "salaire"):
+            r = [x for x in self.scr._rows if x.kind == k][0]
+            self.scr._remove_row(r)
+            self.assertIn(r, self.scr._rows)          # ثابتة — لا تُحذَف
+
+    def test_zone_a_rows_sit_above_cnas(self):
+        self.scr._add_row("iep")
+        self.scr._add_row("hs")
+        rows = [r.kind for r in self.scr._visible_body_rows()]
+        self.assertLess(rows.index("iep"), rows.index("cnas"))
+        self.assertLess(rows.index("hs"), rows.index("cnas"))
+
+    def test_zone_c_rows_sit_below_irg(self):
+        self.scr._add_row("avance")
+        rows = [r.kind for r in self.scr._visible_body_rows()]
+        self.assertGreater(rows.index("avance"), rows.index("irg"))
+
+    # ---------- هندسة أسفل ثابتة (§4/§31) ----------
+    def test_continuous_bottom_no_floating_gap(self):
+        self.assertAlmostEqual(self.scr._total_y_mm(), self.scr._body_bottom_mm())
+        self.assertAlmostEqual(self.scr._net_y_mm(),
+                               self.scr._total_y_mm() + T.ROW_H)
+
+    def test_min_body_slots_hold_net_position(self):
+        net0 = self.scr._net_y_mm()
+        for _ in range(self.scr.MIN_BODY_SLOTS):           # 5 صفوف Zone C
+            self.scr._add_row("avance")
+            self.assertAlmostEqual(self.scr._net_y_mm(), net0)
+        self.scr._add_row("avance")                        # السادس يُنزِل NET
+        self.assertGreater(self.scr._net_y_mm(), net0)
+
+    def test_zone_a_row_always_grows_document(self):
+        net0 = self.scr._net_y_mm()
+        self.scr._add_row("iep")
+        self.assertGreater(self.scr._net_y_mm(), net0)
+
+    def test_total_net_geometry_independent_of_computable(self):
+        n_uncomputed = (self.scr._total_y_mm(), self.scr._net_y_mm())
+        w = self.scr._widgets
+        [r for r in self.scr._rows if r.kind == "salaire"][0].set_val("gain", "45000")
+        w["mois"].setText("OCTOBRE"); w["annee"].setText("2026")
+        self.scr._recompute()
+        self.assertTrue(self.scr._computed)
+        self.assertEqual(n_uncomputed,
+                         (self.scr._total_y_mm(), self.scr._net_y_mm()))
+
+    def test_paints_when_not_computable(self):
+        self.assertFalse(self.scr._computed)
+        img = QImage(1100, 1700, QImage.Format_ARGB32)
+        self.scr._canvas.resize(1100, 1700)
+        self.scr._canvas.render(img)                       # لا استثناء + TOTAL/NET مرسومان
+
+    # ---------- توافق خلفيّ (§39) ----------
+    def test_legacy_draft_without_zone_maps_to_zones(self):
+        legacy = {
+            "header": {"id_nom": "X"},
+            "rows": [
+                {"kind": "iep", "cells": {"taux": "0.05"}},
+                {"kind": "prime", "cells": {"soumis": "IRG seul",
+                                            "gain": "1000"}},
+                {"kind": "prime", "cells": {"soumis": "CNAS + IRG",
+                                            "gain": "1000"}},
+                {"kind": "avance", "cells": {"montant": "500"}},
+                {"kind": "autre", "cells": {"sens": "Gain",
+                                            "classe": "Net (ni CNAS ni IRG)",
+                                            "montant": "300"}},
+            ],
+        }
+        self.scr.apply_draft(legacy)
+        z = {(r.kind, r.val("soumis") or r.val("classe")): r.zone
+             for r in self.scr._rows if r.role == "optional"}
+        self.assertEqual(z[("iep", "")], "A")
+        self.assertEqual(z[("prime", "IRG seul")], "B")
+        self.assertEqual(z[("prime", "CNAS + IRG")], "A")
+        self.assertEqual(z[("avance", "")], "C")
+        self.assertEqual(z[("autre", "Net (ni CNAS ni IRG)")], "C")
+
+    def test_draft_roundtrip_preserves_explicit_zone(self):
+        self.scr._add_row("prime")
+        self._last("prime").zone = "B"
+        st = self.scr.draft_state()
+        self.assertEqual([r for r in st["rows"] if r["kind"] == "prime"][0]["zone"],
+                         "B")
+        other = BulletinTemplateScreen(conn=None)
+        other.apply_draft(st)
+        self.assertEqual([r for r in other._rows if r.kind == "prime"][0].zone, "B")
         other.deleteLater()
 
 
@@ -390,7 +524,7 @@ class BulletinTemplateValidation(unittest.TestCase):
         self._set("salaire", gain="45000", nbase="30")
         self._set("panier", gain="3000")
         self._set("transport", gain="2500")
-        self._set("prime", libelle="PRIME DE RENDEMENT", gain="8000")
+        self._add("prime", libelle="PRIME DE RENDEMENT", gain="8000")
         self.scr._recompute()
 
     def _v(self):
@@ -687,6 +821,7 @@ class BulletinTemplateWorkC1(unittest.TestCase):
 
     def test_classifications_persist(self):
         self._fill_min()
+        self.scr._add_row("prime")
         self._row("prime").set_val("soumis", "Net (ni CNAS ni IRG)")
         self.scr._add_row("autre")
         self._row("autre", -1).set_val("sens", "Gain")
@@ -785,6 +920,8 @@ class RendererFromViewC2(unittest.TestCase):
         self._row("salaire").set_val("nbase", "26")
         self._row("panier").set_val("gain", "3000")
         self._row("transport").set_val("gain", "2500")
+        if not self._row("prime"):
+            self.scr._add_row("prime")
         self._row("prime").set_val("libelle", "PRIME DE RENDEMENT")
         self._row("prime").set_val("gain", "8000")
         for kind, cells in kw.items():
@@ -953,6 +1090,8 @@ class FinalizeLockC3(unittest.TestCase):
         w["id_date_embauche"].set_iso("2016-06-14")
         sr = [r for r in s._rows if r.kind == "salaire"][0]
         sr.set_val("gain", "45000"); sr.set_val("nbase", "26")
+        if not any(r.kind == "prime" for r in s._rows):
+            s._add_row("prime")
         [r for r in s._rows if r.kind == "prime"][0].set_val("gain", "8000")
         [r for r in s._rows if r.kind == "prime"][0].set_val("libelle", "RENDEMENT")
         s._recompute()
@@ -1125,6 +1264,8 @@ class SaveAsC4(unittest.TestCase):
         w["id_date_embauche"].set_iso("2016-06-14")
         self._row("salaire").set_val("gain", "45000")
         self._row("salaire").set_val("nbase", "26")
+        if not any(r.kind == "prime" for r in self.scr._rows):
+            self.scr._add_row("prime")
         self._row("prime").set_val("gain", "8000")
         self._row("prime").set_val("libelle", "RENDEMENT")
         self.scr._recompute()
@@ -1272,6 +1413,8 @@ class SmartNextD(unittest.TestCase):
         self._sr(s, "salaire").set_val("nbase", "26")
         self._sr(s, "panier").set_val("gain", "0")
         self._sr(s, "transport").set_val("gain", "0")
+        if not any(r.kind == "prime" for r in s._rows):
+            s._add_row("prime")
         self._sr(s, "prime").set_val("libelle", "RENDEMENT")
         self._sr(s, "prime").set_val("gain", "8000")
         self._sr(s, "prime").set_val("soumis", "Net (ni CNAS ni IRG)")

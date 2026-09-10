@@ -20,12 +20,12 @@ import os
 import re
 from datetime import date
 
-from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, QStringListModel, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPalette
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QFrame, QHBoxLayout,
+    QButtonGroup, QCheckBox, QComboBox, QCompleter, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QMenu, QPushButton, QRadioButton, QScrollArea,
-    QSplitter, QVBoxLayout, QWidget,
+    QSplitter, QToolButton, QVBoxLayout, QWidget,
 )
 
 from programme import database, paths
@@ -180,6 +180,99 @@ def _free_entry(r):
         "libelle": lbl, "montant": gain, "est_retenue": _NO,
         "cotisable": cot, "imposable": imp}}
 
+
+# ======================= التحويل الذكيّ (UX Redesign R3) =======================
+#  LIBELLÉ المطابق لاسم نوع محرّك معروف يحوّل السطر الحرّ إليه (§14)،
+#  وبالعكس. المطابقة **محافِظة** (§16): تطابق كامل بعد التطبيع أو اسمٌ
+#  بديل موثوق — لا تخمين. لكلّ نوع منطقته المسموحة (§13/§19) و``code``
+#  افتراضيّ (§20). Prime ليست نوعاً ذكياً — سطرٌ حرّ في منطقته (§25).
+_SMART_TYPES = {
+    "iep": {"zone": _ZONE_A, "code": "IEP", "label": "IEP / Ancienneté",
+            "names": ("iep", "ancienneté", "anciennete", "ind. expérience prof.",
+                      "indemnité d'expérience", "منحة الأقدمية", "الأقدمية")},
+    "hs": {"zone": _ZONE_A, "code": "HS", "label": "Heures supplémentaires",
+           "names": ("hs", "heures supplémentaires", "heures supp", "heures sup",
+                     "h.s.", "ساعات إضافية", "ساعات اضافية")},
+    "absence": {"zone": _ZONE_A, "code": "ABS", "label": "Absence",
+                "names": ("absence", "absences", "abs", "غياب")},
+    "retard": {"zone": _ZONE_A, "code": "RET", "label": "Retard",
+               "names": ("retard", "retards", "تأخّر", "تاخر")},
+    "avance": {"zone": _ZONE_C, "code": "AV", "label": "Avance / Retenue",
+               "names": ("avance", "avance sur salaire", "acompte",
+                         "retenue sur salaire", "تسبيق", "سلفة")},
+}
+#  أنواع فريدة (§24/§38): لا تُضاف مرّتين، وتُخفى من اقتراحات الأسطر الأخرى.
+_SMART_UNIQUE = {"iep"}
+
+
+def _norm_libelle(s) -> str:
+    return re.sub(r"\s+", " ", str(s or "").strip().lower())
+
+
+def _smart_match(text: str, zone: str):
+    """نوع محرّك يطابق النصّ ضمن منطقته (§13/§16)، أو ``None`` (يبقى حرّاً)."""
+    n = _norm_libelle(text)
+    if not n:
+        return None
+    for k, spec in _SMART_TYPES.items():
+        if spec["zone"] == zone and n in spec["names"]:
+            return k
+    return None
+
+
+def _zone_smart_labels(zone: str, exclude=()):
+    """تسميات الأنواع الذكيّة الصالحة لهذه المنطقة — للاقتراحات (§13)."""
+    return [spec["label"] for k, spec in _SMART_TYPES.items()
+            if spec["zone"] == zone and k not in exclude]
+
+
+class _SmartLibelle(QLineEdit):
+    """حقل LIBELLÉ ذكيّ (§12/§15): يبدو كخليّة صفراء نصّيّة عاديّة، لكن
+    فيه إكمالٌ تلقائيّ (قائمة منسدلة عبر السهم ▾) واقتراحات مُرشَّحة
+    بالمنطقة. لا يفرض الإكمال — الكتابة حرّة. يبثّ ``committed`` عند
+    Enter/Tab/مغادرة التركيز/اختيار اقتراح (نقطة التحويل، §14)."""
+
+    committed = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFrame(False)
+        self._completer = QCompleter([], self)
+        self._completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self._completer.setCompletionMode(QCompleter.PopupCompletion)
+        self._completer.setFilterMode(Qt.MatchContains)
+        self.setCompleter(self._completer)
+        self._completer.activated[str].connect(self._on_activated)
+        self.returnPressed.connect(lambda: self.committed.emit(self.text()))
+        self.editingFinished.connect(lambda: self.committed.emit(self.text()))
+        #  سهم ▾ داخل الحقل لفتح القائمة كاملةً (§12)
+        self._arrow = QToolButton(self)
+        self._arrow.setText("▾")
+        self._arrow.setCursor(Qt.ArrowCursor)
+        self._arrow.setFocusPolicy(Qt.NoFocus)
+        self._arrow.setStyleSheet(
+            "QToolButton{border:0;background:transparent;padding:0;"
+            f"color:{theme.TEXT_DIM};}}")
+        self._arrow.clicked.connect(self._open_popup)
+
+    def set_suggestions(self, items):
+        self._completer.setModel(QStringListModel(list(items), self._completer))
+
+    def _open_popup(self):
+        self.setFocus()
+        self._completer.setCompletionPrefix("")
+        self._completer.complete()
+
+    def _on_activated(self, text):
+        self.setText(text)
+        self.committed.emit(text)
+
+    def resizeEvent(self, e):                                  # noqa: N802
+        super().resizeEvent(e)
+        s = max(10, min(self.height() - 2, 16))
+        self._arrow.setFixedSize(s, self.height())
+        self._arrow.move(self.width() - s, 0)
+
 def _prime_entry(r):
     cot, imp = _soumis_class(r.val("soumis") or "CNAS + IRG")
     return {"type": "libre", "values": {
@@ -238,10 +331,14 @@ _ROW_SPECS = {
         cells=(_cs("nbase", "nbase", "amount"), _cs("gain", "gain", "amount")),
         to_entry=lambda r: {"type": "salaire_base",
                             "values": {"montant": r.val("gain")}}),
+    #  ---- الأنواع الذكيّة (R3): LIBELLÉ ذكيّ + CODE قابل للتحرير (§12/§20).
+    #  jours/heures و50/100 خياراتٌ **داخل** السطر في عمود TAUX (§21/§23).
     "iep": dict(
         role="optional", code="IEP", lib="IND. EXPÉRIENCE PROF.",
         primary="taux", computed="gain", lignes_key="iep",
-        cells=(_cs("taux", "taux", "amount"),),
+        cells=(_cs("code", "code", "text", default="IEP"),
+               _cs("libelle", "libelle", "smart", default="IEP / Ancienneté"),
+               _cs("taux", "taux", "amount")),
         to_entry=lambda r: {"type": "iep", "values": {"taux": r.val("taux")}}),
     "prime": dict(
         role="optional", code="", lib="", primary="gain",
@@ -252,7 +349,10 @@ _ROW_SPECS = {
     "hs": dict(
         role="optional", code="HS", lib="HEURES SUPPLÉMENTAIRES",
         primary="qty", computed="gain", lignes_key=_hs_type,
-        cells=(_cs("qty", "nbase", "amount"),
+        cells=(_cs("code", "code", "text", default="HS"),
+               _cs("libelle", "libelle", "smart",
+                   default="Heures supplémentaires"),
+               _cs("qty", "nbase", "amount"),
                _cs("coef", "taux", "choice", ("50%", "100%"), "50%")),
         to_entry=lambda r: {"type": _hs_type(r),
                             "values": {"heures": r.val("qty")}}),
@@ -262,14 +362,18 @@ _ROW_SPECS = {
     "absence": dict(
         role="optional", code="ABS", lib="", primary="qty",
         computed="gain", computed_neg=True, lignes_key=_abs_type,
-        cells=(_cs("mode", "libelle", "choice",
-                   ("Absence (jours)", "Absence (heures)"), "Absence (jours)"),
-               _cs("qty", "nbase", "amount")),
+        cells=(_cs("code", "code", "text", default="ABS"),
+               _cs("libelle", "libelle", "smart", default="Absence"),
+               _cs("qty", "nbase", "amount"),
+               _cs("mode", "taux", "choice",
+                   ("Absence (jours)", "Absence (heures)"), "Absence (jours)")),
         to_entry=_abs_entry),
     "retard": dict(
         role="optional", code="RET", lib="RETARD", primary="qty",
         computed="gain", computed_neg=True, lignes_key="retard",
-        cells=(_cs("qty", "nbase", "amount"),),
+        cells=(_cs("code", "code", "text", default="RET"),
+               _cs("libelle", "libelle", "smart", default="Retard"),
+               _cs("qty", "nbase", "amount")),
         to_entry=lambda r: {"type": "retard", "values": {"heures": r.val("qty")}}),
     "panier": dict(
         role="basic", code=_C["panier"], lib="PANIER", primary="",
@@ -282,8 +386,9 @@ _ROW_SPECS = {
         to_entry=lambda r: {"type": "transport",
                             "values": {"montant_mensuel": r.val("gain")}}),
     "avance": dict(
-        role="optional", code="", lib="", primary="montant",
-        cells=(_cs("code", "code", "text"), _cs("libelle", "libelle", "text"),
+        role="optional", code="AV", lib="", primary="montant",
+        cells=(_cs("code", "code", "text", default="AV"),
+               _cs("libelle", "libelle", "smart", default="Avance / Retenue"),
                _cs("montant", "retenue", "amount")),
         to_entry=_avance_entry),
     "autre": dict(
@@ -300,7 +405,7 @@ _ROW_SPECS = {
     "free": dict(
         role="optional", code="", lib="", primary="",
         cells=(_cs("code", "code", "text"),
-               _cs("libelle", "libelle", "text"),
+               _cs("libelle", "libelle", "smart"),
                _cs("nbase", "nbase", "amount"),
                _cs("taux", "taux", "amount"),
                _cs("gain", "gain", "amount"),
@@ -336,12 +441,17 @@ class _Row:
     widgetاً — يُرسَم من ``BulletinView``."""
 
     def __init__(self, screen: "BulletinTemplateScreen", kind: str, rid: int,
-                 zone: str = None):
+                 zone: str = None, seq: int = None):
         self.screen = screen
         self.kind = kind
         self.rid = rid
-        self.seq = screen._row_seq
-        screen._row_seq += 1
+        #  ``seq`` يُمرَّر عند تحويل النوع في المكان (§18) للحفاظ على موضع
+        #  السطر داخل حزمة منطقته.
+        if seq is None:
+            self.seq = screen._row_seq
+            screen._row_seq += 1
+        else:
+            self.seq = seq
         spec = _ROW_SPECS[kind]
         self.role = spec["role"]
         #  المنطقة الحسابيّة (§1/§2) — للصفوف الاختيارية فقط؛ الثابتة
@@ -354,15 +464,20 @@ class _Row:
         self.widgets = {}
         self._amount = None                       # المبلغ المحسوب (إن وُجد)
         self._iep_manual = False
+        self._code_manual = False                 # §20: CODE عُدِّل يدوياً؟
         for c in spec["cells"]:
             name, k = c["name"], self.cell_key(c["name"])
             if c["kind"] == "choice":
                 w = QComboBox(screen._canvas)
                 w.addItems(c["opts"])
-                if c["default"]:
-                    w.setCurrentText(c["default"])
                 w.currentTextChanged.connect(
                     lambda _t, kk=k: screen._on_row_edit(kk))
+            elif c["kind"] == "smart":
+                w = _SmartLibelle(screen._canvas)
+                w.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                w.textChanged.connect(lambda _t, kk=k: screen._on_row_edit(kk))
+                w.committed.connect(
+                    lambda _t=None, rr=self: screen._on_libelle_committed(rr))
             else:
                 w = QLineEdit(screen._canvas)
                 w.setFrame(False)
@@ -370,12 +485,25 @@ class _Row:
                 w.setAlignment(_COL_ALIGN.get(col, Qt.AlignLeft) | Qt.AlignVCenter)
                 w.textChanged.connect(lambda _t, kk=k: screen._on_row_edit(kk))
                 w.returnPressed.connect(lambda kk=k: screen._focus_rel(kk, +1))
-                if c["default"]:
-                    w.setText(c["default"])
+                if name == "code":
+                    w.textEdited.connect(
+                        lambda _t=None, rr=self: setattr(rr, "_code_manual", True))
             w.setLayoutDirection(Qt.LeftToRight)
             w.installEventFilter(screen)
             self.widgets[name] = w
             screen._widgets[k] = w
+            #  القيمة الافتراضية **بعد** التسجيل (وإلا يصطدم ``textChanged``
+            #  بـ ``_style_field`` قبل وجود المفتاح)، ومكتومةٌ حتى لا تُطلِق
+            #  إعادة حساب/تعليم «غير محفوظ» أثناء البناء.
+            if c["default"]:
+                screen._suspend.add(k)
+                try:
+                    if isinstance(w, QComboBox):
+                        w.setCurrentText(c["default"])
+                    else:
+                        w.setText(c["default"])
+                finally:
+                    screen._suspend.discard(k)
             w.show()
 
     def cell_key(self, cell: str) -> str:
@@ -816,6 +944,7 @@ class BulletinTemplateScreen(Screen):
         r = _Row(self, kind, self._next_rid, zone=zone)
         self._next_rid += 1
         self._rows.append(r)
+        self._refresh_libelle_suggestions()
         self._rebuild_nav()
         self._sync_row_styles()
         self.mark_dirty()
@@ -828,6 +957,78 @@ class BulletinTemplateScreen(Screen):
                 else cells[0]["name"]
             self._widgets[r.cell_key(first)].setFocus()
         return r
+
+    # ============= LIBELLÉ ذكيّ + التحويل (UX Redesign R3) =============
+    def _refresh_libelle_suggestions(self):
+        """يضبط اقتراحات كلّ حقل LIBELLÉ ذكيّ حسب منطقة سطره، ويستبعد
+        الأنواع الفريدة الموجودة أصلاً (§13/§19/§24)."""
+        present_unique = {r.kind for r in self._rows
+                          if r.kind in _SMART_UNIQUE}
+        for r in self._rows:
+            w = r.widgets.get("libelle")
+            if isinstance(w, _SmartLibelle):
+                exclude = {u for u in present_unique if u != r.kind}
+                w.set_suggestions(_zone_smart_labels(r.zone, exclude))
+
+    def _on_libelle_committed(self, row):
+        """LIBELLÉ سُلِّم (Enter/Tab/مغادرة/اختيار — §14/§15): طابِقه مع
+        نوعٍ ذكيّ صالحٍ لمنطقة السطر (§13/§16). تطابق ⇒ حوِّل النوع في
+        المكان (§14/§18)؛ لا تطابق على سطرٍ ذكيّ ⇒ رجوعٌ إلى «حرّ»؛ لا
+        تطابق على «حرّ» ⇒ يبقى حرّاً (§16)."""
+        if self._locked or row not in self._rows:
+            return
+        w = row.widgets.get("libelle")
+        if not isinstance(w, _SmartLibelle):
+            return
+        text = w.text().strip()
+        target = _smart_match(text, row.zone)
+        if target == row.kind:
+            return
+        if target is None:
+            if row.kind != "free":
+                self._convert_row(row, "free", keep_libelle=text)
+            return
+        #  §24: نوع فريد موجود أصلاً ⇒ لا تحويل، تلميح خفيف، يبقى حرّاً.
+        if target in _SMART_UNIQUE and any(
+                r.kind == target for r in self._rows if r is not row):
+            self.status.setText(
+                f"«{_SMART_TYPES[target]['label']}» موجودة مسبقاً — سطرٌ واحد "
+                "فقط. بقي السطر حرّاً.")
+            return
+        self._convert_row(row, target)
+
+    def _convert_row(self, row, new_kind, *, keep_libelle=None):
+        """يحوّل ``row`` إلى ``new_kind`` **في المكان** (§18): نفس الموضع
+        (‏``seq``) ونفس المنطقة (§19 — لا نقل تلقائيّ). لا تُنقَل القيَم غير
+        المتوافقة — فقط CODE إن كان معدَّلاً يدوياً، وLIBELLÉ الحرّ إن
+        طُلِب. يُعاد بناء المدخلات والتنقّل والحساب."""
+        try:
+            i = self._rows.index(row)
+        except ValueError:
+            return
+        keep_code = row.val("code") if row._code_manual else None
+        code_manual = row._code_manual
+        seq, zone, rid = row.seq, row.zone, row.rid
+        row.dispose()
+        nr = _Row(self, new_kind, rid, zone=zone, seq=seq)
+        nr._code_manual = code_manual
+        if keep_code:
+            nr.set_val("code", keep_code)
+        if keep_libelle is not None and "libelle" in nr.widgets:
+            nr.set_val("libelle", keep_libelle)
+        self._rows[i] = nr
+        self._refresh_libelle_suggestions()
+        self._rebuild_nav()
+        self._sync_row_styles()
+        self.mark_dirty()
+        self._recompute()
+        self._relayout()
+        first_edit = next((c["name"] for c in _ROW_SPECS[new_kind]["cells"]
+                           if c["kind"] != "smart"
+                           and c["name"] not in ("code",)), None)
+        if first_edit:
+            self._widgets[nr.cell_key(first_edit)].setFocus()
+        return nr
 
     def _insert_free_row(self, zone: str):
         """يُدرج سطراً حرّاً في المنطقة المعطاة (§6/§8) — نوع الإضافة
@@ -940,6 +1141,7 @@ class BulletinTemplateScreen(Screen):
             return
         row.dispose()
         self._rows.remove(row)
+        self._refresh_libelle_suggestions()
         self._rebuild_nav()
         self.mark_dirty()
         self._recompute()
@@ -1118,7 +1320,8 @@ class BulletinTemplateScreen(Screen):
                        for s in self._header_slots},
             "rows": [{"kind": r.kind, "zone": r.zone,
                       "cells": {c: r.val(c) for c in r.widgets},
-                      "iep_manual": r._iep_manual}
+                      "iep_manual": r._iep_manual,
+                      "code_manual": r._code_manual}
                      for r in self._rows],
             "incomplete": bool(v is not None and v.is_incomplete),
         }
@@ -1160,6 +1363,7 @@ class BulletinTemplateScreen(Screen):
                 for c, val in cells.items():
                     r.set_val(c, val)
                 r._iep_manual = bool(spec.get("iep_manual"))
+                r._code_manual = bool(spec.get("code_manual"))
             for kind in self._FIXED_KINDS:
                 if not any(r.kind == kind for r in self._rows):
                     self._rows.append(_Row(self, kind, self._next_rid))
@@ -1167,6 +1371,7 @@ class BulletinTemplateScreen(Screen):
             self._prev_text.clear()
         finally:
             self._suspend = set()
+        self._refresh_libelle_suggestions()
         self._rebuild_nav()
         for k in list(self._widgets):
             self._style_field(k)

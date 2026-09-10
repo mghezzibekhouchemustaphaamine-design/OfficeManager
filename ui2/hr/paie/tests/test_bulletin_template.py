@@ -634,6 +634,133 @@ class BulletinTemplateFreeRowR2(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateSmartLibelleR3(unittest.TestCase):
+    """UX Redesign R3 — LIBELLÉ ذكيّ + تحويل حرّ↔ذكيّ + CODE auto/manual."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_r3_")
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        mod.confirm = lambda *_a, **_k: True
+        self.scr = BulletinTemplateScreen(conn=None)
+        self.scr._widgets["mois"].setText("OCTOBRE")
+        self.scr._widgets["annee"].setText("2026")
+        [r for r in self.scr._rows if r.kind == "salaire"][0].set_val("gain",
+                                                                      "45000")
+        self.scr._recompute()
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        os.environ.pop(paths._LOCAL_STATE_ENV_OVERRIDE, None)
+
+    def _commit_libelle(self, r, text):
+        w = r.widgets["libelle"]
+        w.setText(text)
+        w.committed.emit(text)
+        return [x for x in self.scr._rows if x.rid == r.rid][0]
+
+    # ---------- الحقل الذكيّ ----------
+    def test_free_libelle_is_smart_field_with_zone_suggestions(self):
+        r = self.scr._insert_free_row("A")
+        self.assertIsInstance(r.widgets["libelle"], mod._SmartLibelle)
+        sugg = r.widgets["libelle"]._completer.model().stringList()
+        self.assertIn("Absence", sugg)
+        self.assertIn("IEP / Ancienneté", sugg)
+
+    def test_suggestions_filtered_by_zone(self):
+        rc = self.scr._insert_free_row("C")
+        sugg = rc.widgets["libelle"]._completer.model().stringList()
+        self.assertIn("Avance / Retenue", sugg)
+        self.assertNotIn("Absence", sugg)
+
+    # ---------- تحويل حرّ → ذكيّ (§14/§16) ----------
+    def test_free_to_smart_on_exact_match(self):
+        r = self.scr._insert_free_row("A")
+        seq = r.seq
+        nr = self._commit_libelle(r, "Absence")
+        self.assertEqual(nr.kind, "absence")
+        self.assertEqual(nr.zone, "A")
+        self.assertEqual(nr.seq, seq)                  # نفس الموضع (§18)
+
+    def test_alias_match_converts(self):
+        r = self.scr._insert_free_row("A")
+        self.assertEqual(self._commit_libelle(r, "heures supp").kind, "hs")
+
+    def test_partial_text_stays_free(self):
+        r = self.scr._insert_free_row("A")
+        nr = self._commit_libelle(r, "Prime spéciale")
+        self.assertEqual(nr.kind, "free")
+
+    def test_no_silent_relocation_across_zones(self):
+        #  نوع Zone A مكتوبٌ في سطر Zone C ⇒ لا تحويل، لا نقل (§19).
+        r = self.scr._insert_free_row("C")
+        nr = self._commit_libelle(r, "Absence")
+        self.assertEqual((nr.kind, nr.zone), ("free", "C"))
+
+    # ---------- تبديل النوع في المكان (§18) ----------
+    def test_smart_type_switch_same_row(self):
+        r = self.scr._insert_free_row("A")
+        r2 = self._commit_libelle(r, "Absence")
+        r2.set_val("qty", "3")
+        seq = r2.seq
+        r3 = self._commit_libelle(r2, "Retard")
+        self.assertEqual(r3.kind, "retard")
+        self.assertEqual(r3.seq, seq)
+        self.assertEqual(r3.val("qty"), "")           # قيمة غير متوافقة لا تُنقَل
+
+    def test_smart_to_free_on_nonmatch(self):
+        r = self.scr._insert_free_row("A")
+        r2 = self._commit_libelle(r, "Absence")
+        r3 = self._commit_libelle(r2, "Indemnité maison")
+        self.assertEqual(r3.kind, "free")
+        self.assertEqual(r3.zone, "A")
+        self.assertEqual(r3.val("libelle"), "Indemnité maison")
+
+    # ---------- CODE auto / manual (§20) ----------
+    def test_code_auto_on_conversion(self):
+        r = self.scr._insert_free_row("A")
+        self.assertEqual(self._commit_libelle(r, "IEP").val("code"), "IEP")
+
+    def test_code_manual_preserved_across_switch(self):
+        r = self.scr._insert_free_row("A")
+        r.widgets["code"].setText("Z9")
+        r.widgets["code"].textEdited.emit("Z9")        # يعلّم _code_manual
+        r2 = self._commit_libelle(r, "Absence")
+        self.assertTrue(r2._code_manual)
+        self.assertEqual(r2.val("code"), "Z9")
+
+    def test_draft_roundtrip_preserves_code_manual(self):
+        r = self.scr._insert_free_row("A")
+        r.widgets["code"].setText("Z9")
+        r.widgets["code"].textEdited.emit("Z9")
+        st = self.scr.draft_state()
+        other = BulletinTemplateScreen(conn=None)
+        other.apply_draft(st)
+        fr = [x for x in other._rows if x.kind == "free"][0]
+        self.assertTrue(fr._code_manual)
+        other.deleteLater()
+
+    # ---------- IEP فريدة (§24) ----------
+    def test_iep_unique_second_conversion_blocked(self):
+        a = self.scr._insert_free_row("A")
+        self._commit_libelle(a, "IEP")
+        b = self.scr._insert_free_row("A")
+        nb = self._commit_libelle(b, "IEP")
+        self.assertEqual(nb.kind, "free")             # لا IEP ثانية
+
+    def test_iep_hidden_from_other_suggestions_when_present(self):
+        a = self.scr._insert_free_row("A")
+        self._commit_libelle(a, "IEP")
+        b = self.scr._insert_free_row("A")
+        sugg = b.widgets["libelle"]._completer.model().stringList()
+        self.assertNotIn("IEP / Ancienneté", sugg)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
 class BulletinTemplateValidation(unittest.TestCase):
     """Phase B — تحقّق مرن + ⚠️ غير مكتمل."""
 
@@ -789,7 +916,7 @@ class BulletinTemplateValidation(unittest.TestCase):
 
     def test_incomplete_avance(self):
         self._fill_final()
-        self._add("avance", montant="5000")        # بلا libellé
+        self._add("avance", libelle="AVANCE", montant="")   # بلا مبلغ
         self.assertFalse(self._v().ready_for_final)
 
     def test_incomplete_autre(self):

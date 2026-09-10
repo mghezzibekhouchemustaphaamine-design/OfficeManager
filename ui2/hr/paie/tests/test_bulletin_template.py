@@ -35,6 +35,14 @@ if _HAS_QT:
         s = _re.sub(r"[^\d,\-]", "", str(s or "")).replace(",", ".")
         return float(s) if s not in ("", "-", ".") else 0.0
 
+    def _isolate_db(tmp):
+        """يعزل قاعدة البيانات في ``tmp``: ``OFFICEMANAGER_DATA_DIR`` وحده
+        لا يكفي — ``get_db_path`` يتدرّج إلى نسخة جذر المشروع إن لم يوجد
+        ملفّ في المكان الجديد. نُنشئ ملفّاً فارغاً أوّلاً ثمّ ``init_db``."""
+        os.environ[paths._DATA_DIR_ENV_OVERRIDE] = tmp
+        open(os.path.join(tmp, "office_system.db"), "a").close()
+        database.init_db()
+
 _HEADER = {
     "emp_raison_sociale": "SARL DATA NEWS", "emp_cnas": "16 412 078 56",
     "mois": "OCTOBRE", "annee": "2026",
@@ -605,8 +613,7 @@ class BulletinTemplateWorkC1(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.mkdtemp(prefix="om_c1_")
         os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
-        os.environ[paths._DATA_DIR_ENV_OVERRIDE] = self._tmp
-        database.init_db()
+        _isolate_db(self._tmp)
         mod.confirm = lambda *_a, **_k: True
         self.scr = BulletinTemplateScreen(conn=None)
 
@@ -914,9 +921,8 @@ class FinalizeLockC3(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.mkdtemp(prefix="om_c3_")
         os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
-        os.environ[paths._DATA_DIR_ENV_OVERRIDE] = self._tmp
         os.environ[paths._TRAVAIL_ENV_OVERRIDE] = os.path.join(self._tmp, "travail")
-        database.init_db()
+        _isolate_db(self._tmp)
         mod.confirm = lambda *_a, **_k: False        # لا تفتح الملفّ
         import ui2.alerts as _al
         self._al, self._al_warn = _al, _al.warn
@@ -1075,6 +1081,149 @@ class FinalizeLockC3(unittest.TestCase):
         self.assertTrue(other._locked)
         self.assertTrue(other._widgets["id_nom"].isReadOnly())
         other.deleteLater()
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class SaveAsC4(unittest.TestCase):
+    """Phase C4 — Save As = استنساخ Work Item مستقلّ، الأصل لا يُلمَس."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_c4_")
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        os.environ[paths._TRAVAIL_ENV_OVERRIDE] = os.path.join(self._tmp, "travail")
+        _isolate_db(self._tmp)
+        mod.confirm = lambda *_a, **_k: False
+        import ui2.alerts as _al
+        self._al, self._al_warn = _al, _al.warn
+        _al.warn = lambda *_a, **_k: None
+        self.scr = BulletinTemplateScreen(conn=None)
+
+    def tearDown(self):
+        self._al.warn = self._al_warn
+        self.scr.deleteLater()
+        for k in (paths._LOCAL_STATE_ENV_OVERRIDE, paths._DATA_DIR_ENV_OVERRIDE,
+                  paths._TRAVAIL_ENV_OVERRIDE):
+            os.environ.pop(k, None)
+
+    def _row(self, kind):
+        return [r for r in self.scr._rows if r.kind == kind][0]
+
+    def _fill_final(self):
+        w = self.scr._widgets
+        for k, v in {"emp_raison_sociale": "SARL X", "emp_adresse": "12 RUE",
+                     "emp_cnas": "16 412 078 56", "mois": "OCTOBRE",
+                     "annee": "2026", "id_nom": "BENALI", "id_prenom": "Karim",
+                     "id_lieu_naissance": "ALGER",
+                     "id_fonction": "COMPTABLE"}.items():
+            w[k].setText(v)
+        w["id_date_naissance"].set_iso("1990-05-10")
+        w["id_date_embauche"].set_iso("2016-06-14")
+        self._row("salaire").set_val("gain", "45000")
+        self._row("salaire").set_val("nbase", "26")
+        self._row("prime").set_val("gain", "8000")
+        self._row("prime").set_val("libelle", "RENDEMENT")
+        self.scr._recompute()
+
+    def _emp_name(self, wid):
+        import json
+        return json.loads(database.get_hr_document(wid)["full_data_json"]
+                          )["employee"]["nom"] + " " + json.loads(
+            database.get_hr_document(wid)["full_data_json"])["employee"]["prenom"]
+
+    # ---- §32 A ----
+    def test_saveas_from_incomplete_creates_independent_copy(self):
+        self.scr._widgets["id_nom"].setText("A_NOM")
+        self.scr._widgets["mois"].setText("OCTOBRE")
+        self.scr._widgets["annee"].setText("2026")
+        self._row("salaire").set_val("gain", "40000")
+        self.scr._recompute()
+        self.scr._on_save()
+        wid_a = self.scr._work_id
+        self.scr._widgets["id_nom"].setText("B_NOM")     # تعديل بعد حفظ A
+        self.scr._on_save_as(label="B")
+        wid_b = self.scr._work_id
+        self.assertNotEqual(wid_a, wid_b)
+        self.assertEqual(self.scr._work_state, "incomplete")
+        self.assertIn("A_NOM", self._emp_name(wid_a))     # A لم يتغيّر
+        self.assertIn("B_NOM", self._emp_name(wid_b))
+
+    # ---- §32 B ----
+    def test_saveas_from_locked_leaves_original_final(self):
+        self._fill_final()
+        self.scr._on_finalize()
+        wid_a = self.scr._work_id
+        pdf_a = self.scr._final_pdf
+        stamp = os.path.getmtime(pdf_a), os.path.getsize(pdf_a)
+        self.assertTrue(self.scr._locked)
+        self.scr._on_save_as(label="COPIE")              # بلا فتح القفل
+        self.assertNotEqual(self.scr._work_id, wid_a)
+        self.assertEqual(self.scr._work_state, "incomplete")
+        self.assertFalse(self.scr._locked)               # الشاشة تحرّر النسخة
+        rowa = database.get_hr_document(wid_a)
+        self.assertEqual(rowa["state"], "final")
+        self.assertEqual(rowa["pdf_path"], pdf_a)
+        self.assertEqual((os.path.getmtime(pdf_a), os.path.getsize(pdf_a)), stamp)
+
+    # ---- §32 C ----
+    def test_saveas_after_unlock_edit_keeps_original(self):
+        self._fill_final()
+        self.scr._on_finalize()
+        wid_a = self.scr._work_id
+        pdf_a = self.scr._final_pdf
+        mod.confirm = lambda *_a, **_k: True
+        self.scr._on_unlock()
+        self.scr._widgets["id_prenom"].setText("Kamel")
+        self.scr._on_save_as(label="B")
+        wid_b = self.scr._work_id
+        self.assertNotEqual(wid_a, wid_b)
+        self.assertIn("Karim", self._emp_name(wid_a))     # الأصل بالقيَم القديمة
+        self.assertIn("Kamel", self._emp_name(wid_b))
+        self.assertEqual(database.get_hr_document(wid_a)["pdf_path"], pdf_a)
+        self.assertTrue(os.path.exists(pdf_a))
+        self.assertIsNone(self.scr._final_pdf)            # النسخة بلا أثر نهائيّ
+
+    # ---- §32 D ----
+    def test_refinalize_same_work_after_unlock(self):
+        self._fill_final()
+        self.scr._on_finalize()
+        wid = self.scr._work_id
+        pdf = self.scr._final_pdf
+        sz0 = os.path.getsize(pdf)
+        mod.confirm = lambda *_a, **_k: True
+        self.scr._on_unlock()
+        self.scr._widgets["id_prenom"].setText("Abdelkader-Djelloul")
+        self.scr._recompute()
+        mod.confirm = lambda *_a, **_k: False
+        self.scr._on_finalize()
+        self.assertEqual(self.scr._work_id, wid)
+        self.assertEqual(self.scr._final_pdf, pdf)        # نفس الملف
+        self.assertEqual(self.scr._work_state, "final")
+        self.assertNotEqual(os.path.getsize(pdf), sz0)    # المحتوى تحدّث
+
+    def test_saveas_then_finalize_copy_collision_safe(self):
+        self._fill_final()
+        self.scr._on_finalize()
+        pdf_a = self.scr._final_pdf
+        self.scr._on_save_as(label="B")
+        self.scr._recompute()
+        self.scr._on_finalize()                           # أصدِر النسخة
+        self.assertEqual(self.scr._work_state, "final")
+        self.assertNotEqual(self.scr._final_pdf, pdf_a)   # مسار مختلف (لا دهس)
+        self.assertTrue(os.path.exists(pdf_a))            # ملفّ الأصل باقٍ
+        self.assertTrue(os.path.exists(self.scr._final_pdf))
+
+    def test_saveas_new_id_and_one_extra_row(self):
+        self._fill_final()
+        self.scr._on_save()
+        before = len(database.list_hr_documents(screen_key="hr_bulletin_paie"))
+        self.scr._on_save_as(label="X")
+        after = len(database.list_hr_documents(screen_key="hr_bulletin_paie"))
+        self.assertEqual(after, before + 1)
 
 
 if __name__ == "__main__":

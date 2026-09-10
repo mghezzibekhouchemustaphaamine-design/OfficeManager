@@ -1982,9 +1982,45 @@ class BulletinTemplateScreen(Screen):
             warn(self, self.TITLE,
                  ["لا توجد نسخة نهائية بعد — استعمل «إصدار نهائيّ»."])
 
-    def _on_save_as(self):
+    def _on_save_as(self, label=None):
+        """Save As = **استنساخ Work Item** (§17): ينسخ الحالة الحالية
+        القابلة للتحرير إلى **معرّف جديد** بلا مستندات نهائية، ويتعامل
+        معها كعمل مستقلّ (الشاشة تصير تحرّره). الأصل — صفّه، مساراته،
+        ملفّاته — **لا يُلمَس**. ممكن حتى من عمل 🔒 بلا فتح القفل (§18)."""
         from ui2.alerts import warn
-        warn(self, self.TITLE, ["«حفظ باسم» يصل في المرحلة C4."])
+        if label is None:
+            from PySide6.QtWidgets import QInputDialog
+            label, ok = QInputDialog.getText(
+                self, self.TITLE, "اسم النسخة الجديدة (اختياريّ):",
+                text=self._employee_fullname())
+            if not ok:
+                return
+        self._recompute()
+        #  Work Data للنسخة: نفس المدخلات، لكن بلا أثر نهائيّ.
+        wd = self.work_data()
+        wd["has_final_artifacts"] = False
+        wd["final_docx"] = wd["final_pdf"] = None
+        rec = self._work_record("incomplete")
+        if label:
+            rec["doc_label"] = str(label)[:120]
+        try:
+            new_id = database.save_hr_work(rec, wd)
+        except Exception as exc:                              # noqa: BLE001
+            logger.warning("حفظ باسم فشل", exc_info=True)
+            warn(self, self.TITLE, [f"تعذّر إنشاء النسخة: {exc}"])
+            return
+        #  الشاشة تصبح تحرّر النسخة الجديدة المستقلّة.
+        self._work_id = new_id
+        self._work_state = "incomplete"
+        self._has_final_artifacts = False
+        self._final_docx = self._final_pdf = None
+        self._dirty = False
+        if self._locked:
+            self._set_locked(False)
+        self.clear_draft()
+        self._update_incomplete_indicator()
+        self._update_state_indicator()
+        self.status.setText("💾 أُنشئت نسخة مستقلّة (⚠️) — الأصل لم يتغيّر.")
 
     def _update_state_indicator(self):
         lbl = getattr(self, "_state_lbl", None)

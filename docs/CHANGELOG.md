@@ -3491,3 +3491,51 @@ totals/net من المحرّك · CNAS/IRG من `view` · Panier/Transport بص�
 
 معدَّل: `ui2/hr/paie/bulletin_template.py` ·
 `ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.
+
+---
+
+## Phase C4 — 2026-09-10: Save As (استنساخ Work Item)
+
+`_on_save_as(label=None)` = **استنساخ**، لا نسخ ملفّات:
+
+1. `save_hr_work` بمعرّف **جديد**، `state = incomplete`، بلا `file_path`/
+   `pdf_path`، وWork Data الحالية لكن `has_final_artifacts = False` و
+   `final_docx/pdf = None` (النسخة لم تُصدَر بعد).
+2. الشاشة تصبح تحرّر **النسخة الجديدة المستقلّة**: `_work_id` الجديد،
+   `_work_state = incomplete`، تُفتح إن كانت مقفولة.
+3. **الأصل — صفّه، حالته، مساراته، ملفّاته على القرص — لا يُلمَس.**
+
+ممكن حتى من عمل 🔒 **بلا فتح القفل** (§18) — يقرأ قيَم الحقول فقط. زرّ
+«💾 حفظ باسم…» يسأل اسماً اختيارياً عبر `QInputDialog` خفيف (لا file
+dialog). لاحقاً عند إصدار النسخة، `_finalize_paths` يكتشف تصادم اسمها مع
+ملفّ الأصل فيزيد رقماً (`_02`) — لا دهس (§29).
+
+### حالات §32 المُختبَرة
+
+- **A**: ⚠️ A → Save As → ⚠️ B مستقلّ · A لم يتغيّر.
+- **B**: 🔒 A → Save As (بلا فتح قفل) → B ⚠️ · A يبقى 🔒 وملفّاته بنفس
+  الزمن/الحجم.
+- **C**: 🔒 A → فتح القفل → تعديل → Save As B → A بالقيَم والملفّات
+  القديمة · B يأخذ التعديل · النسخة بلا `_final_pdf`.
+- **D**: 🔒 A → فتح القفل → تعديل → Finalize نفس العمل → نفس `_work_id`
+  ونفس مسار الملفّين · المحتوى تحدّث · صفّ واحد.
+- Save As → معرّف جديد + صفّ إضافيّ واحد فقط.
+- Save As ثمّ Finalize للنسخة → مسار مختلف عن الأصل، وملفّ الأصل باقٍ.
+
+### عزل اختبارات دورة الحياة
+
+`get_db_path` يتدرّج إلى نسخة جذر المشروع إن لم يوجد ملفّ في
+`OFFICEMANAGER_DATA_DIR` — فكانت اختبارات C1/C3 تكتب في قاعدة التطوير
+الحقيقية. أُصلح: `_isolate_db(tmp)` يُنشئ `office_system.db` فارغاً في
+`tmp` **قبل** `init_db`، فيبقى كلّ شيء داخل مجلّد الاختبار.
+
+### الاختبارات
+
+`ui2/hr/paie/tests` **88 OK** (‏+6 C4). `ui2/tests` 42 · `ui2/paie/tests`
+17 · `programme/payroll/tests` 49 · `programme/tests` 6 · golden 14/14 ·
+galleries `ALLOK`.
+
+### الملفات المتأثرة
+
+معدَّل: `ui2/hr/paie/bulletin_template.py` ·
+`ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.

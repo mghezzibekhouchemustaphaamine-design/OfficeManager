@@ -110,7 +110,7 @@ _ZONES = (_ZONE_A, _ZONE_B, _ZONE_C)
 #  قبل CNAS/IRG ⇒ Zone A (§21-§24). Prime الافتراضي «CNAS + IRG» ⇒ Zone A
 #  (§25). Avance/Autre تحفّظاً ⇒ Zone C.
 _DEFAULT_ZONE = {"iep": _ZONE_A, "hs": _ZONE_A, "absence": _ZONE_A,
-                 "retard": _ZONE_A, "prime": _ZONE_A,
+                 "retard": _ZONE_A, "prime": _ZONE_A, "free": _ZONE_A,
                  "avance": _ZONE_C, "autre": _ZONE_C}
 
 #  رُتب الترتيب: الصفوف الثابتة تُرسي حدود المناطق، والصفوف الاختيارية
@@ -154,7 +154,31 @@ def _soumis_class(label):
     return _NO, _NO                            # Z3 (net)
 
 
+#  المنطقة → (cotisable, imposable) للسطر الحرّ (§11): الموضع وحده يحسم
+#  التصنيف الجبائيّ — لا ComboBox. Zone A = CNAS+IRG · Zone B = IRG فقط ·
+#  Zone C = خارج الاثنين.
+_ZONE_CLASS = {_ZONE_A: (_YES, _YES), _ZONE_B: (_NO, _YES), _ZONE_C: (_NO, _NO)}
+
+
 # --------- تحويل الصفوف إلى entries لـ lignes.compute_bulletin ---------
+
+def _free_entry(r):
+    """السطر الحرّ (§8-§11): قيمةٌ في GAIN **أو** RETENUE (لا الاثنين).
+    N/BASE و TAUX عرضٌ فقط — لا حساب تلقائيّ (§9). التصنيف من المنطقة."""
+    cot, imp = _ZONE_CLASS[r.zone]
+    gain, ret = r.val("gain"), r.val("retenue")
+    lbl = r.val("libelle") or "LIGNE LIBRE"
+    if ret and not gain:
+        #  RETENUE موجبة تُطرح حسب المنطقة: Zone A = اقتطاع خاضع (يُنقِص
+        #  [A]/[C]/الصافي، كالغياب) · غيرها = اقتطاع صافٍ فقط (Z4).
+        za = r.zone == _ZONE_A
+        return {"type": "libre", "values": {
+            "libelle": lbl, "montant": ret, "est_retenue": _YES,
+            "cotisable": _YES if za else _NO,
+            "imposable": _YES if za else _NO}}
+    return {"type": "libre", "values": {
+        "libelle": lbl, "montant": gain, "est_retenue": _NO,
+        "cotisable": cot, "imposable": imp}}
 
 def _prime_entry(r):
     cot, imp = _soumis_class(r.val("soumis") or "CNAS + IRG")
@@ -269,6 +293,19 @@ _ROW_SPECS = {
                _cs("classe", "nbase", "choice", _SOUMIS_CHOICES, _SOUMIS_CHOICES[2]),
                _cs("montant", _AUTRE_MONTANT_COL, "amount")),
         to_entry=_autre_entry),
+    #  ------- السطر الحرّ (UX Redesign R2) — نوع الإضافة الافتراضيّ -------
+    #  ستّ خلايا نصّيّة/رقميّة، بلا أيّ ComboBox رماديّ (§8/§29). N/BASE و
+    #  TAUX عرضٌ فقط (§9)؛ القيمة الحقيقيّة في GAIN أو RETENUE (§10).
+    #  التصنيف الجبائيّ من المنطقة لا من حقل (§11).
+    "free": dict(
+        role="optional", code="", lib="", primary="",
+        cells=(_cs("code", "code", "text"),
+               _cs("libelle", "libelle", "text"),
+               _cs("nbase", "nbase", "amount"),
+               _cs("taux", "taux", "amount"),
+               _cs("gain", "gain", "amount"),
+               _cs("retenue", "retenue", "amount")),
+        to_entry=_free_entry),
     "cnas": dict(role="system", code=_C["cnas"],
                  lib="RETENUE SÉCU. SOCIALE", cells=(), primary=""),
     "irg": dict(role="system", code=_C["irg"], lib="RETENUE IRG",
@@ -731,6 +768,7 @@ class BulletinTemplateScreen(Screen):
         self.build_ui()
         self.toolbar.setVisible(False)         # لا شريط أدوات في التصميم القديم
         self._build_fields()
+        self._build_gutter_controls()          # أزرار ＋/－ على هامش الجدول (R2)
         self._init_default_rows()
         self._rebuild_nav()
         self.on_activate()
@@ -767,15 +805,15 @@ class BulletinTemplateScreen(Screen):
     def _row_index(self, row) -> int:
         return self._visible_body_rows().index(row)
 
-    def _add_row(self, kind: str):
+    def _add_row(self, kind: str, zone: str = None):
         if self._locked:                          # 🔒 — لا تعديل بنية
-            return
+            return None
         if len([r for r in self._rows if r.role != "system"]) + 2 >= _MAX_BODY_ROWS:
             from ui2.alerts import warn
             warn(self, self.TITLE,
                  ["بلغ الجدول الحدّ الأقصى للصفوف — احذف صفاً قبل الإضافة."])
-            return
-        r = _Row(self, kind, self._next_rid)
+            return None
+        r = _Row(self, kind, self._next_rid, zone=zone)
         self._next_rid += 1
         self._rows.append(r)
         self._rebuild_nav()
@@ -783,10 +821,116 @@ class BulletinTemplateScreen(Screen):
         self.mark_dirty()
         self._recompute()
         self._relayout()
-        # ركّز أوّل خلية قابلة للتحرير في الصف الجديد
+        # ركّز أوّل خلية قابلة للتحرير في الصف الجديد (LIBELLÉ للسطر الحرّ)
         cells = _ROW_SPECS[kind]["cells"]
         if cells:
-            self._widgets[r.cell_key(cells[0]["name"])].setFocus()
+            first = "libelle" if any(c["name"] == "libelle" for c in cells) \
+                else cells[0]["name"]
+            self._widgets[r.cell_key(first)].setFocus()
+        return r
+
+    def _insert_free_row(self, zone: str):
+        """يُدرج سطراً حرّاً في المنطقة المعطاة (§6/§8) — نوع الإضافة
+        الافتراضيّ من الجدول نفسه. الموضع داخل الحزمة = ترتيب الإضافة."""
+        if zone not in _ZONES:
+            zone = _ZONE_A
+        return self._add_row("free", zone=zone)
+
+    def _zone_at_doc_y(self, mm_y: float) -> str:
+        """المنطقة التي يقع فيها إحداثيّ y (مليمتر ورقة) داخل جسم الجدول:
+        فوق CNAS ⇒ A · بين النقل و IRG ⇒ B · تحت IRG ⇒ C (§6)."""
+        rows = self._visible_body_rows()
+        ys = self._y_shift(self._view().scale)
+        idx = {r.kind: i for i, r in enumerate(rows)}
+        row_at = int(max(0, (mm_y - ys - T.BODY_TOP) // T.ROW_H))
+        i_cnas = idx.get("cnas", 0)
+        i_trans = idx.get("transport", i_cnas)
+        i_irg = idx.get("irg", len(rows))
+        if row_at <= i_cnas:
+            return _ZONE_A
+        if row_at <= i_irg and row_at > i_trans:
+            return _ZONE_B
+        if row_at > i_irg:
+            return _ZONE_C
+        return _ZONE_A if row_at <= i_cnas else _ZONE_C
+
+    # ============= أزرار ＋/－ على هامش الجدول (Word-like — §6/§7/§33) =============
+    def _build_gutter_controls(self):
+        """زرّان صغيران على الهامش الأيسر للجدول: ＋ يُدرج سطراً حرّاً في
+        المنطقة تحت المؤشّر، － يحذف السطر الاختياريّ تحت المؤشّر. يظهران
+        بالـ hover فقط، يختفيان في القفل، وليسا جزءاً من الرسم (فلا يظهران
+        في DOCX/PDF)."""
+        from PySide6.QtWidgets import QToolButton
+        self._plus_zone = None
+        self._minus_row = None
+        self._btn_plus = QToolButton(self._canvas)
+        self._btn_plus.setText("＋")
+        self._btn_plus.setCursor(Qt.PointingHandCursor)
+        self._btn_plus.setToolTip("إدراج سطر هنا")
+        self._btn_plus.clicked.connect(
+            lambda: self._plus_zone and self._insert_free_row(self._plus_zone))
+        self._btn_minus = QToolButton(self._canvas)
+        self._btn_minus.setText("－")
+        self._btn_minus.setCursor(Qt.PointingHandCursor)
+        self._btn_minus.setToolTip("حذف هذا السطر")
+        self._btn_minus.clicked.connect(
+            lambda: self._minus_row is not None
+            and self._remove_row(self._minus_row))
+        for b in (self._btn_plus, self._btn_minus):
+            b.setStyleSheet(
+                f"QToolButton {{ background:{theme.SURFACE}; "
+                f"border:1px solid {theme.BORDER}; border-radius:8px; "
+                f"color:{theme.TEXT}; font-weight:700; padding:0; }}"
+                f"QToolButton:hover {{ border-color:{theme.PRIMARY}; }}")
+            b.hide()
+        self._canvas.setMouseTracking(True)
+
+    def _hide_gutter_controls(self):
+        for b in (getattr(self, "_btn_plus", None),
+                  getattr(self, "_btn_minus", None)):
+            if b is not None:
+                b.hide()
+
+    def _gutter_mouse_move(self, canvas_pos):
+        """يُستدعى من ``eventFilter`` عند حركة الفأرة فوق اللوحة. يُظهر
+        ＋/－ إن كان المؤشّر في هامش الجدول الأيسر ضمن نطاق الجسم."""
+        if self._locked or not hasattr(self, "_btn_plus"):
+            return
+        v = self._view()
+        ys = self._y_shift(v.scale)
+        mm_x = (canvas_pos.x() - v.x0) / v.scale - T.MARGIN_L
+        mm_y = (canvas_pos.y() - v.y0) / v.scale
+        top = T.BODY_TOP + ys
+        bot = top + self._n_body_drawn() * T.ROW_H
+        #  الهامش: من ‎-10mm‎ إلى ‎+1mm‎ يسار حافة الجدول
+        if not (-11.0 <= mm_x <= 1.5 and top - 1.0 <= mm_y <= bot + 1.0):
+            self._hide_gutter_controls()
+            return
+        size = max(14, min(26, int(v.px(4.6))))
+        bx = int(v.x(-5.0) - size / 2)
+        #  ＋ عند حدّ الصفّ الأقرب للمؤشّر
+        b_idx = int(round((mm_y - top) / T.ROW_H))
+        b_idx = max(0, min(self._n_body_drawn(), b_idx))
+        self._plus_zone = self._zone_at_doc_y(
+            top + (b_idx + 0.5) * T.ROW_H)
+        py = int(v.y(top + b_idx * T.ROW_H) - size / 2)
+        self._btn_plus.setFixedSize(size, size)
+        self._btn_plus.move(bx, py)
+        self._btn_plus.raise_()
+        self._btn_plus.show()
+        #  － إن كان المؤشّر فوق صفّ اختياريّ
+        rows = self._visible_body_rows()
+        r_idx = int((mm_y - top) // T.ROW_H)
+        self._minus_row = None
+        if 0 <= r_idx < len(rows) and rows[r_idx].can_delete():
+            self._minus_row = rows[r_idx]
+            my = int(v.y(top + (r_idx + 0.5) * T.ROW_H) - size / 2)
+            self._btn_minus.setFixedSize(size, size)
+            self._btn_minus.move(bx, my)
+            self._btn_minus.raise_()
+            self._btn_minus.show()
+        else:
+            self._btn_minus.hide()
 
     def _remove_row(self, row: "_Row"):
         if self._locked or not row.can_delete() or row not in self._rows:
@@ -892,17 +1036,10 @@ class BulletinTemplateScreen(Screen):
         cl.addWidget(self._client_combo)
         lay.addWidget(cf)
 
-        # ---- + Ajouter (قائمة منتَج مبسَّطة فوق lignes) ----
-        add_btn = QPushButton("＋ Ajouter")
-        self._add_menu = QMenu(self)
-        for label, kind in _AJOUTER_MENU:
-            self._add_menu.addAction(label,
-                                     lambda k=kind: self._add_row(k))
-        add_btn.setMenu(self._add_menu)
-        self._add_btn = add_btn
-        lay.addWidget(add_btn)
-
-        hint = QLabel("تصنيف كلّ Prime (CNAS/IRG) داخل سطرها.")
+        # §5: لا «＋ Ajouter» في الشريط الجانبيّ — الإضافة صارت من الجدول
+        # نفسه عبر أزرار ＋/－ على الهامش عند المرور بالفأرة (R2).
+        hint = QLabel("مرِّر الفأرة على يسار الجدول: ＋ يُدرج سطراً، － يحذفه. "
+                      "موضع السطر يحدّد منطقته الحسابيّة.")
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color:{theme.TEXT_DIM};")
         lay.addWidget(hint)
@@ -1281,11 +1418,17 @@ class BulletinTemplateScreen(Screen):
             if k and self._slots_by_key.get(k) and \
                     self._slots_by_key[k].kind == "famille":
                 self._popup_famille(k, obj)
+        #  ＋/－ على هامش الجدول — تتبُّع حركة الفأرة فوق اللوحة (R2)
+        if t == QEvent.MouseMove and obj is getattr(self, "_canvas", None):
+            self._gutter_mouse_move(ev.position().toPoint())
+        elif t == QEvent.Leave and obj is getattr(self, "_canvas", None):
+            self._hide_gutter_controls()
         return super().eventFilter(obj, ev)
 
     def _relayout(self):
         if not hasattr(self, "_canvas"):
             return
+        self._hide_gutter_controls()          # تعاد عند حركة الفأرة التالية
         v = self._view()
         self._canvas.setFixedSize(
             int(max(v.x0 + v.sheet_w + self.MARGIN, v.cw)),
@@ -1368,15 +1511,30 @@ class BulletinTemplateScreen(Screen):
     def _style_field(self, key):
         w = self._widgets[key]
         warn = self._warns(key)
-        if isinstance(w, (DateField, QComboBox)):
-            if isinstance(w, DateField):
-                w.refresh_style()             # DateField/Combo يديران نمطهما
-                if warn and not w.error_text():
-                    # حدّ تحذير خفيف فوق نمط DateField — آخر قاعدة QLineEdit
-                    # تفوز في Qt، ويُعيده refresh_style في الاستدعاء التالي.
-                    w._edit.setStyleSheet(
-                        w._edit.styleSheet()
-                        + f"\nQLineEdit{{border:1px solid {theme.WARNING};}}")
+        if isinstance(w, DateField):
+            w.refresh_style()
+            if warn and not w.error_text():
+                # حدّ تحذير خفيف فوق نمط DateField — آخر قاعدة QLineEdit
+                # تفوز في Qt، ويُعيده refresh_style في الاستدعاء التالي.
+                w._edit.setStyleSheet(
+                    w._edit.styleSheet()
+                    + f"\nQLineEdit{{border:1px solid {theme.WARNING};}}")
+            return
+        if isinstance(w, QComboBox):
+            #  §29: لا رمادي — الـ ComboBox يبدو كخليّة صفراء عاديّة داخل
+            #  الورقة (خلفية FIELD_EMPTY، بلا حافة نافرة، سهمٌ خفيف).
+            filled = bool(self._field_value(key))
+            bg = theme.SURFACE if filled else theme.FIELD_EMPTY
+            bd = theme.HOVER if w.hasFocus() else "#ffffff"
+            if warn:
+                bd = theme.WARNING
+            w.setStyleSheet(
+                f"QComboBox {{ background:{bg}; color:{theme.TEXT}; "
+                f"border:1px solid {bd}; border-radius:0; padding:0 1px; }}"
+                f"QComboBox::drop-down {{ border:0; width:12px; }}"
+                f"QComboBox QAbstractItemView {{ background:#ffffff; "
+                f"color:{theme.TEXT}; selection-background-color:{theme.PRIMARY};"
+                f" selection-color:#ffffff; }}")
             return
         filled = bool(self._field_value(key))
         if key in self._band_keys:
@@ -1648,8 +1806,8 @@ class BulletinTemplateScreen(Screen):
 
     def _set_locked(self, locked: bool):
         """🔒: كلّ مدخلات الوثيقة للقراءة فقط (حقول الترويسة + خلايا كلّ
-        صفّ ديناميكيّ + ``+ Ajouter``). لا يمسّ Zoom/Ctrl+Wheel/التمرير
-        (على ``_canvas``) ولا أزرار المعاينة/الحفظ باسم."""
+        صفّ ديناميكيّ)، وأزرار ＋/－ على الهامش تختفي (§28). لا يمسّ
+        Zoom/Ctrl+Wheel/التمرير ولا أزرار المعاينة/الحفظ باسم."""
         self._locked = bool(locked)
         for w in self._widgets.values():
             if isinstance(w, QComboBox):
@@ -1658,6 +1816,8 @@ class BulletinTemplateScreen(Screen):
                 w.setReadOnly(locked)
         if hasattr(self, "_add_btn"):
             self._add_btn.setEnabled(not locked)
+        if locked:
+            self._hide_gutter_controls()
         self._update_state_indicator()
         if hasattr(self, "_canvas"):
             self._canvas.update()
@@ -1765,6 +1925,9 @@ class BulletinTemplateScreen(Screen):
                 # تعديل يدويّ للنسبة → Manual Override؛ تفريغها → العودة
                 # للاقتراح (لفتة خفيفة، بلا زرّ إضافيّ).
                 r._iep_manual = bool(r.val("taux"))
+            if r.kind == "free" and key in (r.cell_key("gain"),
+                                            r.cell_key("retenue")):
+                self._enforce_free_gain_retenue(r, key)
             if key in {r.cell_key(c) for c in r.choice_cells()}:
                 relayout = True                  # قد يتغيّر عمود/ظهور خلية
         self._style_field(key)
@@ -1772,6 +1935,28 @@ class BulletinTemplateScreen(Screen):
         self._recompute()
         if relayout:
             self._relayout()
+
+    def _enforce_free_gain_retenue(self, r, edited_key):
+        """§10: السطر الحرّ يقبل قيمةً في GAIN **أو** RETENUE لا كليهما،
+        وRETENUE تُكتب موجبةً. الحقل المُحرَّر يفوز؛ والسالب يُنظَّف."""
+        gk, rk = r.cell_key("gain"), r.cell_key("retenue")
+        gw, rw = self._widgets[gk], self._widgets[rk]
+        #  RETENUE سالبة → إزالة الإشارة (لا سالب مزدوج)
+        if edited_key == rk and "-" in rw.text():
+            self._suspend.add(rk)
+            rw.setText(rw.text().replace("-", ""))
+            self._suspend.discard(rk)
+        #  الحقل المُحرَّر فيه قيمة ⇒ فرّغ الآخر
+        if edited_key == gk and gw.text().strip() and rw.text().strip():
+            self._suspend.add(rk)
+            rw.clear()
+            self._suspend.discard(rk)
+            self._style_field(rk)
+        elif edited_key == rk and rw.text().strip() and gw.text().strip():
+            self._suspend.add(gk)
+            gw.clear()
+            self._suspend.discard(gk)
+            self._style_field(gk)
 
     def _apply_iep_suggestion(self, row):
         """يضع النسبة المقترَحة من ``lignes.suggest_iep_taux`` (بلا Employé

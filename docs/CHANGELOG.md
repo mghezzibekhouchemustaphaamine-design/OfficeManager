@@ -3719,3 +3719,70 @@ Zone A يُكبّر الوثيقة دائماً · هندسة TOTAL/NET مستق
 `ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.
 لقطات: `docs/baseline_screenshots/R1_fresh_{45,100,200}.png` ·
 `R1_filled_100.png`.
+
+## UX Redesign R2 — 2026-09-10: السطر الحرّ + أزرار ＋/－ على الهامش
+
+المرحلة الثانية من إعادة تصميم جدول Rubriques. الإضافة تنتقل من الشريط
+الجانبيّ إلى الجدول نفسه، ونوع الإضافة الافتراضيّ يصير **السطر الحرّ**.
+
+### السطر الحرّ (`_ROW_SPECS["free"]` — §8-§11)
+
+ستّ خلايا نصّيّة/رقميّة داخل الورقة، **بلا أيّ ComboBox**: CODE ·
+LIBELLÉ · N/BASE · TAUX · GAIN · RETENUE. كلّها بنفس نمط الخليّة الصفراء
+الشاحبة.
+
+* **N/BASE و TAUX عرضٌ فقط** (§9): لا حساب تلقائيّ `NBASE × TAUX`. القيمة
+  الحقيقيّة يكتبها المستخدم في GAIN أو RETENUE.
+* **GAIN / RETENUE حصريّان** (§10): كتابة قيمة في أحدهما تُفرّغ الآخر
+  (الأحدث يفوز). RETENUE تُكتب موجبةً — الإشارة السالبة تُنظَّف فوراً.
+  المنطق في `_enforce_free_gain_retenue` عبر `_on_row_edit`.
+* **التصنيف من المنطقة** (§11): `_free_entry` يترجم `_ZONE_CLASS[r.zone]`
+  إلى `(cotisable, imposable)` — Zone A ⇒ CNAS+IRG · Zone B ⇒ IRG فقط ·
+  Zone C ⇒ خارج الاثنين. RETENUE في Zone A = اقتطاع خاضع (يُنقِص
+  [A]/[C]/الصافي كالغياب)؛ في غيرها = اقتطاع صافٍ (Z4). لا ComboBox تصنيف.
+
+### أزرار ＋ / － على هامش الجدول (Word-like — §6/§7/§33)
+
+`_build_gutter_controls`: زرّان `QToolButton` صغيران أبناء `_canvas`،
+يظهران بالـ hover فقط:
+
+* **＋** في الهامش الأيسر عند حدّ الصفّ الأقرب للمؤشّر → يُدرج سطراً حرّاً
+  في المنطقة التي يقع فيها الموضع (`_zone_at_doc_y`): فوق CNAS ⇒ A ·
+  بين النقل و IRG ⇒ B · تحت IRG ⇒ C (`_insert_free_row`).
+* **－** على يسار صفٍّ اختياريّ فقط (لا يظهر على الصفوف الثابتة/النظام)
+  → يحذفه (`_remove_row` — نفس الحماية: فارغ يُحذَف مباشرةً، فيه بيانات
+  يحتاج تأكيداً واحداً).
+* تتبُّع الفأرة في `eventFilter` (`MouseMove`/`Leave` على `_canvas`).
+  الأزرار **ليست جزءاً من الرسم** ⇒ لا تظهر في DOCX/PDF. تختفي في
+  القفل (§28) وعند كلّ `_relayout`/زوم (تُعاد عند الحركة التالية).
+  الموضع والحجم عبر `_DocView` فيتبعان الزوم (§34).
+
+### حُذف من الشريط الجانبيّ (§5)
+
+زرّ «＋ Ajouter» وقائمته — استُبدلا بتلميح: «مرِّر الفأرة على يسار
+الجدول…». `_add_row(kind, zone=None)` باقٍ (يستعمله الاختبار وسيبنى عليه
+تحويل R3).
+
+### بلا رمادي (§29)
+
+`_style_field` يُنمّط `QComboBox` الآن كخليّة صفراء مسطّحة (خلفية
+`SURFACE`/`FIELD_EMPTY`، `border-radius:0`، سهمٌ خفيف، قائمة بيضاء) بدل
+النمط الرماديّ الافتراضيّ. السطر الحرّ بلا ComboBox أصلاً.
+
+### الاختبارات
+
+`ui2/hr/paie/tests` **133 OK** (‏116 + **17 R2**: ستّ خلايا بلا ComboBox ·
+منطقة/موضع الإدراج · تصنيف GAIN لكلّ منطقة · Zone A يرفع وعاء CNAS ·
+RETENUE موجبة تطرح · GAIN/RETENUE حصريّان · تنظيف السالب · N/BASE·TAUX بلا
+حساب · ＋ يظهر في الهامش ويختفي خارجه · － على الاختياريّ فقط · نقر ＋
+يُدرج في منطقة المؤشّر · اختفاء الأزرار في القفل · ComboBox غير رماديّ).
+حُدِّث `FinalizeLockC3`: تأكيدات `_add_btn` صارت على `_btn_plus`/`_btn_minus`.
+`ui2/tests` 42 · `ui2/paie/tests` 17 · `programme/payroll/tests` 49 ·
+`programme/tests` 6 · golden 14/14 · galleries `ALLOK`.
+
+### الملفات المتأثرة
+
+معدَّل: `ui2/hr/paie/bulletin_template.py` ·
+`ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.
+لقطات: `docs/baseline_screenshots/R2_free_zones_{100,200}.png` ·
+`R2_gutter_hover_100.png`.

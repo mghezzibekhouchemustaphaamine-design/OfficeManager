@@ -474,6 +474,166 @@ class BulletinTemplateZoneModelR1(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateFreeRowR2(unittest.TestCase):
+    """UX Redesign R2 — السطر الحرّ نوع الإضافة الافتراضيّ + قاعدة
+    GAIN/RETENUE + N/BASE·TAUX عرض فقط + بلا رمادي."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_r2_")
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        mod.confirm = lambda *_a, **_k: True
+        self.scr = BulletinTemplateScreen(conn=None)
+        w = self.scr._widgets
+        w["mois"].setText("OCTOBRE"); w["annee"].setText("2026")
+        [r for r in self.scr._rows if r.kind == "salaire"][0].set_val("gain",
+                                                                      "45000")
+        self.scr._recompute()
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        os.environ.pop(paths._LOCAL_STATE_ENV_OVERRIDE, None)
+
+    def _free(self, zone, **cells):
+        r = self.scr._insert_free_row(zone)
+        for c, v in cells.items():
+            r.set_val(c, v)
+        self.scr._recompute()
+        return r
+
+    # ---------- بنية السطر الحرّ ----------
+    def test_free_row_six_plain_cells_no_combobox(self):
+        from PySide6.QtWidgets import QComboBox
+        r = self.scr._insert_free_row("A")
+        self.assertEqual(set(r.widgets), {"code", "libelle", "nbase", "taux",
+                                          "gain", "retenue"})
+        self.assertFalse(any(isinstance(w, QComboBox)
+                             for w in r.widgets.values()))
+
+    def test_insert_free_row_zone_and_position(self):
+        rb = self._free("B", libelle="PRIME NON COT", gain="1000")
+        rows = [x.kind for x in self.scr._visible_body_rows()]
+        self.assertEqual(rb.zone, "B")
+        self.assertLess(rows.index("transport"), rows.index("free"))
+        self.assertLess(rows.index("free"), rows.index("irg"))
+
+    # ---------- التصنيف من المنطقة (§11) ----------
+    def test_free_gain_zone_a_cnas_irg(self):
+        r = self._free("A", gain="1000")
+        v = r.entry()["values"]
+        self.assertEqual((v["cotisable"], v["imposable"], v["est_retenue"]),
+                         ("نعم", "نعم", "لا"))
+
+    def test_free_gain_zone_b_irg_only(self):
+        v = self._free("B", gain="1000").entry()["values"]
+        self.assertEqual((v["cotisable"], v["imposable"]), ("لا", "نعم"))
+
+    def test_free_gain_zone_c_neither(self):
+        v = self._free("C", gain="1000").entry()["values"]
+        self.assertEqual((v["cotisable"], v["imposable"]), ("لا", "لا"))
+
+    def test_free_gain_zone_a_raises_cnas_base(self):
+        base0 = self.scr._calc_result.base_cnas
+        self._free("A", gain="5000")
+        self.assertGreater(self.scr._calc_result.base_cnas, base0)
+
+    # ---------- GAIN / RETENUE (§10) ----------
+    def test_free_retenue_positive_subtracts(self):
+        net0 = self.scr._calc_result.net_a_payer
+        v = self._free("C", retenue="2000").entry()["values"]
+        self.assertEqual(v["est_retenue"], "نعم")
+        self.assertLess(self.scr._calc_result.net_a_payer, net0)
+
+    def test_free_gain_and_retenue_mutually_exclusive(self):
+        r = self.scr._insert_free_row("A")
+        r.set_val("gain", "1000")
+        self.scr._on_row_edit(r.cell_key("gain"))
+        r.set_val("retenue", "300")
+        self.scr._on_row_edit(r.cell_key("retenue"))
+        self.assertEqual(r.val("gain"), "")            # الأحدث يفوز
+        self.assertEqual(r.val("retenue"), "300")
+
+    def test_free_retenue_rejects_negative_sign(self):
+        r = self.scr._insert_free_row("C")
+        r.set_val("retenue", "-500")
+        self.scr._on_row_edit(r.cell_key("retenue"))
+        self.assertEqual(r.val("retenue"), "500")
+
+    # ---------- N/BASE · TAUX عرض فقط (§9) ----------
+    def test_free_nbase_taux_do_not_autocalculate(self):
+        net0 = self.scr._calc_result.net_a_payer
+        r = self._free("A", nbase="10", taux="100")     # بلا gain/retenue
+        self.assertIsNone(r.entry()["values"]["montant"] or None)
+        self.assertEqual(self.scr._calc_result.net_a_payer, net0)
+
+    # ---------- بلا رمادي (§29) ----------
+    def test_choice_cell_styled_as_yellow_not_gray(self):
+        self.scr._add_row("prime")
+        r = [x for x in self.scr._rows if x.kind == "prime"][-1]
+        ss = r.widgets["soumis"].styleSheet()
+        self.assertIn("QComboBox", ss)
+        self.assertIn("border-radius:0", ss)          # مسطّح، لا حافة نافرة
+        self.assertTrue(theme.SURFACE.lstrip("#") in ss.replace("#", "")
+                        or theme.FIELD_EMPTY.lstrip("#") in ss.replace("#", ""))
+
+    # ---------- خريطة y → منطقة ----------
+    def test_zone_at_doc_y(self):
+        rows = self.scr._visible_body_rows()
+        ys = self.scr._y_shift(self.scr._view().scale)
+        i = {r.kind: k for k, r in enumerate(rows)}
+        y_above = ys + T.BODY_TOP + i["cnas"] * T.ROW_H - 0.1
+        y_below = ys + T.BODY_TOP + (i["irg"] + 1.5) * T.ROW_H
+        self.assertEqual(self.scr._zone_at_doc_y(y_above), "A")
+        self.assertEqual(self.scr._zone_at_doc_y(y_below), "C")
+
+    # ---------- أزرار ＋/－ على الهامش (§6/§7/§28/§33) ----------
+    def _canvas_pt(self, mm_x, row_boundary):
+        from PySide6.QtCore import QPoint
+        v = self.scr._view()
+        ys = self.scr._y_shift(v.scale)
+        return QPoint(int(v.x(mm_x)),
+                      int(v.y(ys + T.BODY_TOP + row_boundary * T.ROW_H)))
+
+    def test_gutter_plus_shows_in_left_margin(self):
+        self.scr._gutter_mouse_move(self._canvas_pt(-5.0, 1))
+        self.assertFalse(self.scr._btn_plus.isHidden())
+        self.assertIn(self.scr._plus_zone, ("A", "B", "C"))
+
+    def test_gutter_hidden_outside_margin(self):
+        self.scr._gutter_mouse_move(self._canvas_pt(-5.0, 1))
+        self.scr._gutter_mouse_move(self._canvas_pt(40.0, 1))   # وسط الجدول
+        self.assertTrue(self.scr._btn_plus.isHidden())
+        self.assertTrue(self.scr._btn_minus.isHidden())
+
+    def test_gutter_minus_only_on_optional_row(self):
+        rows = self.scr._visible_body_rows()
+        i_sal = [k for k, r in enumerate(rows) if r.kind == "salaire"][0]
+        self.scr._gutter_mouse_move(self._canvas_pt(-5.0, i_sal + 0.5))
+        self.assertTrue(self.scr._btn_minus.isHidden())       # ثابت — لا －
+        fr = self.scr._insert_free_row("A")
+        i_free = self.scr._visible_body_rows().index(fr)
+        self.scr._gutter_mouse_move(self._canvas_pt(-5.0, i_free + 0.5))
+        self.assertFalse(self.scr._btn_minus.isHidden())
+        self.assertIs(self.scr._minus_row, fr)
+
+    def test_gutter_plus_click_inserts_in_hovered_zone(self):
+        self.scr._gutter_mouse_move(self._canvas_pt(-5.0, 1))
+        self.scr._plus_zone = "C"
+        self.scr._btn_plus.click()
+        fr = [r for r in self.scr._rows if r.kind == "free"]
+        self.assertTrue(fr and fr[-1].zone == "C")
+
+    def test_gutter_hidden_when_locked(self):
+        self.scr._locked = True
+        self.scr._gutter_mouse_move(self._canvas_pt(-5.0, 1))
+        self.assertTrue(self.scr._btn_plus.isHidden())
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
 class BulletinTemplateValidation(unittest.TestCase):
     """Phase B — تحقّق مرن + ⚠️ غير مكتمل."""
 
@@ -1158,11 +1318,13 @@ class FinalizeLockC3(unittest.TestCase):
         for k, w in self.scr._widgets.items():
             if hasattr(w, "isReadOnly"):
                 self.assertTrue(w.isReadOnly(), k)
-        self.assertFalse(self.scr._add_btn.isEnabled())
+        # أزرار ＋/－ على الهامش مخفيّة في القفل (§28)
+        self.assertTrue(self.scr._btn_plus.isHidden())
+        self.assertTrue(self.scr._btn_minus.isHidden())
         # الزوم يبقى يعمل فوق العمل المقفول
         self.scr._set_zoom(45)
         self.assertEqual(self.scr.zoom, 45)
-        # + Ajouter / حذف صفّ محروسان
+        # إدراج / حذف صفّ محروسان
         n = len(self.scr._rows)
         self.scr._add_row("avance")
         self.assertEqual(len(self.scr._rows), n)
@@ -1174,7 +1336,8 @@ class FinalizeLockC3(unittest.TestCase):
         self.scr._on_unlock()
         self.assertFalse(self.scr._locked)
         self.assertFalse(self.scr._widgets["id_nom"].isReadOnly())
-        self.assertTrue(self.scr._add_btn.isEnabled())
+        self.scr._add_row("free")                         # البنية قابلة للتعديل
+        self.assertTrue(any(r.kind == "free" for r in self.scr._rows))
         self.assertEqual(self.scr._work_state, "final")   # ما زال 🔒 داخلياً
 
     def test_edit_after_unlock_save_does_not_touch_final_files(self):

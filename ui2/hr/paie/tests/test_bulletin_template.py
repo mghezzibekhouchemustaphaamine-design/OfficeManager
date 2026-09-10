@@ -325,5 +325,266 @@ class BulletinTemplatePin(unittest.TestCase):
         other.deleteLater()
 
 
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateValidation(unittest.TestCase):
+    """Phase B — تحقّق مرن + ⚠️ غير مكتمل."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_val_")
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        mod.confirm = lambda *_a, **_k: True
+        self.scr = BulletinTemplateScreen(conn=None)
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        os.environ.pop(paths._LOCAL_STATE_ENV_OVERRIDE, None)
+
+    # ---- أدوات ----
+    def _row(self, kind, occ=-1):
+        rs = [r for r in self.scr._rows if r.kind == kind]
+        return rs[occ] if rs else None
+
+    def _set(self, kind, **cells):
+        r = self._row(kind)
+        for c, val in cells.items():
+            r.set_val(c, val)
+        return r
+
+    def _add(self, kind, **cells):
+        self.scr._add_row(kind)
+        r = self._row(kind, -1)
+        for c, val in cells.items():
+            r.set_val(c, val)
+        self.scr._recompute()
+        return r
+
+    def _fill_final(self):
+        """يملأ كلّ ما يلزم كي يصير الكشف جاهزاً للإصدار النهائي."""
+        w = self.scr._widgets
+        for k, v in _HEADER.items():
+            w[k].setText(v)
+        w["emp_adresse"].setText("12 RUE DES FRERES, ALGER")
+        w["id_lieu_naissance"].setText("ALGER")
+        w["id_fonction"].setText("COMPTABLE")
+        w["id_date_naissance"].set_iso("1990-05-10")
+        w["id_date_embauche"].set_iso("2016-06-14")
+        self._set("salaire", gain="45000", nbase="30")
+        self._set("panier", gain="3000")
+        self._set("transport", gain="2500")
+        self._set("prime", libelle="PRIME DE RENDEMENT", gain="8000")
+        self.scr._recompute()
+
+    def _v(self):
+        return self.scr.validate()
+
+    # ================= الحقول الإلزامية =================
+    def test_all_required_fields_recognized(self):
+        v = self._v()
+        missing = {p.key for p in v.missing_required}
+        self.assertEqual(
+            missing,
+            {"emp_raison_sociale", "emp_adresse", "emp_cnas", "mois", "annee",
+             "id_nom", "id_prenom", "id_date_naissance", "id_lieu_naissance",
+             "id_date_embauche", "id_fonction"})
+
+    def test_fill_final_is_ready(self):
+        self._fill_final()
+        v = self._v()
+        self.assertTrue(v.ready_for_final, v.summary_lines())
+        self.assertFalse(v.is_incomplete)
+
+    def test_matricule_optional(self):
+        self._fill_final()
+        self.scr._widgets["id_matricule"].setText("")
+        self.assertTrue(self._v().ready_for_final)
+
+    def test_num_ss_optional(self):
+        self._fill_final()
+        self.scr._widgets["id_num_ss"].set_value("")
+        self.assertTrue(self._v().ready_for_final)
+
+    def test_situation_familiale_optional_and_not_mutated(self):
+        self._fill_final()
+        self.assertEqual(self.scr._widgets["id_situation_familiale"].text(), "")
+        self.assertTrue(self._v().ready_for_final)
+        self.scr.show_required_warnings()          # محاولة إصدار
+        self.assertEqual(self.scr._widgets["id_situation_familiale"].text(), "")
+
+    # ================= الأجر / السلة / النقل =================
+    def test_panier_zero_valid(self):
+        self._fill_final()
+        self._set("panier", gain="0")
+        self.scr._recompute()
+        self.assertTrue(self._v().ready_for_final)
+
+    def test_transport_zero_valid(self):
+        self._fill_final()
+        self._set("transport", gain="0")
+        self.scr._recompute()
+        self.assertTrue(self._v().ready_for_final)
+
+    def test_salaire_missing_invalid_or_zero_blocks_final(self):
+        self._fill_final()
+        for bad in ("", "0", "-5"):
+            self._set("salaire", gain=bad)
+            self.scr._recompute()
+            v = self._v()
+            self.assertFalse(v.ready_for_final, bad)
+            self.assertTrue(any(p.kind == "payroll" for p in v.payroll_errors))
+
+    # ================= اكتمال الـ Rubriques =================
+    def test_blank_default_prime_not_incomplete(self):
+        self._fill_final()
+        self._set("prime", libelle="", gain="", code="")
+        self.scr._recompute()
+        v = self._v()
+        self.assertEqual(v.incomplete_rows, [])
+        self.assertTrue(v.ready_for_final)
+
+    def test_partially_filled_prime_is_incomplete(self):
+        self._fill_final()
+        self._set("prime", libelle="PRIME EXCEPTIONNELLE", gain="")
+        self.scr._recompute()
+        v = self._v()
+        self.assertTrue(v.incomplete_rows)
+        self.assertFalse(v.ready_for_final)
+
+    def test_incomplete_absence(self):
+        self._fill_final()
+        self._add("absence", qty="0")
+        self.assertTrue(any(p.kind == "row" for p in self._v().incomplete_rows))
+
+    def test_incomplete_hs(self):
+        self._fill_final()
+        self._add("hs", qty="0")
+        self.assertFalse(self._v().ready_for_final)
+
+    def test_incomplete_retard(self):
+        self._fill_final()
+        self._add("retard", qty="0")
+        self.assertFalse(self._v().ready_for_final)
+
+    def test_incomplete_iep(self):
+        self._fill_final()
+        r = self._add("iep")
+        r.set_val("taux", "abc")                   # نسبة غير رقميّة ⇒ يدويّ + ناقص
+        self.scr._recompute()
+        self.assertTrue(r._iep_manual)
+        v = self._v()
+        self.assertTrue(any(p.kind == "row" for p in v.incomplete_rows))
+        self.assertFalse(v.ready_for_final)
+
+    def test_incomplete_avance(self):
+        self._fill_final()
+        self._add("avance", montant="5000")        # بلا libellé
+        self.assertFalse(self._v().ready_for_final)
+
+    def test_incomplete_autre(self):
+        self._fill_final()
+        self._add("autre", montant="1000")         # بلا libellé
+        self.assertFalse(self._v().ready_for_final)
+
+    def test_complete_adaptive_rows_are_ready(self):
+        self._fill_final()
+        self._add("hs", qty="10")
+        self._add("retard", qty="2")
+        self._add("avance", libelle="AVANCE", montant="10000")
+        self.scr._recompute()
+        self.assertTrue(self._v().ready_for_final, self._v().summary_lines())
+
+    # ================= التاريخ =================
+    def test_invalid_birth_start_relation(self):
+        self._fill_final()
+        w = self.scr._widgets
+        w["id_date_naissance"].set_iso("1990-05-10")
+        w["id_date_embauche"].set_iso("1985-01-01")   # قبل الميلاد
+        self.scr._recompute()
+        v = self._v()
+        self.assertTrue(any(p.key == "id_date_embauche"
+                            for p in v.invalid_fields))
+        self.assertFalse(v.ready_for_final)
+
+    # ================= السلوك البصريّ =================
+    def test_no_required_warnings_on_fresh_blank_screen(self):
+        self.assertFalse(self.scr._warnings_active)
+        self.assertFalse(self.scr._warns("id_nom"))
+        self.assertTrue(self.scr._incomplete_lbl.isHidden())
+
+    def test_show_required_warnings_marks_missing(self):
+        ready = self.scr.show_required_warnings()
+        self.assertFalse(ready)
+        self.assertTrue(self.scr._warnings_active)
+        self.assertTrue(self.scr._warns("emp_raison_sociale"))
+        self.assertFalse(self.scr._incomplete_lbl.isHidden())
+
+    def test_fixing_field_clears_its_warning_immediately(self):
+        self.scr.show_required_warnings()
+        self.assertTrue(self.scr._warns("id_nom"))
+        self.scr._widgets["id_nom"].setText("BENALI")   # textChanged → recompute
+        self.assertFalse(self.scr._warns("id_nom"))
+        self.assertTrue(self.scr._warns("emp_adresse"))  # البقيّة ما زالت
+
+    def test_all_fixed_clears_all_warnings(self):
+        self.scr.show_required_warnings()
+        self.assertTrue(self.scr._warnings_active)
+        self._fill_final()
+        self.assertFalse(self.scr._warnings_active)
+        self.assertTrue(self.scr._incomplete_lbl.isHidden())
+
+    def test_focus_goes_to_first_problem_in_nav_order(self):
+        self.scr.show_required_warnings()
+        first = self.scr._validation.first_key(self.scr._nav_order)
+        self.assertEqual(first, "emp_raison_sociale")
+
+    def test_validation_reports_all_problems_in_one_pass(self):
+        v = self._v()
+        self.assertTrue(v.missing_required)
+        self.assertTrue(v.payroll_errors)
+        self.assertGreaterEqual(len(v.problems), 10)
+
+    def test_generate_blocked_when_incomplete_emits_one_notice(self):
+        import ui2.alerts as alerts
+        calls = []
+        orig = alerts.warn
+        alerts.warn = lambda *a, **k: calls.append(a)
+        try:
+            self.scr._on_generate("docx")
+        finally:
+            alerts.warn = orig
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(self.scr._warnings_active)
+
+    # ================= المسوّدة / الاستعادة =================
+    def test_dynamic_rows_restore_keeps_validation_state(self):
+        self._fill_final()
+        self._set("prime", libelle="PRIME X", gain="")     # ناقصة
+        self._add("hs", qty="8")
+        self._row("hs", -1).set_val("coef", "100%")
+        self.scr._recompute()
+        st = self.scr.draft_state()
+        self.assertTrue(st["incomplete"])
+        other = BulletinTemplateScreen(conn=None)
+        other.apply_draft(st)
+        self.assertFalse(other._warnings_active)           # لا تحذير تلقائيّ (§14)
+        self.assertTrue(other._restored_incomplete)
+        v = other.validate()
+        self.assertTrue(v.incomplete_rows)
+        h = [r for r in other._rows if r.kind == "hs"]
+        self.assertTrue(h and h[-1].val("coef") == "100%")
+        other.deleteLater()
+
+    def test_clear_resets_warnings(self):
+        self.scr.show_required_warnings()
+        self.assertTrue(self.scr._warnings_active)
+        self.scr._on_clear()
+        self.assertFalse(self.scr._warnings_active)
+        self.assertFalse(self.scr._restored_incomplete)
+
+
 if __name__ == "__main__":
     unittest.main()

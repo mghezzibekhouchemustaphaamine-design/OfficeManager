@@ -38,6 +38,7 @@ from ui.hr.render import TemplateNotReady
 from ui2 import theme
 from ui2.alerts import confirm
 from ui2.form import DateField, GroupedNumberEdit, resolve_month
+from ui2.hr.paie.validation import validate_screen
 from ui2.screen import Screen
 
 logger = logging.getLogger(__name__)
@@ -629,6 +630,11 @@ class BulletinTemplateScreen(Screen):
         self._row_seq = 0
         self._next_rid = 1
 
+        # ---- تحقّق مرن (Phase B) ----
+        self._validation = None                # validation.ValidationResult
+        self._warnings_active = False          # عرض تحذيرات الإلزاميّ (§6)
+        self._restored_incomplete = False      # مسوّدة محفوظة كـ«غير مكتملة» (Phase C)
+
         self._calc_input = calc.PaieInput()
         self._calc_result = calc.compute(self._calc_input, self._load_cfg())
         self._bulletin_view = None                      # lignes.BulletinView (المحرّك)
@@ -797,6 +803,15 @@ class BulletinTemplateScreen(Screen):
         hint.setStyleSheet(f"color:{theme.TEXT_DIM};")
         lay.addWidget(hint)
 
+        # مؤشّر «⚠️ غير مكتمل» (§13) — يظهر فقط بعد محاولة الإصدار النهائي
+        # أو استعادة عمل محفوظ كـ«غير مكتمل». هادئ، بلا صندوق حوار.
+        self._incomplete_lbl = QLabel("")
+        self._incomplete_lbl.setWordWrap(True)
+        self._incomplete_lbl.setStyleSheet(
+            f"color:{theme.WARNING}; font-weight:700;")
+        self._incomplete_lbl.setVisible(False)
+        lay.addWidget(self._incomplete_lbl)
+
         bf = QFrame()
         bf.setFrameShape(QFrame.StyledPanel)
         bl = QVBoxLayout(bf)
@@ -829,6 +844,10 @@ class BulletinTemplateScreen(Screen):
         return w.text()
 
     def draft_state(self):
+        #  ``incomplete``: علمٌ استرشاديّ (Phase B) — التمييز بين مسوّدة
+        #  تلقائية وعملٍ محفوظ رسمياً كـ«غير مكتمل» يحتاج دورة حياة الحفظ
+        #  (Phase C)؛ نُخزّنه فقط، ولا نُفعّل به تحذيرات عند الاستعادة.
+        v = self._validation
         return {
             "header": {s.key: self._hdr_val(self._widgets[s.key])
                        for s in self._header_slots},
@@ -836,10 +855,15 @@ class BulletinTemplateScreen(Screen):
                       "cells": {c: r.val(c) for c in r.widgets},
                       "iep_manual": r._iep_manual}
                      for r in self._rows],
+            "incomplete": bool(v is not None and v.is_incomplete),
         }
 
     def apply_draft(self, data):
         data = data or {}
+        # Phase B: نُسجّل العلم فقط. الاستعادة التلقائية للمسوّدة أثناء
+        # الكتابة لا تُظهر تحذيرات الإلزاميّ (§14)؛ تفعيلها عند فتح عملٍ
+        # محفوظ رسمياً كـ«غير مكتمل» = Phase C عبر ``show_required_warnings``.
+        self._restored_incomplete = bool(data.get("incomplete"))
         self._suspend = set(self._widgets)
         try:
             for k, v in data.get("header", {}).items():
@@ -1194,11 +1218,24 @@ class BulletinTemplateScreen(Screen):
             return w.currentText().strip()
         return w.text().strip()
 
+    def _warns(self, key) -> bool:
+        """هل على هذا الحقل تحذير إلزاميّ نشِط الآن؟ (§7: حدّ خفيف، بلا
+        صندوق حوار؛ يزول فور تصحيح الحقل لأنّ ``_validation`` تُحدَّث)."""
+        return (self._warnings_active and self._validation is not None
+                and key in self._validation.keys())
+
     def _style_field(self, key):
         w = self._widgets[key]
+        warn = self._warns(key)
         if isinstance(w, (DateField, QComboBox)):
             if isinstance(w, DateField):
                 w.refresh_style()             # DateField/Combo يديران نمطهما
+                if warn and not w.error_text():
+                    # حدّ تحذير خفيف فوق نمط DateField — آخر قاعدة QLineEdit
+                    # تفوز في Qt، ويُعيده refresh_style في الاستدعاء التالي.
+                    w._edit.setStyleSheet(
+                        w._edit.styleSheet()
+                        + f"\nQLineEdit{{border:1px solid {theme.WARNING};}}")
             return
         filled = bool(self._field_value(key))
         if key in self._band_keys:
@@ -1213,6 +1250,8 @@ class BulletinTemplateScreen(Screen):
             bg = theme.SURFACE if filled else theme.FIELD_EMPTY
             fg = theme.TEXT
             bd = theme.HOVER if w.hasFocus() else "#ffffff"
+        if warn:
+            bd = theme.WARNING                # التحذير يعلو لون الحدّ العاديّ
         w.setStyleSheet(
             f"QLineEdit {{ background:{bg}; color:{fg}; border:1px solid {bd}; "
             f"border-radius:0; padding:0 1px; "
@@ -1225,6 +1264,136 @@ class BulletinTemplateScreen(Screen):
         pal.setColor(QPalette.Highlight, QColor(theme.PRIMARY))
         pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
         w.setPalette(pal)
+
+    # ===================== تحقّق مرن (Phase B) =====================
+    #  «العمل يمكن حفظه ناقصًا. الوثيقة النهائية لا تُصدر ناقصة.»
+    #  الحفظ لا يُمنَع أبداً بنقص المعلومات (§4)؛ التحقّق يُغذّي فقط
+    #  حالة «⚠️ غير مكتمل» وبوّابة الإصدار النهائي.
+
+    def _field_present(self, key) -> bool:
+        w = self._widgets.get(key)
+        if w is None:
+            return False
+        if isinstance(w, DateField):
+            return bool(w.iso())
+        if isinstance(w, GroupedNumberEdit):
+            return bool(re.sub(r"\D", "", w.value()))
+        if isinstance(w, QComboBox):
+            return bool(w.currentText().strip())
+        return bool(w.text().strip())
+
+    def _field_error(self, key) -> str:
+        """رسالة عدم الصلاحية الشكليّة (DateField فقط) — وإلا ``""``."""
+        w = self._widgets.get(key)
+        if isinstance(w, DateField):
+            return w.error_text() or ""
+        return ""
+
+    _REQUIRE_PRESENT = {"iep"}          # موجودة → مطلوبة (§10)
+
+    def _row_status(self, r):
+        """‏``(started, complete, label)`` لسطرٍ — فحص المدخلات اللازمة
+        للحساب فقط، بلا تكرار منطق المحرّك (§10). ``started`` يعني أنّ
+        المستخدم بدأ تعبئة السطر فيصير نقصُه مانعاً للإصدار النهائي."""
+        k = r.kind
+        #  «بدأ» = أيّ خلية قابلة للتحرير (غير خيار — للخيارات قيَم افتراضية)
+        #  فيها قيمة؛ أو نوعٌ يُطلَب بمجرّد وجوده (IEP).
+        edit_cells = [n for n, c in r._cellspec.items() if c["kind"] != "choice"]
+        started = ((k in self._REQUIRE_PRESENT)
+                   or any(r.val(c) for c in edit_cells))
+        if k == "salaire":
+            return True, _num(r.val("gain")) > 0, "الأجر القاعديّ"
+        if k in ("panier", "transport", "cnas", "irg"):
+            return False, True, ""                     # 0 صالح · صفوف نظام
+        if k == "prime":
+            return started, _num(r.val("gain")) > 0, "Prime / تعويض"
+        if k == "iep":
+            return started, _num(r.val("taux")) > 0, "نسبة الأقدمية (IEP)"
+        if k == "hs":
+            ok = _num(r.val("qty")) > 0 and r.val("coef") in ("50%", "100%")
+            return started, ok, "ساعات العمل الإضافيّ"
+        if k == "absence":
+            ok = (_num(r.val("qty")) > 0
+                  and r.val("mode") in ("Absence (jours)", "Absence (heures)"))
+            return started, ok, "كمّية الغياب"
+        if k == "retard":
+            return started, _num(r.val("qty")) > 0, "ساعات التأخّر"
+        if k == "avance":
+            ok = _num(r.val("montant")) > 0 and bool(r.val("libelle"))
+            return started, ok, "السلفة / الاقتطاع"
+        if k == "autre":
+            need_class = r.val("sens") == "Gain"
+            ok = (_num(r.val("montant")) > 0 and bool(r.val("libelle"))
+                  and bool(r.val("sens"))
+                  and (not need_class or bool(r.val("classe"))))
+            return started, ok, "سطر «Autre»"
+        return started, True, ""
+
+    def _row_problem_key(self, r) -> str:
+        if r is None:
+            return ""
+        pk = _ROW_SPECS[r.kind].get("primary")
+        if pk and pk in r.widgets:
+            return r.cell_key(pk)
+        for c in r.widgets:
+            return r.cell_key(c)
+        return ""
+
+    def validate(self):
+        """‏``ValidationResult`` محدَّثة للحالة الراهنة (تُخزَّن في
+        ``self._validation``)."""
+        self._validation = validate_screen(self)
+        return self._validation
+
+    def show_required_warnings(self):
+        """يُفعّل عرض تحذيرات الحقول الإلزامية (§6): يُستدعى فقط عند محاولة
+        الإصدار النهائي أو استعادة عمل محفوظ كـ«غير مكتمل». يُبرز كلّ
+        المشاكل دفعةً واحدة، ويركّز أوّلها بترتيب التنقّل، بلا صندوق حوار.
+        يُعيد ``True`` إذا كان الكشف جاهزاً للإصدار النهائي."""
+        self._recompute()
+        self._warnings_active = True
+        self._refresh_warning_styles()
+        self._update_incomplete_indicator()
+        v = self._validation
+        if v is not None and v.problems:
+            k = v.first_key(self._nav_order)
+            w = self._widgets.get(k) if k else None
+            if w is not None:
+                w.setFocus()
+            return False
+        return True
+
+    def clear_required_warnings(self):
+        self._warnings_active = False
+        self._refresh_warning_styles()
+        self._update_incomplete_indicator()
+
+    def _refresh_warning_styles(self):
+        """يعيد تنميط كلّ الحقول من ``_validation`` الحالية. إذا صُحّحت كلّ
+        النواقص، تنطفئ التحذيرات كلّها فوراً (§7)."""
+        if (self._warnings_active and self._validation is not None
+                and not self._validation.problems):
+            self._warnings_active = False
+        for k in list(self._widgets):
+            self._style_field(k)
+        if hasattr(self, "_canvas"):
+            self._canvas.update()
+
+    def _update_incomplete_indicator(self):
+        lbl = getattr(self, "_incomplete_lbl", None)
+        if lbl is None:
+            return
+        v = self._validation
+        show = bool(self._warnings_active and v is not None and v.is_incomplete)
+        if show:
+            lbl.setText("⚠️ كشف غير مكتمل — %d نقطة تحتاج إكمالاً قبل "
+                        "الإصدار النهائي." % len(v.problems))
+        lbl.setVisible(show)
+
+    def incomplete_badge(self) -> str:
+        """للاستهلاك الخارجيّ لاحقاً (Phase C / مستكشف الملفّات): «⚠️» أو «»."""
+        v = self._validation
+        return "⚠️" if (v is not None and v.is_incomplete) else ""
 
     # ----------------------- البيانات والحساب -----------------------
     def _w(self, key):
@@ -1500,6 +1669,16 @@ class BulletinTemplateScreen(Screen):
             for r in self._rows:
                 r._amount = None
             self._calc_input = self._build_input()
+        # تحقّق مرن (Phase B): يُعاد تقييمه بعد كلّ حساب — فتنطفئ تحذيرات
+        # الحقول المصحَّحة فوراً دون انتظار حفظ (§7).
+        try:
+            self._validation = validate_screen(self)
+        except Exception:                                    # noqa: BLE001
+            logger.warning("تحقّق الكشف فشل", exc_info=True)
+            self._validation = None
+        if self._warnings_active:
+            self._refresh_warning_styles()
+        self._update_incomplete_indicator()
         if hasattr(self, "_canvas"):
             self._canvas.update()
 
@@ -1527,10 +1706,14 @@ class BulletinTemplateScreen(Screen):
 
     def _on_generate(self, kind):
         from ui2.alerts import warn
-        if not self._employee_fullname():
-            warn(self, self.TITLE, ["أدخل اسم الأجير أولاً."])
-            return
         self._recompute()
+        # بوّابة الإصدار النهائي (Phase B §8): تحقّق واحد لكامل الشاشة —
+        # يُبرز كلّ المشاكل، ويركّز أوّلها، وينبّه تنبيهاً عامّاً واحداً.
+        # (دورة حياة Finalize/Lock الكاملة = Phase C.)
+        if not self.show_required_warnings():
+            warn(self, self.TITLE,
+                 ["توجد معلومات ناقصة قبل إصدار الكشف النهائي."])
+            return
         tpl = T.get_renderer(self._template_key)
         ext = ".docx" if kind == "docx" else ".pdf"
         path = self._resolve_out_path(ext)
@@ -1618,6 +1801,8 @@ class BulletinTemplateScreen(Screen):
             self._prev_text.clear()
         finally:
             self._suspend = set()
+        self._warnings_active = False          # مسح ⇒ لا تحذيرات إلزاميّ
+        self._restored_incomplete = False
         self._rebuild_nav()
         for k in list(self._widgets):
             self._style_field(k)

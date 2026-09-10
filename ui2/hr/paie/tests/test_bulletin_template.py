@@ -15,6 +15,7 @@ import unittest
 from datetime import date
 
 try:
+    from PySide6.QtCore import QPoint
     from PySide6.QtGui import QImage
     from PySide6.QtWidgets import QApplication
     _HAS_QT = True
@@ -610,15 +611,21 @@ class BulletinTemplateFreeRowR2(unittest.TestCase):
         self.assertTrue(self.scr._btn_minus.isHidden())
 
     def test_gutter_minus_only_on_optional_row(self):
+        #  §E.5: － في الهامش الأيمن (خارج الجدول)، على الصفوف الاختيارية فقط.
+        right = T.CONTENT_W + 5.0
         rows = self.scr._visible_body_rows()
         i_sal = [k for k, r in enumerate(rows) if r.kind == "salaire"][0]
-        self.scr._gutter_mouse_move(self._canvas_pt(-5.0, i_sal + 0.5))
+        self.scr._gutter_mouse_move(self._canvas_pt(right, i_sal + 0.5))
         self.assertTrue(self.scr._btn_minus.isHidden())       # ثابت — لا －
         fr = self.scr._insert_free_row("A")
         i_free = self.scr._visible_body_rows().index(fr)
-        self.scr._gutter_mouse_move(self._canvas_pt(-5.0, i_free + 0.5))
+        self.scr._gutter_mouse_move(self._canvas_pt(right, i_free + 0.5))
         self.assertFalse(self.scr._btn_minus.isHidden())
         self.assertIs(self.scr._minus_row, fr)
+        # ＋ ما زال في الهامش الأيسر، منفصلاً
+        self.scr._gutter_mouse_move(self._canvas_pt(-5.0, i_free))
+        self.assertFalse(self.scr._btn_plus.isHidden())
+        self.assertTrue(self.scr._btn_minus.isHidden())
 
     def test_gutter_plus_click_inserts_in_hovered_zone(self):
         self.scr._gutter_mouse_move(self._canvas_pt(-5.0, 1))
@@ -876,6 +883,180 @@ class BulletinTemplateR4(unittest.TestCase):
         pin = self.scr._build_input()
         self.assertTrue(any(p.libelle == "PRIME SPECIALE" and p.montant == 7000
                             for p in pin.primes))
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplatePhaseE(unittest.TestCase):
+    """Phase E — توحيد بصريّ/هندسيّ: زوم · لا رمادي · خطوط · ＋/－ · NET ·
+    اتّساق الشاشة مع المُصيِّر."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_e_")
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        mod.confirm = lambda *_a, **_k: True
+        self.scr = BulletinTemplateScreen(conn=None)
+        self.scr._scroll.viewport().resize(950, 1250)
+        w = self.scr._widgets
+        w["mois"].setText("OCTOBRE"); w["annee"].setText("2026")
+        [r for r in self.scr._rows if r.kind == "salaire"][0].set_val("gain",
+                                                                      "45000")
+        self.scr._recompute()
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        os.environ.pop(paths._LOCAL_STATE_ENV_OVERRIDE, None)
+
+    def _conv(self, zone, libelle, **cells):
+        r = self.scr._insert_free_row(zone)
+        r.widgets["libelle"].setText(libelle)
+        r.widgets["libelle"].committed.emit(libelle)
+        nr = [x for x in self.scr._rows if x.rid == r.rid][0]
+        for c, v in cells.items():
+            nr.set_val(c, v)
+        self.scr._recompute()
+        return nr
+
+    # ---------- §2 زوم: لا شيء يخرج من الجدول ----------
+    def test_no_widget_escapes_table_at_any_zoom(self):
+        self._conv("A", "HS", qty="10", coef="100%")
+        self._conv("A", "Absence", qty="2", mode="Absence (jours)")
+        self._conv("A", "Prime x", gain="6000")
+        self._conv("C", "Avance", montant="5000")
+        for zoom in (45, 100, 180, 200, 260):
+            self.scr._set_zoom(zoom)
+            self.scr._relayout()
+            v = self.scr._view()
+            ys = self.scr._y_shift(v.scale)
+            ty0 = v.y(ys + T.BODY_TOP)
+            ty1 = v.y(ys + T.BODY_TOP + self.scr._n_body_drawn() * T.ROW_H)
+            for row in self.scr._visible_body_rows():
+                for cell, wdg in row.widgets.items():
+                    g = wdg.geometry()
+                    f0, f1, _ = T._colf(row.column(cell))
+                    cx0 = v.x(f0 * T.CONTENT_W)
+                    cx1 = v.x(f1 * T.CONTENT_W)
+                    self.assertGreaterEqual(g.left(), cx0 - 3,
+                                            f"{zoom}% {row.kind}.{cell} x")
+                    self.assertLessEqual(g.right(), cx1 + 3,
+                                         f"{zoom}% {row.kind}.{cell} x")
+                    self.assertGreaterEqual(g.top(), ty0 - 3,
+                                            f"{zoom}% {row.kind}.{cell} y")
+                    self.assertLessEqual(g.bottom(), ty1 + 3,
+                                         f"{zoom}% {row.kind}.{cell} y")
+
+    # ---------- §3 خلايا الجدول صفراء منذ الفتح ----------
+    def test_table_cells_yellow_from_the_start(self):
+        sr = [r for r in self.scr._rows if r.kind == "salaire"][0]
+        ss = self.scr._widgets[sr.cell_key("gain")].styleSheet()
+        self.assertIn(theme.FIELD_EMPTY.lstrip("#"), ss.replace("#", ""))
+        fr = self.scr._insert_free_row("A")            # سطر جديد
+        for cell in ("code", "libelle", "nbase", "taux", "gain", "retenue"):
+            ss = self.scr._widgets[fr.cell_key(cell)].styleSheet()
+            self.assertIn(theme.FIELD_EMPTY.lstrip("#"),
+                          ss.replace("#", ""), cell)
+
+    def test_table_cell_bg_is_always_yellow_never_white(self):
+        #  §3: خلفية خلية الجدول FIELD_EMPTY في كلّ الحالات (فارغة/مملوءة)
+        #  — لا SURFACE الأبيض كما في الحقول العلوية.
+        fr = self.scr._insert_free_row("A")
+        fr.set_val("gain", "1234")
+        self.scr._style_field(fr.cell_key("gain"))
+        ss = self.scr._widgets[fr.cell_key("gain")].styleSheet()
+        self.assertIn("background:" + theme.FIELD_EMPTY, ss)
+        self.assertNotIn("background:" + theme.SURFACE, ss)
+
+    # ---------- §4 نظام الخطوط ----------
+    def test_typography_tokens_defined(self):
+        for k in ("header_company", "header_title", "block_labels",
+                  "table_header", "table_body_text", "editable_cell",
+                  "computed_value", "total_row", "net_row"):
+            self.assertIn(k, mod._TXT)
+
+    # ---------- §5 ＋ يسار · － يمين ----------
+    def test_plus_left_minus_right(self):
+        fr = self.scr._insert_free_row("A")
+        v = self.scr._view()
+        ys = self.scr._y_shift(v.scale)
+        i = self.scr._visible_body_rows().index(fr)
+        yb = int(v.y(ys + T.BODY_TOP + (i + 0.5) * T.ROW_H))
+        # ＋ في الهامش الأيسر
+        self.scr._gutter_mouse_move(QPoint(int(v.x(-5.0)), yb))
+        self.assertFalse(self.scr._btn_plus.isHidden())
+        self.assertLess(self.scr._btn_plus.geometry().right(), int(v.x(0)))
+        # － في الهامش الأيمن
+        self.scr._gutter_mouse_move(QPoint(int(v.x(T.CONTENT_W + 5)), yb))
+        self.assertFalse(self.scr._btn_minus.isHidden())
+        self.assertGreater(self.scr._btn_minus.geometry().left(),
+                           int(v.x(T.CONTENT_W)))
+
+    # ---------- §6 NET شريط أسود ----------
+    def test_net_row_is_black_band(self):
+        from PySide6.QtGui import QImage
+        self.scr._set_zoom(100)
+        v = self.scr._view()
+        w = int(v.x0 + v.sheet_w + 60)
+        h = int(v.y0 + v.sheet_h + 60)
+        self.scr._canvas.resize(w, h)
+        self.scr._relayout()
+        img = QImage(w, h, QImage.Format_ARGB32)
+        img.fill(0xFFFFFFFF)
+        self.scr._canvas.render(img)
+        ys = self.scr._y_shift(v.scale)
+        y_net = int(v.y(ys + self.scr._net_y_mm() + T.ROW_H / 2))
+        y_tot = int(v.y(ys + self.scr._total_y_mm() + T.ROW_H / 2))
+
+        def band_mean(y):
+            xs = range(int(v.x(2)), int(v.x(T.CONTENT_W * 0.45)), 3)
+            vals = [sum((img.pixelColor(x, y).red(),
+                         img.pixelColor(x, y).green(),
+                         img.pixelColor(x, y).blue())) / 3 for x in xs]
+            return sum(vals) / len(vals)
+
+        self.assertLess(band_mean(y_net), 60)      # NET شريط أسود
+        self.assertGreater(band_mean(y_tot), 200)  # TOTAL صفٌّ فاتح
+
+    # ---------- §8 اتّساق ترتيب المُصيِّر مع مناطق الشاشة ----------
+    def test_renderer_row_order_follows_screen_zones(self):
+        from programme.payroll import lignes
+        from programme.payroll.config_loader import load_params
+        import ui.hr.paie.template_simple as TT
+        cfg = load_params(date(2026, 10, 1))
+        entries = [
+            {"type": "salaire_base", "values": {"montant": "45000"}},
+            {"type": "iep", "values": {"taux": "0.05"}},                  # Z1
+            {"type": "libre", "values": {"libelle": "AVANCE", "montant": "3000",
+                                         "est_retenue": "نعم",
+                                         "cotisable": "لا", "imposable": "لا"}},  # Z4
+        ]
+        view = lignes.compute_bulletin(entries, cfg)
+        rows = TT._bulletin_rows_from_view(view, {}, jours=30)
+        libs = [r["libelle"] for r in rows]
+        self.assertLess(libs.index("IND. EXPÉRIENCE PROF."),
+                        libs.index("RETENUE SÉCU. SOCIALE"))
+        self.assertLess(libs.index("RETENUE SÉCU. SOCIALE"), libs.index("PANIER"))
+        self.assertLess(libs.index("PANIER"), libs.index("RETENUE IRG"))
+        self.assertLess(libs.index("RETENUE IRG"), libs.index("AVANCE"))
+
+    def test_renderer_pads_to_min_rows(self):
+        import ui.hr.paie.template_simple as TT
+        self.assertGreaterEqual(len(TT._pad_rows([{"code": "x"}])),
+                                TT._RENDER_MIN_BODY_ROWS)
+
+    # ---------- §12 قفل نظيف ----------
+    def test_locked_combo_not_gray(self):
+        from PySide6.QtWidgets import QComboBox
+        self.scr._add_row("hs")
+        self.scr._set_locked(True)
+        for w in self.scr._widgets.values():
+            if isinstance(w, QComboBox):
+                self.assertTrue(w.isEnabled())
+                self.assertIn(theme.FIELD_EMPTY.lstrip("#"),
+                              w.styleSheet().replace("#", ""))
 
 
 @unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")

@@ -85,6 +85,32 @@ class _DocView:
         f.setBold(bool(bold))
         return f
 
+    def tfont(self, token):
+        """خطّ من نظام الخطوط الموحَّد (:data:`_TXT`)."""
+        mm_h, bold = _TXT[token]
+        return self.font(mm_h, bold)
+
+
+#  ===================== نظام الخطوط الموحَّد (Phase E §4) =====================
+#  مصدرٌ واحد لأحجام خطوط الكشف: (ارتفاع الخط بالمليمتر، Bold). يُحوَّل عبر
+#  ``_DocView.font`` إلى نقاطٍ تتبع الزوم، فيبقى الرسمُ والحقولُ والقيَمُ
+#  المحسوبةُ وTOTAL/NET على نفس العائلة والمقاييس. أيّ سطرٍ يُضاف لاحقاً
+#  يمرّ بنفس الجدول.
+_TXT = {
+    "header_company":  (5.0, True),    # A — اسم/عنوان المكتب
+    "header_title":    (5.0, True),    # B — شريط BULLETIN DE PAIE
+    "block_labels":    (3.2, True),    # C — تسميات صناديق الهوية
+    "table_header":    (3.0, True),    # D — ترويسة أعمدة الجدول
+    "table_body_text": (3.2, False),   # E — نصّ ثابت في الصفوف (code/libellé)
+    "editable_cell":   (3.2, False),   # F — حقول الإدخال داخل الجدول
+    "computed_value":  (3.2, False),   # G — القيَم المحسوبة
+    "total_row":       (3.4, True),    # H — سطر TOTAL
+    "net_row":         (4.4, True),    # I — سطر NET À PAYER
+}
+
+#  مفتاح خليّة جدول ديناميكيّ: ``r{rid}_{cell}``.
+_ROW_CELL_KEY = re.compile(r"^r\d+_[a-z]+$")
+
 
 # ======================= نموذج صفوف جدول الكشف (Phase A2) =======================
 #  abstraction صغير خاصّ بجدول هذا الكشف: يفصل «ما الصفوف؟» عن «كيف تُرسم؟».
@@ -269,9 +295,12 @@ class _SmartLibelle(QLineEdit):
 
     def resizeEvent(self, e):                                  # noqa: N802
         super().resizeEvent(e)
-        s = max(10, min(self.height() - 2, 16))
+        #  السهم يتبع ارتفاع الخليّة (يتناسب مع الزوم) — عرضه ~70% من
+        #  الارتفاع، محدودٌ حتى لا يبتلع نصف الخليّة الضيّقة.
+        s = max(9, min(int(self.height() * 0.72), int(self.width() * 0.5)))
         self._arrow.setFixedSize(s, self.height())
         self._arrow.move(self.width() - s, 0)
+        self.setTextMargins(0, 0, s, 0)          # النصّ لا يمرّ تحت السهم
 
 def _prime_entry(r):
     cot, imp = _soumis_class(r.val("soumis") or "CNAS + IRG")
@@ -505,6 +534,10 @@ class _Row:
                 finally:
                     screen._suspend.discard(k)
             w.show()
+        #  Phase E §3: كلّ خلايا الجدول تبدأ بنمطها الصفراء النظيف — لا
+        #  حالة رماديّة ثمّ صفراء عند التركيز.
+        for name in self.widgets:
+            screen._style_field(self.cell_key(name))
 
     def cell_key(self, cell: str) -> str:
         return f"r{self.rid}_{cell}"
@@ -680,14 +713,14 @@ class _SheetCanvas(QWidget):
             p.drawText(QPoint(int(X(mm_x)), int(Y(baseline_mm))), s)
 
         # رأس المكتب — تسمية N° ADHÉRENT ثابتة (الرقم حقلٌ حيّ)
-        base_text(0, T.ADHERENT_BASELINE, "N° ADHÉRENT", font(3.4, True))
+        base_text(0, T.ADHERENT_BASELINE, "N° ADHÉRENT", v.tfont("block_labels"))
 
         # شريط العنوان الأسود
         p.fillRect(int(X(0)), int(Y(T.BAND_TITLE_Y)),
                    int(X(T.CONTENT_W) - X(0)), int(Y(T.BAND_TITLE_H) - Y(0)),
                    QColor(theme.BAND_BLACK))
-        base_text(3, T.BAND_BASELINE, "BULLETIN DE PAIE", font(5.0, True),
-                  QColor("white"))
+        base_text(3, T.BAND_BASELINE, "BULLETIN DE PAIE",
+                  v.tfont("header_title"), QColor("white"))
 
         # صندوق الهوية + تسمياته (القيَم حقول حيّة) — إيقاع عمودي مُعاير
         p.setPen(ink)
@@ -696,9 +729,9 @@ class _SheetCanvas(QWidget):
         for _k, lbl, xl, xv, wv, row, _ml, kind in T.IDENT_FIELDS:
             if lbl:
                 base_text(xl, sc._ident_row_y(row, scale), f"{lbl} :",
-                          font(3.2, True))
+                          v.tfont("block_labels"))
         a_x, _lieu_x = sc._row1_layout(scale)
-        base_text(a_x, sc._ident_row_y(1, scale), "à", font(3.2, True))
+        base_text(a_x, sc._ident_row_y(1, scale), "à", v.tfont("block_labels"))
 
         # كتلة الجدول مُزاحة لأسفل بمقدار توسيع منطقة الهوية
         ys = sc._y_shift(scale)
@@ -725,7 +758,7 @@ class _SheetCanvas(QWidget):
         for _key, f0, _f1, _al, title in T.COLS:
             p.setPen(ink)
             p.drawLine(int(col_x(f0)), int(hy0), int(col_x(f0)), int(Yt(bottom_mm)))
-            p.setFont(font(3.0, True))
+            p.setFont(v.tfont("table_header"))
             fm = QFontMetricsF(p.font())
             p.drawText(QPoint(int(col_x(f0) + 2.5 * scale),
                               int((hy0 + hy1) / 2 + fm.ascent() / 2 - fm.descent() / 2)),
@@ -751,9 +784,11 @@ class _SheetCanvas(QWidget):
                 px = col_x(f1) - 2.5 * scale
             else:
                 px = col_x(f0) + 2.5 * scale
+            tok = "computed_value" if color is cc else "table_body_text"
+            f = v.tfont(tok)
+            f.setBold(bool(bold) or f.bold())
             self._cell(p, px, Yt(row_mid(i)),
-                       s, {"c": "center", "e": "e", "w": "w"}[anchor],
-                       font(3.2, bold), color)
+                       s, {"c": "center", "e": "e", "w": "w"}[anchor], f, color)
 
         computed = res is not None and getattr(sc, "_computed", False)
         for i, row in enumerate(rows):
@@ -780,6 +815,10 @@ class _SheetCanvas(QWidget):
 
         # ---- TOTAL / NET À PAYER: بنيتهما تُرسَم **دائماً** (§3/§30) ----
         #  القيَم وحدها تبقى فارغة إذا تعذّر الحساب — «غير محسوبة» ≠ «صفر».
+        #  TOTAL صفٌّ هادئ من الجدول؛ NET شريطٌ أسود بنصٍّ أبيض — المرساة
+        #  البصريّة النهائيّة، بنفس روح شريط BULLETIN DE PAIE (§E.6/§E.7).
+        tf = v.tfont("total_row")
+        nf = v.tfont("net_row")
         ty0 = Yt(total_mm)
         p.setPen(ink)
         p.drawLine(int(X(0)), int(ty0), int(X(T.CONTENT_W)), int(ty0))
@@ -787,25 +826,27 @@ class _SheetCanvas(QWidget):
                    int(X(T.CONTENT_W)), int(Yt(net_mm)))
         mid = Yt(total_mm + T.ROW_H / 2)
         self._cell(p, col_x(T._colf("taux")[1]) - 3 * scale, mid, "TOTAL",
-                   "e", font(3.4, True), ink)
+                   "e", tf, ink)
         if computed:
             self._cell(p, col_x(T._colf("gain")[1]) - 2.5 * scale, mid,
-                       fmt_montant(res.total_gain), "e", font(3.4, True), cc)
+                       fmt_montant(res.total_gain), "e", tf, cc)
             self._cell(p, col_x(T._colf("retenue")[1]) - 2.5 * scale, mid,
-                       fmt_montant(res.total_retenue), "e", font(3.4, True), cc)
+                       fmt_montant(res.total_retenue), "e", tf, cc)
 
-        #  NET: صفٌّ من نفس الجدول — أثقل قليلاً (خطّ علويّ + Bold)، بلا
-        #  شريط أسود ولا بطاقة منفصلة (§30/§31). ``Yt(net_mm)`` هو خطّه
-        #  العلويّ (مرسوم أعلاه)؛ هنا نُغلق أسفله.
+        #  NET — شريط أسود يملأ صفّه داخل الشبكة المتّصلة (لا يطفو، ارتفاعه
+        #  = ROW_H بالضبط). النصّ والقيمة بيضاوان.
+        p.fillRect(int(X(0)), int(Yt(net_mm)),
+                   int(X(T.CONTENT_W) - X(0)), int(Yt(table_bot) - Yt(net_mm)),
+                   QColor(theme.BAND_BLACK))
         p.setPen(ink)
         p.drawLine(int(X(0)), int(Yt(table_bot)),
                    int(X(T.CONTENT_W)), int(Yt(table_bot)))
         midn = Yt(net_mm + T.ROW_H / 2)
         self._cell(p, col_x(T._colf("taux")[1]) - 3 * scale, midn,
-                   "NET À PAYER", "e", font(3.6, True), ink)
+                   "NET À PAYER", "e", nf, QColor("white"))
         if computed:
             self._cell(p, col_x(T._colf("retenue")[1]) - 2.5 * scale, midn,
-                       fmt_montant(res.net_a_payer), "e", font(4.0, True), ink)
+                       fmt_montant(res.net_a_payer), "e", nf, QColor("white"))
 
     @staticmethod
     def _cell(p: QPainter, px, py, s, anchor, f: QFont, color: QColor):
@@ -1077,13 +1118,18 @@ class BulletinTemplateScreen(Screen):
         self._btn_minus.clicked.connect(
             lambda: self._minus_row is not None
             and self._remove_row(self._minus_row))
-        for b in (self._btn_plus, self._btn_minus):
-            b.setStyleSheet(
-                f"QToolButton {{ background:{theme.SURFACE}; "
-                f"border:1px solid {theme.BORDER}; border-radius:8px; "
-                f"color:{theme.TEXT}; font-weight:700; padding:0; }}"
-                f"QToolButton:hover {{ border-color:{theme.PRIMARY}; }}")
-            b.hide()
+        self._btn_plus.setStyleSheet(
+            f"QToolButton {{ background:{theme.SURFACE}; "
+            f"border:1px solid {theme.PRIMARY}; border-radius:9px; "
+            f"color:{theme.PRIMARY}; font-weight:700; padding:0; }}"
+            f"QToolButton:hover {{ background:{theme.PRIMARY}; color:#fff; }}")
+        self._btn_minus.setStyleSheet(
+            f"QToolButton {{ background:{theme.SURFACE}; "
+            f"border:1px solid {theme.DANGER}; border-radius:9px; "
+            f"color:{theme.DANGER}; font-weight:700; padding:0; }}"
+            f"QToolButton:hover {{ background:{theme.DANGER}; color:#fff; }}")
+        self._btn_plus.hide()
+        self._btn_minus.hide()
         self._canvas.setMouseTracking(True)
 
     def _hide_gutter_controls(self):
@@ -1093,8 +1139,10 @@ class BulletinTemplateScreen(Screen):
                 b.hide()
 
     def _gutter_mouse_move(self, canvas_pos):
-        """يُستدعى من ``eventFilter`` عند حركة الفأرة فوق اللوحة. يُظهر
-        ＋/－ إن كان المؤشّر في هامش الجدول الأيسر ضمن نطاق الجسم."""
+        """يُستدعى من ``eventFilter`` عند حركة الفأرة فوق اللوحة (§E.5):
+        ＋ في الهامش **الأيسر** عند حدّ الصفّ (إدراج سطر في تلك المنطقة)،
+        － في الهامش **الأيمن** مقابل الصفّ الاختياريّ (حذفه). لا يجتمعان،
+        ولا يغطّيان محتوى الجدول، ويتبعان الزوم عبر ``_DocView``."""
         if self._locked or not hasattr(self, "_btn_plus"):
             return
         v = self._view()
@@ -1102,32 +1150,37 @@ class BulletinTemplateScreen(Screen):
         mm_x = (canvas_pos.x() - v.x0) / v.scale - T.MARGIN_L
         mm_y = (canvas_pos.y() - v.y0) / v.scale
         top = T.BODY_TOP + ys
-        bot = top + self._n_body_drawn() * T.ROW_H
-        #  الهامش: من ‎-10mm‎ إلى ‎+1mm‎ يسار حافة الجدول
-        if not (-11.0 <= mm_x <= 1.5 and top - 1.0 <= mm_y <= bot + 1.0):
+        n = self._n_body_drawn()
+        bot = top + n * T.ROW_H
+        if not (top - 2.0 <= mm_y <= bot + 2.0):
             self._hide_gutter_controls()
             return
-        size = max(14, min(26, int(v.px(4.6))))
-        bx = int(v.x(-5.0) - size / 2)
-        #  ＋ عند حدّ الصفّ الأقرب للمؤشّر
-        b_idx = int(round((mm_y - top) / T.ROW_H))
-        b_idx = max(0, min(self._n_body_drawn(), b_idx))
-        self._plus_zone = self._zone_at_doc_y(
-            top + (b_idx + 0.5) * T.ROW_H)
-        py = int(v.y(top + b_idx * T.ROW_H) - size / 2)
-        self._btn_plus.setFixedSize(size, size)
-        self._btn_plus.move(bx, py)
-        self._btn_plus.raise_()
-        self._btn_plus.show()
-        #  － إن كان المؤشّر فوق صفّ اختياريّ
+        size = max(13, min(24, int(v.px(4.4))))
         rows = self._visible_body_rows()
         r_idx = int((mm_y - top) // T.ROW_H)
+
+        #  ＋ — الهامش الأيسر فقط (من ‎-13mm‎ إلى ‎+2mm‎)، عند أقرب حدّ صفّ.
+        if -13.0 <= mm_x <= 2.0:
+            b_idx = max(0, min(n, int(round((mm_y - top) / T.ROW_H))))
+            self._plus_zone = self._zone_at_doc_y(top + (b_idx + 0.5) * T.ROW_H)
+            self._btn_plus.setFixedSize(size, size)
+            self._btn_plus.move(int(v.x(-6.0) - size),
+                                int(v.y(top + b_idx * T.ROW_H) - size / 2))
+            self._btn_plus.raise_()
+            self._btn_plus.show()
+        else:
+            self._btn_plus.hide()
+
+        #  － — الهامش الأيمن فقط (خارج الجدول: من حافته إلى ‎+14mm‎)، مقابل
+        #  صفٍّ اختياريّ. لا يظهر على الصفوف الثابتة/النظام.
         self._minus_row = None
-        if 0 <= r_idx < len(rows) and rows[r_idx].can_delete():
+        if (T.CONTENT_W - 4.0 <= mm_x <= T.CONTENT_W + 14.0
+                and 0 <= r_idx < len(rows) and rows[r_idx].can_delete()):
             self._minus_row = rows[r_idx]
-            my = int(v.y(top + (r_idx + 0.5) * T.ROW_H) - size / 2)
             self._btn_minus.setFixedSize(size, size)
-            self._btn_minus.move(bx, my)
+            self._btn_minus.move(int(v.x(T.CONTENT_W) + 3),
+                                 int(v.y(top + (r_idx + 0.5) * T.ROW_H)
+                                     - size / 2))
             self._btn_minus.raise_()
             self._btn_minus.show()
         else:
@@ -1689,7 +1742,7 @@ class BulletinTemplateScreen(Screen):
 
         # ---- خلايا صفوف الجسم الديناميكية ----
         ys = self._y_shift(v.scale)
-        f_row = v.font(3.2, True)
+        f_row = v.tfont("editable_cell")          # نفس نظام الخطوط (§E.4)
         h_row = int(v.px(T.ROW_H - 0.8))
         for i, row in enumerate(self._visible_body_rows()):
             top_mm = T.BODY_TOP + i * T.ROW_H + 0.7 + ys
@@ -1732,22 +1785,21 @@ class BulletinTemplateScreen(Screen):
                     + f"\nQLineEdit{{border:1px solid {theme.WARNING};}}")
             return
         if isinstance(w, QComboBox):
-            #  §29: لا رمادي — الـ ComboBox يبدو كخليّة صفراء عاديّة داخل
-            #  الورقة (خلفية FIELD_EMPTY، بلا حافة نافرة، سهمٌ خفيف).
-            filled = bool(self._field_value(key))
-            bg = theme.SURFACE if filled else theme.FIELD_EMPTY
-            bd = theme.HOVER if w.hasFocus() else "#ffffff"
+            #  §29/§E.3: لا رمادي أبداً — خليّة صفراء نظيفة منذ الفتح، بلا
+            #  حافة نافرة؛ التركيز يضيف حدّاً أزرق خفيفاً فقط.
+            bd = theme.HOVER if w.hasFocus() else theme.FIELD_EMPTY
             if warn:
                 bd = theme.WARNING
             w.setStyleSheet(
-                f"QComboBox {{ background:{bg}; color:{theme.TEXT}; "
-                f"border:1px solid {bd}; border-radius:0; padding:0 1px; }}"
+                f"QComboBox {{ background:{theme.FIELD_EMPTY}; color:{theme.TEXT};"
+                f" border:1px solid {bd}; border-radius:0; padding:0 1px; }}"
                 f"QComboBox::drop-down {{ border:0; width:12px; }}"
                 f"QComboBox QAbstractItemView {{ background:#ffffff; "
                 f"color:{theme.TEXT}; selection-background-color:{theme.PRIMARY};"
                 f" selection-color:#ffffff; }}")
             return
         filled = bool(self._field_value(key))
+        is_table_cell = bool(_ROW_CELL_KEY.match(key))
         if key in self._band_keys:
             focused = w.hasFocus()
             if focused:
@@ -1756,6 +1808,12 @@ class BulletinTemplateScreen(Screen):
                 bg, fg, bd = theme.BAND_BLACK, "#ffffff", theme.BAND_BLACK
             else:
                 bg, fg, bd = theme.FIELD_EMPTY, "#000000", "#ffffff"
+        elif is_table_cell:
+            #  §E.3: خلايا الجدول صفراء **دائماً** (مملوءة أو لا) لتقرأ
+            #  كحقول إدخال؛ التركيز يضيف حدّاً أزرق فقط، لا يغيّر الخلفية.
+            bg = theme.FIELD_EMPTY
+            fg = theme.TEXT
+            bd = theme.HOVER if w.hasFocus() else theme.FIELD_EMPTY
         else:
             bg = theme.SURFACE if filled else theme.FIELD_EMPTY
             fg = theme.TEXT

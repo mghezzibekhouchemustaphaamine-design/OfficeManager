@@ -452,50 +452,83 @@ def _view_order(lv):
     return 20 if lv.sens != "RETENUE" else 100
 
 
-def _bulletin_rows_from_view(view, employee, *, jours=None):
-    """أسطر جدول الكشف من :class:`~programme.payroll.lignes.BulletinView`.
+#  أدنى عدد أسطر تحت IRG (منطقة Zone C + فراغ) — يطابق ``MIN_BODY_SLOTS``
+#  في الشاشة: أسفل الوثيقة ثابت بصرياً (SCREEN = PDF).
+_RENDER_MIN_ZONE_C = 5
+_RENDER_MIN_BODY_ROWS = 10          # حدٌّ أدنى إجماليّ إضافيّ (احتياط)
 
-    كلّ رُبريكة ديناميكية في ``view.lignes`` تُمثَّل؛ CNAS/IRG سطران
-    نظاميّان من ‎[A]/[B]‎ و‎[C]/[D]‎؛ Panier/Transport يظهران دائماً حتى
-    بصفر (§22). لا خلايا بلا معنى."""
+
+def _row_from_lv(lv, jours=None):
+    neg = lv.key in _BASE_REDUCERS
+    lib = (_FR_LIBELLE.get(lv.key)
+           or (lv.libelle or "").strip().upper() or lv.key.upper())
+    row = {"code": (lv.code or "").strip(), "libelle": lib,
+           "nbase": _n(jours) if lv.key == "salaire_base" else "",
+           "taux": "", "gain": "", "retenue": ""}
+    amt = fmt_montant(-lv.montant if neg else lv.montant)
+    if neg or lv.sens != "RETENUE":
+        row["gain"] = amt
+    else:
+        row["retenue"] = amt
+    return row
+
+
+def _bulletin_rows_from_view(view, employee, *, jours=None):
+    """أسطر جدول الكشف من :class:`~programme.payroll.lignes.BulletinView`،
+    **بنفس ترتيب مناطق الشاشة** (Phase E §8 — SCREEN = PDF):
+
+        SALAIRE DE BASE
+        [ Zone A = أسطر Z1 عدا الأجر ]
+        CNAS
+        PANIER · (R+) TRANSPORT   (دائماً، حتى بصفر — §22)
+        [ Zone B = أسطر Z2 عدا السلة/النقل ]
+        IRG
+        [ Zone C = أسطر Z3 + Z4 ]
+        [ حشوٌ فارغ حتى _RENDER_MIN_BODY_ROWS ]
+
+    CNAS/IRG سطران نظاميّان من ‎[A]/[B]‎ و‎[C]/[D]‎. لا خلايا بلا معنى."""
     c = PAIE_DEFAULT_CODES
     res = view.result
-    gains, retenues = [], []
-    seen_pt = set()
-    for lv in sorted(view.lignes, key=_view_order):
-        neg = lv.key in _BASE_REDUCERS
-        lib = (_FR_LIBELLE.get(lv.key)
-               or (lv.libelle or "").strip().upper() or lv.key.upper())
-        row = {"code": (lv.code or "").strip(), "libelle": lib,
-               "nbase": _n(jours) if lv.key == "salaire_base" else "",
-               "taux": "", "gain": "", "retenue": "", "_ord": _view_order(lv)}
-        amt = fmt_montant(-lv.montant if neg else lv.montant)
+    by_zone = {"Z1": [], "Z2": [], "Z3": [], "Z4": []}
+    salaire = None
+    pt = {}
+    for lv in view.lignes:
+        if lv.key == "salaire_base":
+            salaire = lv
+            continue
         if lv.key in ("panier", "transport"):
-            seen_pt.add(lv.key)
-            row["gain"] = amt
-            gains.append(row)
-        elif neg or lv.sens != "RETENUE":
-            row["gain"] = amt
-            gains.append(row)
-        else:
-            row["retenue"] = amt
-            retenues.append(row)
-    for key, code, lab, ordv in (("panier", c["panier"], "PANIER", 60),
-                                 ("transport", c["transport"],
-                                  "(R+) TRANSPORT", 70)):
-        if key not in seen_pt:
-            gains.append({"code": code, "libelle": lab, "nbase": "", "taux": "",
-                          "gain": fmt_montant(0), "retenue": "", "_ord": ordv})
-    gains.sort(key=lambda r: r["_ord"])
-    rows = [{k: v for k, v in r.items() if k != "_ord"} for r in gains]
+            pt[lv.key] = lv
+            continue
+        by_zone.get(lv.zone, by_zone["Z3"]).append(lv)
+
+    rows = []
+    if salaire is not None:
+        rows.append(_row_from_lv(salaire, jours))
+    rows += [_row_from_lv(lv) for lv in by_zone["Z1"]]          # Zone A
     rows.append({"code": c["cnas"], "libelle": "RETENUE SÉCU. SOCIALE",
                  "nbase": fmt_montant(res.assiette_cnas), "taux": "9,00",
                  "gain": "", "retenue": fmt_montant(res.retenue_cnas)})
+    for key, lab in (("panier", "PANIER"), ("transport", "(R+) TRANSPORT")):
+        if key in pt:
+            rows.append(_row_from_lv(pt[key]))
+        else:
+            rows.append({"code": c[key], "libelle": lab, "nbase": "",
+                         "taux": "", "gain": fmt_montant(0), "retenue": ""})
+    rows += [_row_from_lv(lv) for lv in by_zone["Z2"]]          # Zone B
     rows.append({"code": c["irg"], "libelle": "RETENUE IRG",
                  "nbase": fmt_montant(res.assiette_irg), "taux": "",
                  "gain": "", "retenue": fmt_montant(res.irg)})
-    rows += [{k: v for k, v in r.items() if k != "_ord"} for r in retenues]
-    return rows
+    zone_c = [_row_from_lv(lv) for lv in by_zone["Z3"] + by_zone["Z4"]]
+    blank = {k: "" for k, *_ in COLS}
+    zone_c += [dict(blank) for _ in range(max(0, _RENDER_MIN_ZONE_C
+                                              - len(zone_c)))]
+    return rows + zone_c
+
+
+def _pad_rows(rows, minimum=_RENDER_MIN_BODY_ROWS):
+    """يُلحِق أسطراً فارغة حتى ``minimum`` — نفس فراغ الشاشة تحت IRG."""
+    blank = {k: "" for k, *_ in COLS}
+    return rows + [dict(blank) for _ in range(max(0, minimum - len(rows)))]
 
 
 def _period_label(pin):
@@ -650,6 +683,12 @@ class SimpleBulletinTemplate:
             tcpr.append(sh)
 
         doc = Document()
+        #  Phase E §4/§8: خطّ موحَّد يطابق روح الشاشة (Helvetica).
+        try:
+            doc.styles["Normal"].font.name = FORM_FONT
+            doc.styles["Normal"].font.size = Pt(9)
+        except Exception:                                   # noqa: BLE001
+            pass
         sec = doc.sections[0]
         sec.page_width, sec.page_height = Mm(210), Mm(297)
         sec.left_margin = sec.right_margin = Mm(MARGIN_L)
@@ -698,6 +737,7 @@ class SimpleBulletinTemplate:
         # جدول الرُّبريكات — من BulletinView إن مُرّر (مصدر الحقيقة، Phase C2)
         rows = (_bulletin_rows_from_view(view, employee, jours=pin.jours)
                 if view is not None else _bulletin_rows(pin, res))
+        rows = _pad_rows(rows)                    # فراغ تحت IRG (SCREEN = PDF)
         rt = doc.add_table(rows=1 + len(rows) + 2, cols=6)
         rt.style = "Table Grid"
         heads = [c[4] for c in COLS]
@@ -813,6 +853,7 @@ class SimpleBulletinTemplate:
 
         rows = (_bulletin_rows_from_view(view, employee, jours=pin.jours)
                 if view is not None else _bulletin_rows(pin, res))
+        rows = _pad_rows(rows)                    # فراغ تحت IRG (SCREEN = PDF)
         data = [[c[4] for c in COLS]]
         for r in rows:
             data.append([r.get(k, "") for k, *_ in COLS])

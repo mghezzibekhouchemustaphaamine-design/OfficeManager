@@ -4146,3 +4146,125 @@ golden 14/14 · galleries `ALLOK`.
 `ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.
 لقطات: `docs/baseline_screenshots/E2_sidebar_{visible_before,hidden,
 shown_again}.png`.
+
+## Phase E.3 — 2026-09-11: تثبيت جدول Rubriques نهائياً
+
+إغلاق نظام Rubriques: إدراجٌ دقيق · دلالة جبائيّة آمنة · اقتطاعات موجبة ·
+تجربة استعمالٍ ذكيّة · توسيط الخلايا. لا engine، لا DB، لا هندسة زوم/PDF.
+
+### §2 نموذج الشريحة + الترتيب (الموضع البصريّ ≠ التصنيف)
+
+`_Row.segment ∈ {A, B1, B2, B3, C}` + `order` (رقمٌ داخل الشريحة).
+`zone` صارت **خاصيّةً مشتقّة** من `segment` (`_SEGMENT_ZONE`) — لا تُخزَّن
+ولا تُضبَط. خمس شرائح بين الصفوف الثابتة، كلٌّ يحفظ ترتيب الإدراج بالضبط.
+
+### §1/§3/§4 الإدراج الدقيق
+
+`_insert_row_at(kind, segment, index)` يُدرج **في الموضع الدقيق**؛
+`_reindex_segments()` يُسوّي الأرقام إلى `0,1,2,…`. `_gutter_target(mm_y)`
+⇒ `(segment, index)` للحدّ الأقرب بين **صفوفٍ فعليّة**: لا ＋ فوق الأجر
+القاعديّ (§3A)، والأسطر الفارغة تنطبق على «بعد آخر صفّ C» (§4). زرّ ＋
+يستعمل `_plus_target` لا مجرّد المنطقة. الحذف يُعيد التسوية (§25).
+
+### §7/§8/§20 حارس IEP الفريد على مستوى النموذج
+
+`_can_add_smart` / `_dedupe_unique`: مرجعٌ واحد يُستعمل في add · convert ·
+committed (كتابةٌ يدويّة) · apply_draft · load_work. نسخةٌ قديمة فيها
+IEP مكرَّرة ⇒ الأولى تبقى، الباقي يُنزَّل إلى **«حرّ + مراجعة»** مع حفظ
+التسمية/الرمز/النسبة القديمة في نصّ LIBELLÉ (§8) — لا تُحتسَب، والعمل
+يُعلَّم «يحتاج مراجعة» (validation تمنع Finalize، لا تمنع Save).
+
+### §12/§13/§14 قاعدة السطر الحرّ الآمنة
+
+`_fold_libre` في المحرّك يُرسِل **كلّ** `est_retenue` إلى `autres_retenues`
+(مسار Z4) — لا يملك اقتطاعاً عامّاً قبل الضريبة. لذا:
+* **FREE GAIN**: مسموحٌ في A (CNAS+IRG) · B (IRG فقط) · C (لا شيء).
+* **FREE RETENUE**: **Zone C فقط** (اقتطاع صافٍ / Z4 — ما يطبّقه المحرّك).
+  في Zone A/B ⇒ `_free_entry` تُرجع `None` (لا تُحتسَب) + تحذير تحقّق،
+  وخليّة RETENUE **مخفيّة** (ورقةٌ نظيفة لا رماديّ). نسخةٌ قديمة بها
+  اقتطاعٌ حرّ في A/B: بياناتها محفوظة، تُبرَز للمراجعة، لا يُعاد تفسير
+  المال ولا يُنقَل الصفّ صامتاً.
+
+### §9/§10/§11 طبقة العرض المشتركة — `ui/hr/paie/presentation.py` (جديد)
+
+وحدةٌ بلا إطار: `BulletinView` → صفوفٌ ومجاميع معروضة موحّدة للشاشة و PDF
+و DOCX. **Absence/Retard تُعرَض اقتطاعاً موجباً في RETENUE** (لا −GAIN).
+المجاميع مُصالَحة::
+
+    base_reducers_total   = Σ (مبالغ Absence/Retard الموجبة)
+    display_total_gain     = engine.total_gains    + base_reducers_total
+    display_total_retenue  = engine.total_retenues + base_reducers_total
+    display_net            = engine.net_a_payer            (بلا تغيير)
+
+العقد المُختبَر:  Σ(GAIN معروض) − Σ(RETENUE معروض) == NET. أرقام المحرّك
+(وعاء CNAS · CNAS · وعاء IRG · IRG · الصافي) **لم تتغيّر** — §30. حُذف
+منطق «Gain سالب» المكرَّر (`_row_from_lv`)؛ `_bulletin_rows_from_view` و
+`build_pdf` و `build_docx` تستهلك `presentation.build` كلّها.
+
+### §21 مُنتقيات خفيفة — `_InlineChoice`
+
+خليّةٌ صفراء نصّيّة + سهمٌ صغير + قائمة منبثقة، بدل `QComboBox` الأصفر
+الثقيل لـ Absence(jours/heures) و HS(50%/100%). في القفل: لا سهم، لا
+قائمة، تبدو كنصّ وثيقة. prime/autre تبقيان `QComboBox` (أنواعٌ قديمة).
+
+### §19 إكمال LIBELLÉ
+
+`_SmartLibelle`: **→** يُكمِل الاقتراح الحاليّ إن كان المؤشّر في الآخر؛
+**Enter** يُثبِّت النصّ كما كُتب (لا يستبدله بالمظلَّل)؛ **Esc** يُغلق
+القائمة بلا مساس؛ نقرةٌ على اقتراح تقبله؛ الاقتراحات بعد حرفين. تُنفَّذ
+بترشيح حدث القائمة (`popup().installEventFilter`) + `keyPressEvent`.
+
+### §22/§23 توسيط مستطيل المحرِّر
+
+`layout_spec.EDITOR_H_MM` (= ROW_H−0.8) · `EDITOR_TOP_INSET_MM` =
+`(ROW_H−EDITOR_H)/2` · `editor_rect_mm()`: مستطيلٌ **مُوسَّطٌ رياضياً**
+موحَّد لكلّ الخلايا (CODE … RETENUE + المُنتقيات) — لا رقم `+0.7` سحريّ.
+مُوسَّطٌ على 45/100/200/260%. المحاذاة الأفقيّة من `_COL_ALIGN` كما هي.
+
+### §5/§26/§27 حفظ/استعادة/Smart Next
+
+`DRAFT_VERSION` 5→6 · `WORK_VERSION` 2→3. `segment`/`order`/`review`
+تُحفَظ. عملٌ قديمٌ بلا `segment`: Zone A→A · Zone B→**B3** · Zone C→C
+وترتيب الملفّ — في الذاكرة، يُحفَظ صريحاً عند الحفظ التالي. `create_next_
+period_work` ينقل `segment`/`order` للصفوف المستقرّة بلا تغيير (اختبار)؛
+IEP يُعاد اقتراحُ نسبته، لا تكرار.
+
+### الاختبارات
+
+`ui2/hr/paie/tests` **203 OK** (‏181 سابقة + **22 E.3**:
+- `BulletinTemplateE3Insert` (10): حدود ＋ · الشرائح B1/B2/B3 · إدراجٌ دقيق
+  بين صفوف · إدراجٌ بعد حذف · حفظ/استعادة الترتيب الدقيق · حارس IEP
+  اليدويّ · ترحيل نسخة بـ IEP مكرَّرة · Zone B قديمة → B3.
+- `BulletinTemplateE3Calc` (10): تدقيق حساب IEP/HS50/HS100/Absence jours+
+  heures/Retard/Avance/Free A·B·C/Free RETENUE C بالمحرّك الفعليّ ·
+  التكرار (2×Absence، 2×Retard، 2×HS) كلٌّ بمبلغه · الاقتطاع الحرّ غير
+  المدعوم في A/B لا يُحتسَب.
+- `BulletinTemplateE3UX` (11): توسيط رياضيّ + على الزووم · → يُكمِل · Enter
+  يُثبِّت المكتوب · بوّابة الحرفين · `_InlineChoice` لا `QComboBox` ·
+  اختيارٌ يُعيد الحساب · أصفر لا رماديّ · القفل يمنع القائمة · RETENUE
+  حرّة مخفيّة في A/B · Smart Next يحفظ الموضع).
+- `RendererFromViewC2`: حُدِّث اختباران كانا يرمِّزان «Gain سالب» /
+  «Σgain == engine.total_gains» ⇒ صارا «RETENUE موجب» / «Σgain − Σret == net».
+
+E.1/E.2 لم تتراجع (‏`BulletinTemplateE1`/`E2`/`PhaseE` خضراء: هندسة
+مليمتر ثابتة، ثبات الزوم، إعادة تموضع الشريط الجانبيّ، لا widgetات يتيمة).
+`ui2/tests` 42 · `ui2/paie/tests` 17 · `programme/payroll/tests` 49 ·
+`programme/tests` 6 · golden 14/14 · galleries `ALLOK`.
+
+### الملفات المتأثرة
+
+جديد: `ui/hr/paie/presentation.py`. معدَّل: `ui/hr/paie/layout_spec.py` ·
+`ui/hr/paie/template_simple.py` · `ui2/hr/paie/bulletin_template.py` ·
+`ui2/hr/paie/validation.py` · `ui2/hr/paie/tests/test_bulletin_template.py`
+· `docs/CHANGELOG.md`. لقطات: `docs/baseline_screenshots/E3_*.png`
+(fresh · all_segments · absence_retard_positive · hs_50_100 · iep ·
+centering_100/200 · sidebar_hidden · locked_final · pdf_page1).
+
+### فروقٌ باقية (§38.20)
+
+* `_free_entry` لا يدعم اقتطاعاً حرّاً عامّاً في Zone A/B لأنّ المحرّك
+  (`_fold_libre`) لا يملك مساراً مطابقاً — تصحيحٌ دلاليّ مقصود، ليس نقصاً
+  في هذه المرحلة. أيّ دعمٍ حقيقيّ يتطلّب تغيير قانون المحرّك (خارج النطاق).
+* مُنتقيا prime/autre ما زالا `QComboBox` (مُنمَّقان أصفر) — نوعان قديمان
+  غير مُتاحَين للإضافة.
+* القيَم المحسوبة زرقاء على الشاشة (تلميح تحرير)، سوداء في PDF (§8).

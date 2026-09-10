@@ -1707,8 +1707,12 @@ class BulletinTemplateE3UX(unittest.TestCase):
         theme.apply_theme(cls.app)
 
     def setUp(self):
+        import ui2.alerts as _al
         self._tmp = tempfile.mkdtemp(prefix="om_e3ux_")
         os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        _isolate_db(self._tmp)
+        self._al, self._al_warn = _al, _al.warn
+        _al.warn = lambda *_a, **_k: None
         mod.confirm = lambda *_a, **_k: True
         self.scr = BulletinTemplateScreen(conn=None)
         self.scr._scroll.viewport().resize(950, 1250)
@@ -1719,6 +1723,7 @@ class BulletinTemplateE3UX(unittest.TestCase):
         self.scr._recompute()
 
     def tearDown(self):
+        self._al.warn = self._al_warn
         self.scr.deleteLater()
         os.environ.pop(paths._LOCAL_STATE_ENV_OVERRIDE, None)
 
@@ -1815,6 +1820,32 @@ class BulletinTemplateE3UX(unittest.TestCase):
         rc = self.scr._insert_free_row("C")
         self.scr._relayout()
         self.assertFalse(rc.widgets["retenue"].isHidden())
+
+    # ---------- §27 Smart Next يحفظ الموضع الدقيق ----------
+    def test_smart_next_preserves_segment_order(self):
+        w = self.scr._widgets
+        for k, v in {"emp_raison_sociale": "SARL", "emp_adresse": "X",
+                     "emp_cnas": "16 412 078 56", "id_nom": "BENALI",
+                     "id_prenom": "K", "id_lieu_naissance": "ALGER",
+                     "id_fonction": "C"}.items():
+            w[k].setText(v)
+        w["id_date_naissance"].set_iso("1990-05-10")
+        w["id_date_embauche"].set_iso("2016-06-14")
+        p1 = self.scr._insert_row_at("free", "A", 0)
+        p1.set_val("libelle", "PRIME A"); p1.set_val("gain", "3000")
+        p2 = self.scr._insert_row_at("free", "B2", 0)
+        p2.set_val("libelle", "IND B2"); p2.set_val("gain", "2000")
+        self.scr._insert_row_at("absence", "A", 1)      # عرضيّ ⇒ يُحذَف
+        self.scr._add_row("iep")
+        self.scr._recompute()
+        self.scr._on_save()
+        self.scr.create_next_period_work()
+        segs = {(r.val("libelle"), r.segment) for r in self.scr._rows
+                if r.kind == "free"}
+        self.assertIn(("PRIME A", "A"), segs)
+        self.assertIn(("IND B2", "B2"), segs)          # الموضع محفوظ
+        self.assertEqual([r.kind for r in self.scr._rows].count("absence"), 0)
+        self.assertEqual([r.kind for r in self.scr._rows].count("iep"), 1)
 
 
 @unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")

@@ -1202,6 +1202,170 @@ class BulletinTemplateE1(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateE2(unittest.TestCase):
+    """Phase E.2 — إعادة تموضع كلّ عناصر الوثيقة عند تغيّر عرض مساحة العمل
+    (إخفاء/إظهار الشريط الجانبيّ · تحريك الفاصل)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        from PySide6.QtWidgets import QMainWindow
+        self._tmp = tempfile.mkdtemp(prefix="om_e2_")
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        os.environ[paths._DATA_DIR_ENV_OVERRIDE] = self._tmp
+        open(os.path.join(self._tmp, "office_system.db"), "a").close()
+        database.init_db()
+        mod.confirm = lambda *_a, **_k: True
+        self._win = QMainWindow()
+        self.scr = BulletinTemplateScreen(conn=None)
+        self._win.setCentralWidget(self.scr)
+        self._win.resize(1120, 900)
+        self._win.show()
+        self.app.processEvents()
+        w = self.scr._widgets
+        w["mois"].setText("OCTOBRE"); w["annee"].setText("2026")
+        [r for r in self.scr._rows if r.kind == "salaire"][0].set_val("gain",
+                                                                      "45000")
+        for lib in ("Prime de risque", "Absence"):
+            fr = self.scr._insert_free_row("A")
+            fr.widgets["libelle"].setText(lib)
+            fr.widgets["libelle"].committed.emit(lib)
+        [r for r in self.scr._rows if r.kind == "absence"][0].set_val(
+            "qty", "1")
+        self.scr._recompute()
+        self.app.processEvents()
+
+    def tearDown(self):
+        self._win.close()
+        self._win.deleteLater()
+        self.scr.deleteLater()
+        for k in (paths._LOCAL_STATE_ENV_OVERRIDE, paths._DATA_DIR_ENV_OVERRIDE):
+            os.environ.pop(k, None)
+
+    def _sidebar(self):
+        return self.scr._split.widget(1)
+
+    def _hide_sidebar(self):
+        self._sidebar().setVisible(False)
+        self.scr._split.setSizes([self.scr._split.width(), 0])
+        self.app.processEvents()
+
+    def _show_sidebar(self):
+        self._sidebar().setVisible(True)
+        self.scr._split.setSizes([self.scr.TARGET_W + 80, 240])
+        self.app.processEvents()
+
+    def _assert_all_within_bounds(self, tag):
+        v = self.scr._view()
+        tbl_l, tbl_r = v.x(0), v.x(T.CONTENT_W)
+        page_l, page_r = v.x0, v.x0 + v.sheet_w
+        for row in self.scr._visible_body_rows():
+            for cell, wdg in row.widgets.items():
+                g = wdg.geometry()
+                f0, f1, _ = T._colf(row.column(cell))
+                cx0, cx1 = v.x(f0 * T.CONTENT_W), v.x(f1 * T.CONTENT_W)
+                self.assertGreaterEqual(g.left(), cx0 - 4,
+                                        f"{tag}: {row.kind}.{cell} left of col")
+                self.assertLessEqual(g.right(), cx1 + 4,
+                                     f"{tag}: {row.kind}.{cell} right of col")
+                self.assertGreaterEqual(g.left(), tbl_l - 4,
+                                        f"{tag}: {row.kind}.{cell} < table left")
+                self.assertLessEqual(g.right(), tbl_r + 4,
+                                     f"{tag}: {row.kind}.{cell} > table right")
+                self.assertGreaterEqual(g.left(), page_l - 4,
+                                        f"{tag}: {row.kind}.{cell} in gray")
+                self.assertLessEqual(g.right(), page_r + 4,
+                                     f"{tag}: {row.kind}.{cell} past page")
+        for s in self.scr._header_slots:
+            g = self.scr._widgets[s.key].geometry()
+            self.assertGreaterEqual(g.right(), page_l,
+                                    f"{tag}: header {s.key} in gray")
+            self.assertLessEqual(g.left(), page_r,
+                                 f"{tag}: header {s.key} past page")
+
+    def _assert_gutter_tracks_row(self, tag):
+        from PySide6.QtCore import QPoint
+        v = self.scr._view()
+        rows = self.scr._visible_body_rows()
+        fr = [r for r in self.scr._rows if r.kind == "free"][0]
+        i = rows.index(fr)
+        y = int(v.y(T.BODY_TOP + (i + 0.5) * T.ROW_H))
+        self.scr._gutter_mouse_move(QPoint(int(v.x(-5.0)), y))
+        self.assertFalse(self.scr._btn_plus.isHidden(), tag)
+        self.assertLess(self.scr._btn_plus.geometry().right(), int(v.x(0)),
+                        f"{tag}: + not in left gutter")
+        self.scr._gutter_mouse_move(QPoint(int(v.x(T.CONTENT_W + 5)), y))
+        self.assertIs(self.scr._minus_row, fr, f"{tag}: - wrong row")
+        self.assertGreater(self.scr._btn_minus.geometry().left(),
+                           int(v.x(T.CONTENT_W)), f"{tag}: - not in right gutter")
+
+    def _run_cycle(self, zoom):
+        self.scr._set_zoom(zoom)
+        self.app.processEvents()
+        self._assert_all_within_bounds(f"z{zoom} A/visible")
+        self._assert_gutter_tracks_row(f"z{zoom} A/visible")
+        self._hide_sidebar()
+        self._assert_all_within_bounds(f"z{zoom} B/hidden")
+        self._assert_gutter_tracks_row(f"z{zoom} B/hidden")
+        self._show_sidebar()
+        self._assert_all_within_bounds(f"z{zoom} C/shown-again")
+        self._assert_gutter_tracks_row(f"z{zoom} C/shown-again")
+
+    def test_relayout_on_sidebar_toggle_100(self):
+        self._run_cycle(100)
+
+    def test_relayout_on_sidebar_toggle_200(self):
+        self._run_cycle(200)
+
+    def test_viewport_resize_triggers_relayout(self):
+        #  تصغير/تكبير منفذ العرض مباشرةً (بلا resizeEvent للشاشة) يعيد
+        #  التموضع — الخطاف على حدث Resize لمنفذ عرض منطقة التمرير.
+        seen = {"n": 0}
+        orig = self.scr._on_workspace_geometry_changed
+
+        def spy():
+            seen["n"] += 1
+            return orig()
+        self.scr._on_workspace_geometry_changed = spy
+        self._win.resize(1400, 900)
+        self.app.processEvents()
+        self.assertGreater(seen["n"], 0)
+        self._assert_all_within_bounds("after window widen")
+
+    def test_relayout_reentrancy_guard(self):
+        #  استدعاءٌ متداخل لا ينفجر ولا يعيد الدخول.
+        self.scr._in_relayout = True
+        try:
+            self.scr._relayout()          # يجب أن يعود بلا عمل
+        finally:
+            self.scr._in_relayout = False
+        self.scr._relayout()
+        self._assert_all_within_bounds("after guard test")
+
+    def test_conversion_leaves_no_orphan_widgets(self):
+        #  السبب الجذريّ: التحويل حرّ→ذكيّ كان يخلّف widgetات على اللوحة
+        #  ليست ضمن أيّ صفّ ⇒ تظهر في المنطقة الرمادية بعد إعادة التموضع.
+        from PySide6.QtWidgets import QLineEdit
+        for lib in ("Heures supplémentaires", "Absence", "Retard"):
+            fr = self.scr._insert_free_row("A")
+            fr.widgets["libelle"].setText(lib)
+            fr.widgets["libelle"].committed.emit(lib)
+        self.scr._recompute()
+        self.app.processEvents()
+        owned = {id(w) for r in self.scr._rows for w in r.widgets.values()}
+        owned |= {id(self.scr._widgets[s.key]) for s in self.scr._header_slots}
+        for w in self.scr._canvas.findChildren(QLineEdit):
+            if w.parent() is not self.scr._canvas:      # sous-widget d'un champ
+                continue
+            self.assertIn(id(w), owned,
+                          f"widget يتيم على اللوحة: {type(w).__name__} "
+                          f"{w.text()!r} @ {w.x()}")
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
 class BulletinTemplateValidation(unittest.TestCase):
     """Phase B — تحقّق مرن + ⚠️ غير مكتمل."""
 

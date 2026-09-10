@@ -4092,3 +4092,57 @@ golden 14/14 · galleries `ALLOK`. حُدِّثت مساعِدات اختبار 
 `ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.
 لقطات: `docs/baseline_screenshots/E1_screen_{100,200,260}.png` ·
 `E1_pdf_page1.png` · `E1_side_by_side.png`.
+
+## Phase E.2 — 2026-09-11: إعادة تموضع الوثيقة عند تغيّر عرض مساحة العمل
+
+خللٌ اكتُشف بعد E.1: عند إخفاء الشريط الجانبيّ الأيمن (أو سحب الفاصل)
+تُعاد صفحة A4 إلى وسطها بصرياً، لكن بعض widgetات السطور الحرّة/الذكيّة
+تبقى في مكانها القديم فتظهر في المنطقة الرمادية يسار الورقة. إصلاح خلل
+فقط — لا payroll، لا PDF، لا `layout_spec`، لا ميزة.
+
+### السبب الجذريّ (سببان متضافران)
+
+1. **خطاف هندسة مفقود.** تغيّر حجم منفذ عرض `QScrollArea` (بتحريك
+   الفاصل/إخفاء الشريط) لا يصل إلى `resizeEvent` الشاشة، ولم يكن أيّ شيء
+   يلتقط حدث `Resize` للمنفذ ⇒ `_relayout()` لا يُستدعى ⇒ كلّ widgetات
+   الوثيقة تبقى على مواضع بكسل قديمة بينما `paintEvent` (يقرأ العرض
+   الحاليّ) يعيد تمركز الرسم.
+2. **widgetات يتيمة من التحويل حرّ→ذكيّ.** `_Row.dispose()` كان يستدعي
+   `w.setParent(None)` على حقلٍ له تركيز ⇒ Qt يُطلق `editingFinished` ⇒
+   `_SmartLibelle.committed` ⇒ `_on_libelle_committed` **من جديد أثناء
+   الهدم** ⇒ `_convert_row` متداخل ينشئ صفَّ `_Row` ثانياً بنفس `rid`،
+   وwidgetاته تُسجَّل ثمّ يطغى عليها الصفّ النهائيّ فتبقى **يتيمة على
+   اللوحة، خارج أيّ صفّ، لا يمسّها `_relayout`**.
+
+### الإصلاح
+
+* **خطاف مركزيّ واحد** `_on_workspace_geometry_changed()` يُستدعى من:
+  `resizeEvent` · حدث `Resize` لمنفذ العرض في `eventFilter` (المنفذ عليه
+  مرشّح أصلاً) · إشارة `splitter.splitterMoved`. يعيد `_relayout()`
+  كاملةً فتُشتقّ مواضع **كلّ** عناصر الوثيقة من مستطيل الصفحة الحاليّ.
+* **`_relayout` ⇒ `_relayout_impl`** خلف حارس إعادة دخول `_in_relayout`
+  (‏`setFixedSize` على اللوحة قد يُظهر شريط تمرير ⇒ حدث `Resize` ثانٍ).
+* **`_Row.dispose()`**: `w.blockSignals(True)` **قبل** فكّ الأبوّة ⇒ لا
+  `editingFinished`/`committed` أثناء الهدم.
+* **`_convert_row`**: حارس إعادة دخول `_converting` (حزام أمانٍ ثانٍ ضدّ
+  أيّ مسار متداخل، مثل تغيير التركيز).
+
+### الاختبارات (‏`BulletinTemplateE2` — 5 جديدة)
+
+`test_relayout_on_sidebar_toggle_100` / `_200`: دورة كاملة (مرئيّ →
+مخفيّ → مرئيّ) عند 100٪ و200٪ — كلّ خليّة صفٍّ ضمن عمودها وضمن الجدول
+وضمن الصفحة، وأزرار ＋/－ تتبع الصفّ الصحيح في كلّ حالة.
+`test_viewport_resize_triggers_relayout`: توسيع النافذة ⇒ الخطاف يعمل.
+`test_relayout_reentrancy_guard`. `test_conversion_leaves_no_orphan_
+widgets`: بعد ثلاث تحويلات، لا `QLineEdit` ابنٌ مباشرٌ للّوحة خارج أيّ صفّ.
+
+`ui2/hr/paie/tests` **171 OK** (‏166 + 5). `ui2/tests` 42 ·
+`ui2/paie/tests` 17 · `programme/payroll/tests` 49 · `programme/tests` 6 ·
+golden 14/14 · galleries `ALLOK`.
+
+### الملفات المتأثرة
+
+معدَّل: `ui2/hr/paie/bulletin_template.py` ·
+`ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.
+لقطات: `docs/baseline_screenshots/E2_sidebar_{visible_before,hidden,
+shown_again}.png`.

@@ -581,7 +581,12 @@ class _Row:
         return _ROW_SPECS[self.kind].get("to_entry", lambda _r: None)(self)
 
     def dispose(self):
+        #  Phase E.2: كتم إشارات كلّ خليّة **قبل** فكّ الأبوّة. ``setParent
+        #  (None)`` على حقلٍ له تركيز يُطلق ``editingFinished`` ⇒
+        #  ``_SmartLibelle.committed`` ⇒ ``_on_libelle_committed`` من جديد
+        #  أثناء الهدم = تحويلٌ متداخل يخلّف widgetات يتيمة على اللوحة.
         for cell, w in list(self.widgets.items()):
+            w.blockSignals(True)
             self.screen._widgets.pop(self.cell_key(cell), None)
             w.setParent(None)
             w.deleteLater()
@@ -1031,32 +1036,40 @@ class BulletinTemplateScreen(Screen):
         (‏``seq``) ونفس المنطقة (§19 — لا نقل تلقائيّ). لا تُنقَل القيَم غير
         المتوافقة — فقط CODE إن كان معدَّلاً يدوياً، وLIBELLÉ الحرّ إن
         طُلِب. يُعاد بناء المدخلات والتنقّل والحساب."""
+        #  حارس إعادة الدخول: تغيير التركيز أثناء التحويل قد يعيد إطلاق
+        #  ``_on_libelle_committed`` ⇒ تحويلٌ متداخل يخلّف widgetات يتيمة.
+        if getattr(self, "_converting", False):
+            return None
         try:
             i = self._rows.index(row)
         except ValueError:
-            return
-        keep_code = row.val("code") if row._code_manual else None
-        code_manual = row._code_manual
-        seq, zone, rid = row.seq, row.zone, row.rid
-        row.dispose()
-        nr = _Row(self, new_kind, rid, zone=zone, seq=seq)
-        nr._code_manual = code_manual
-        if keep_code:
-            nr.set_val("code", keep_code)
-        if keep_libelle is not None and "libelle" in nr.widgets:
-            nr.set_val("libelle", keep_libelle)
-        self._rows[i] = nr
-        self._refresh_libelle_suggestions()
-        self._rebuild_nav()
-        self._sync_row_styles()
-        self.mark_dirty()
-        self._recompute()
-        self._relayout()
-        first_edit = next((c["name"] for c in _ROW_SPECS[new_kind]["cells"]
-                           if c["kind"] != "smart"
-                           and c["name"] not in ("code",)), None)
-        if first_edit:
-            self._widgets[nr.cell_key(first_edit)].setFocus()
+            return None
+        self._converting = True
+        try:
+            keep_code = row.val("code") if row._code_manual else None
+            code_manual = row._code_manual
+            seq, zone, rid = row.seq, row.zone, row.rid
+            row.dispose()
+            nr = _Row(self, new_kind, rid, zone=zone, seq=seq)
+            nr._code_manual = code_manual
+            if keep_code:
+                nr.set_val("code", keep_code)
+            if keep_libelle is not None and "libelle" in nr.widgets:
+                nr.set_val("libelle", keep_libelle)
+            self._rows[i] = nr
+            self._refresh_libelle_suggestions()
+            self._rebuild_nav()
+            self._sync_row_styles()
+            self.mark_dirty()
+            self._recompute()
+            self._relayout()
+            first_edit = next((c["name"] for c in _ROW_SPECS[new_kind]["cells"]
+                               if c["kind"] != "smart"
+                               and c["name"] not in ("code",)), None)
+            if first_edit:
+                self._widgets[nr.cell_key(first_edit)].setFocus()
+        finally:
+            self._converting = False
         return nr
 
     def _insert_free_row(self, zone: str):
@@ -1223,6 +1236,11 @@ class BulletinTemplateScreen(Screen):
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 0)
         split.setSizes([self.TARGET_W + 80, 240])
+        #  Phase E.2: أيّ تحريك للفاصل (إخفاء/إظهار الشريط الجانبيّ أو
+        #  سحبه) يغيّر عرض مساحة العمل ⇒ الخطاف المركزيّ لإعادة التموضع.
+        split.splitterMoved.connect(
+            lambda *_a: self._on_workspace_geometry_changed())
+        self._split = split
         return split
 
     def _build_sidebar(self):
@@ -1601,6 +1619,14 @@ class BulletinTemplateScreen(Screen):
 
     def resizeEvent(self, e):                                 # noqa: N802
         super().resizeEvent(e)
+        self._on_workspace_geometry_changed()
+
+    # ---- الخطاف المركزيّ لأيّ تغيّر في هندسة مساحة العمل (Phase E.2) ----
+    def _on_workspace_geometry_changed(self):
+        """يُستدعى عند **أيّ** تغيّر لعرض/ارتفاع مساحة العمل: تكبير النافذة،
+        تحريك الفاصل، إخفاء/إظهار الشريط الجانبيّ، تغيّر حجم منفذ عرض
+        منطقة التمرير. يعيد ``_relayout`` كاملةً فتُشتقّ مواضع **كلّ** عناصر
+        الوثيقة من مستطيل الصفحة الحاليّ — لا موضع بكسل قديم يبقى."""
         self._relayout()
 
     # ---- زوم بعجلة الفأرة + Ctrl (يشارك نفس zoom state ومؤشّره) ----
@@ -1659,11 +1685,29 @@ class BulletinTemplateScreen(Screen):
             self._gutter_mouse_move(ev.position().toPoint())
         elif t == QEvent.Leave and obj is getattr(self, "_canvas", None):
             self._hide_gutter_controls()
+        #  Phase E.2: تغيّر حجم منفذ عرض منطقة التمرير (إخفاء الشريط
+        #  الجانبيّ / سحب الفاصل / تكبير النافذة) لا يصل إلى ``resizeEvent``
+        #  الشاشة — نلتقطه هنا ونعيد تموضع كلّ عناصر الوثيقة.
+        if (t == QEvent.Resize and hasattr(self, "_scroll")
+                and obj is self._scroll.viewport()):
+            self._on_workspace_geometry_changed()
         return super().eventFilter(obj, ev)
 
     def _relayout(self):
         if not hasattr(self, "_canvas"):
             return
+        #  حارس إعادة الدخول: ``setFixedSize`` على اللوحة قد يُظهر/يُخفي
+        #  شريط تمرير ⇒ حدث Resize لمنفذ العرض ⇒ استدعاء ثانٍ. تمريرةٌ
+        #  واحدة تكفي (كلّ شيء يُشتقّ من ``_view()`` الحاليّ).
+        if getattr(self, "_in_relayout", False):
+            return
+        self._in_relayout = True
+        try:
+            self._relayout_impl()
+        finally:
+            self._in_relayout = False
+
+    def _relayout_impl(self):
         self._hide_gutter_controls()          # تعاد عند حركة الفأرة التالية
         v = self._view()
         self._canvas.setFixedSize(

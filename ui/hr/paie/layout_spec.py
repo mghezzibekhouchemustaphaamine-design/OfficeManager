@@ -109,12 +109,29 @@ def col_bounds(key):
     raise KeyError(key)
 
 
+#  مستطيل التحرير داخل الصفّ (Phase E.3 §22): قاعدةٌ واحدة، **مُوسَّطة
+#  رياضياً** — لا رقم +0.7 سحريّ. نفس المستطيل لكلّ الخلايا (CODE …
+#  RETENUE + المُنتقيات) وعلى كلّ زوم.
+EDITOR_H_MM = ROW_H_MM - 0.8                       # 5.4
+EDITOR_TOP_INSET_MM = round((ROW_H_MM - EDITOR_H_MM) / 2.0, 4)   # 0.4
+
+
 def cell_mm(key, row_idx):
-    """‏``(x_mm, y_mm, w_mm)`` لخانة إدخالٍ في الجدول (مع الحشو)."""
+    """‏``(x_mm, y_mm, w_mm)`` لخانة إدخالٍ في الجدول (مع الحشو، مُوسَّطة)."""
     x0, x1, _al = col_bounds(key)
     return (x0 + CELL_PAD_MM,
-            body_row_y(row_idx) + 0.7,
+            body_row_y(row_idx) + EDITOR_TOP_INSET_MM,
             (x1 - x0) - 2 * CELL_PAD_MM)
+
+
+def editor_rect_mm(key, row_idx):
+    """‏``(x_mm, y_mm, w_mm, h_mm)`` لمستطيل تحرير خليّةٍ — مُوسَّطٌ عمودياً
+    داخل الصفّ. المصدر الوحيد لهندسة محرِّرات الجدول (§22)."""
+    x0, x1, _al = col_bounds(key)
+    return (x0 + CELL_PAD_MM,
+            body_row_y(row_idx) + EDITOR_TOP_INSET_MM,
+            (x1 - x0) - 2 * CELL_PAD_MM,
+            EDITOR_H_MM)
 
 
 def body_row_y(i):

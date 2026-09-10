@@ -34,6 +34,7 @@ from programme.payroll.calc import fmt_montant
 from programme.payroll.config_loader import PayrollConfigError, load_params
 from ui.hr.constants import MOIS_FR
 from ui.hr.paie import layout_spec as L        # هندسة الوثيقة (مليمتر، بلا زوم)
+from ui.hr.paie import presentation as PZ      # طبقة العرض المشتركة (§11)
 from ui.hr.paie import template_simple as T
 from ui.hr.render import TemplateNotReady
 from ui2 import theme
@@ -286,8 +287,14 @@ class _SmartLibelle(QLineEdit):
         self._completer.setFilterMode(Qt.MatchContains)
         self.setCompleter(self._completer)
         self._completer.activated[str].connect(self._on_activated)
+        #  §19: القائمة تلتقط Enter/→ عندما تكون ظاهرةً — نُرشِّح حدثَها كي:
+        #  Enter يُثبّت النصّ **كما كُتب** (لا يستبدله بالمظلَّل)، → يُكمِل
+        #  الاقتراح الحاليّ إن كان المؤشّر في الآخر، Esc يُغلقها بلا مساس.
+        self._completer.popup().installEventFilter(self)
         self.returnPressed.connect(lambda: self.committed.emit(self.text()))
         self.editingFinished.connect(lambda: self.committed.emit(self.text()))
+        #  اقتراحاتٌ بعد حرفين على الأقلّ (سلوك Chrome — §19).
+        self.textEdited.connect(self._on_text_edited)
         #  سهم ▾ داخل الحقل لفتح القائمة كاملةً (§12)
         self._arrow = QToolButton(self)
         self._arrow.setText("▾")
@@ -307,8 +314,55 @@ class _SmartLibelle(QLineEdit):
         self._completer.complete()
 
     def _on_activated(self, text):
+        #  اختيارٌ صريح (نقرة فأرة على القائمة) — يُقبَل ويُثبَّت (§19).
         self.setText(text)
         self.committed.emit(text)
+
+    def _on_text_edited(self, text):
+        if len(text.strip()) < 2:
+            self._completer.popup().hide()
+
+    def _accept_current_completion(self) -> bool:
+        """يُكمِل النصّ إلى الاقتراح الحاليّ إن كان امتداداً صالحاً له
+        والمؤشّرُ في النهاية (§19: → عند وجود اقتراح). ``True`` إن قَبِل."""
+        if self.cursorPosition() != len(self.text()) or self.hasSelectedText():
+            return False
+        cur = self._completer.currentCompletion()
+        ct = self.text()
+        if cur and cur != ct and cur.lower().startswith(ct.lower()):
+            self.setText(cur)
+            self._completer.popup().hide()
+            return True
+        return False
+
+    def keyPressEvent(self, e):                                # noqa: N802
+        key = e.key()
+        pv = self._completer.popup().isVisible()
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            #  §19: يُثبِّت النصّ الحاليّ كما هو — لا يستبدله بالمظلَّل.
+            self._completer.popup().hide()
+            self.committed.emit(self.text())
+            return
+        if key == Qt.Key_Escape and pv:
+            self._completer.popup().hide()             # يُغلق، لا يمسّ النصّ
+            return
+        if key == Qt.Key_Right and self._accept_current_completion():
+            return
+        super().keyPressEvent(e)
+
+    def eventFilter(self, obj, e):                             # noqa: N802
+        if obj is self._completer.popup() and e.type() == QEvent.KeyPress:
+            k = e.key()
+            if k in (Qt.Key_Return, Qt.Key_Enter):
+                self._completer.popup().hide()
+                self.committed.emit(self.text())      # النصّ كما كُتب (§19)
+                return True
+            if k == Qt.Key_Right and self._accept_current_completion():
+                return True
+            if k == Qt.Key_Escape:
+                self._completer.popup().hide()
+                return True
+        return super().eventFilter(obj, e)
 
     def resizeEvent(self, e):                                  # noqa: N802
         super().resizeEvent(e)
@@ -318,6 +372,82 @@ class _SmartLibelle(QLineEdit):
         self._arrow.setFixedSize(s, self.height())
         self._arrow.move(self.width() - s, 0)
         self.setTextMargins(0, 0, s, 0)          # النصّ لا يمرّ تحت السهم
+
+
+class _InlineChoice(QLineEdit):
+    """خليّة اختيارٍ خفيفة (§21): مظهرُ خليّةٍ صفراء نصّيّة عاديّة (نفس
+    الخطّ والارتفاع والحشو) مع سهمٍ صغير؛ نقرةٌ تفتح قائمةً منبثقة. بديلٌ
+    لـ ``QComboBox`` الأصفر الثقيل — jours/heures و50%/100%. في القفل تبدو
+    كنصّ وثيقة (السهم يُعطَّل، لا قائمة). واجهةُ ``currentText`` /
+    ``setCurrentText`` متوافقةٌ مع ما تنتظره الشاشة."""
+
+    changed = Signal(str)
+
+    def __init__(self, options, parent=None):
+        super().__init__(parent)
+        self._options = [str(o) for o in options]
+        self.setReadOnly(True)
+        self.setFrame(False)
+        self.setCursor(Qt.PointingHandCursor)
+        if self._options:
+            super().setText(self._options[0])
+        self._arrow = QToolButton(self)
+        self._arrow.setText("▾")
+        self._arrow.setFocusPolicy(Qt.NoFocus)
+        self._arrow.setCursor(Qt.ArrowCursor)
+        self._arrow.setStyleSheet(
+            "QToolButton{border:0;background:transparent;padding:0;"
+            f"color:{theme.TEXT_DIM};}}")
+        self._arrow.clicked.connect(self._popup)
+
+    #  ---- توافق واجهة QComboBox المستعمَلة في الشاشة ----
+    def currentText(self):
+        return self.text()
+
+    def setCurrentText(self, value):
+        v = str(value or "")
+        if self._options and v not in self._options:
+            v = self._options[0]
+        if v != self.text():
+            super().setText(v)
+
+    def _enabled_for_edit(self):
+        return self._arrow.isEnabled()          # القفل يعطّل السهم
+
+    def _popup(self):
+        if not self._enabled_for_edit():
+            return
+        m = QMenu(self)
+        for opt in self._options:
+            m.addAction(opt, lambda o=opt: self._pick(o))
+        m.exec(self.mapToGlobal(self.rect().bottomLeft()))
+
+    def _pick(self, opt):
+        if opt != self.text():
+            super().setText(opt)
+            self.changed.emit(opt)
+
+    def mousePressEvent(self, e):                              # noqa: N802
+        if self._enabled_for_edit():
+            self._popup()
+        # لا super() — لا وضعَ مؤشّرٍ نصّيّ
+
+    def keyPressEvent(self, e):                                # noqa: N802
+        if not self._enabled_for_edit():
+            return
+        if e.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter,
+                       Qt.Key_Down):
+            self._popup()
+            return
+        super().keyPressEvent(e)
+
+    def resizeEvent(self, e):                                  # noqa: N802
+        super().resizeEvent(e)
+        s = max(9, min(int(self.height() * 0.72), int(self.width() * 0.5)))
+        self._arrow.setFixedSize(s, self.height())
+        self._arrow.move(self.width() - s, 0)
+        self.setTextMargins(0, 0, s, 0)
+
 
 def _prime_entry(r):
     cot, imp = _soumis_class(r.val("soumis") or "CNAS + IRG")
@@ -402,12 +532,12 @@ _ROW_SPECS = {
                _cs("coef", "taux", "choice", ("50%", "100%"), "50%")),
         to_entry=lambda r: {"type": _hs_type(r),
                             "values": {"heures": r.val("qty")}}),
-    #  Absence/Retard = Z1: تُنقِص وعاء [A] وTOTAL_GAINS [6]، لا تدخل
-    #  TOTAL_RETENUES [11]. تُرسَم **مبلغاً سالباً في عمود GAIN** — فيتّزن
-    #  العمودان مع الصافي (نفس تمثيل المُصيِّر، Phase C2 §19).
+    #  Absence/Retard = Z1: تُنقِص وعاء [A] و``total_gains`` في المحرّك (لا
+    #  يُغيَّر — §30). العرضُ (E.3 §9) **اقتطاعٌ موجب في عمود RETENUE**؛
+    #  المجاميع تُصالَح في :mod:`ui.hr.paie.presentation`.
     "absence": dict(
         role="optional", code="ABS", lib="", primary="qty",
-        computed="gain", computed_neg=True, lignes_key=_abs_type,
+        computed="retenue", lignes_key=_abs_type,
         cells=(_cs("code", "code", "text", default="ABS"),
                _cs("libelle", "libelle", "smart", default="Absence"),
                _cs("qty", "nbase", "amount"),
@@ -416,7 +546,7 @@ _ROW_SPECS = {
         to_entry=_abs_entry),
     "retard": dict(
         role="optional", code="RET", lib="RETARD", primary="qty",
-        computed="gain", computed_neg=True, lignes_key="retard",
+        computed="retenue", lignes_key="retard",
         cells=(_cs("code", "code", "text", default="RET"),
                _cs("libelle", "libelle", "smart", default="Retard"),
                _cs("qty", "nbase", "amount")),
@@ -473,7 +603,12 @@ _AJOUTER_MENU = (("IEP / Ancienneté", "iep"),
                  ("Avance / Retenue", "avance"),
                  ("Autre", "autre"))
 
-_MAX_BODY_ROWS = 18          # حدّ عمليّ (لا pagination في A2) — §14
+_MAX_BODY_ROWS = 18          # حدّ عمليّ (لا pagination) — §31
+
+#  خلايا الاختيار التي تستعمل :class:`_InlineChoice` الخفيفة (§21) بدل
+#  ``QComboBox`` — Absence(jours/heures) و HS(50%/100%). prime/autre تبقى
+#  ComboBox (أنواعٌ قديمة غير مُتاحة للإضافة).
+_INLINE_CHOICE_CELLS = {"coef", "mode"}
 
 _COL_ALIGN = {"code": Qt.AlignHCenter, "libelle": Qt.AlignLeft,
               "nbase": Qt.AlignRight, "taux": Qt.AlignRight,
@@ -515,7 +650,11 @@ class _Row:
         self._code_manual = False                 # §20: CODE عُدِّل يدوياً؟
         for c in spec["cells"]:
             name, k = c["name"], self.cell_key(c["name"])
-            if c["kind"] == "choice":
+            if c["kind"] == "choice" and name in _INLINE_CHOICE_CELLS:
+                #  §21: jours/heures و50%/100% — خليّةٌ خفيفة لا ComboBox ثقيل.
+                w = _InlineChoice(c["opts"], screen._canvas)
+                w.changed.connect(lambda _t, kk=k: screen._on_row_edit(kk))
+            elif c["kind"] == "choice":
                 w = QComboBox(screen._canvas)
                 w.addItems(c["opts"])
                 w.currentTextChanged.connect(
@@ -583,7 +722,7 @@ class _Row:
         w = self.widgets.get(cell)
         if w is None:
             return
-        if isinstance(w, QComboBox):
+        if hasattr(w, "setCurrentText"):          # QComboBox / _InlineChoice
             w.setCurrentText(str(value or ""))
         else:
             w.setText(str(value or ""))
@@ -833,13 +972,12 @@ class _SheetCanvas(QWidget):
                 cell("nbase", i, fmt_montant(res.base_irg), "e", cc)
                 cell("retenue", i, fmt_montant(res.retenue_irg), "e", cc)
             else:
-                # المبلغ المحسوب (IEP/Absence/Retard/HS) — خلية للقراءة، تُرسَم
-                # من BulletinView. لا تُرسَم «0,00» إن لم يكن الحساب ممكناً.
+                # المبلغ المحسوب (IEP/HS في GAIN · Absence/Retard **موجباً**
+                # في RETENUE، §9) — خليّةٌ للقراءة تُرسَم من BulletinView.
                 spec = _ROW_SPECS[row.kind]
                 col = spec.get("computed")
                 if col and computed and row._amount is not None:
-                    amt = -row._amount if spec.get("computed_neg") else row._amount
-                    cell(col, i, fmt_montant(amt), "e", cc)
+                    cell(col, i, fmt_montant(abs(row._amount)), "e", cc)
 
         # ---- TOTAL / NET À PAYER: بنيتهما تُرسَم **دائماً** (§3/§30) ----
         #  القيَم وحدها تبقى فارغة إذا تعذّر الحساب — «غير محسوبة» ≠ «صفر».
@@ -852,14 +990,18 @@ class _SheetCanvas(QWidget):
         p.drawLine(int(X(0)), int(ty0), int(X(T.CONTENT_W)), int(ty0))
         p.drawLine(int(X(0)), int(Yt(net_mm)),
                    int(X(T.CONTENT_W)), int(Yt(net_mm)))
+        #  المجاميع المعروضة من طبقة العرض المشتركة (§10/§11): TOTAL_GAIN و
+        #  TOTAL_RETENUE مُصالَحان مع Absence/Retard الموجبة، والصافي من
+        #  المحرّك بلا تغيير — فينطبق  Σgain − Σretenue == net.
+        pres = getattr(sc, "_presented", None)
         mid = Yt(total_mm + T.ROW_H / 2)
         self._cell(p, col_x(T._colf("taux")[1]) - 3 * scale, mid, "TOTAL",
                    "e", tf, ink)
-        if computed:
+        if computed and pres is not None:
             self._cell(p, col_x(T._colf("gain")[1]) - 2.5 * scale, mid,
-                       fmt_montant(res.total_gain), "e", tf, cc)
+                       pres.total_gain_str, "e", tf, cc)
             self._cell(p, col_x(T._colf("retenue")[1]) - 2.5 * scale, mid,
-                       fmt_montant(res.total_retenue), "e", tf, cc)
+                       pres.total_retenue_str, "e", tf, cc)
 
         #  NET — شريط أسود يملأ صفّه داخل الشبكة المتّصلة (لا يطفو، ارتفاعه
         #  = ROW_H بالضبط). النصّ والقيمة بيضاوان.
@@ -872,9 +1014,9 @@ class _SheetCanvas(QWidget):
         midn = Yt(net_mm + T.ROW_H / 2)
         self._cell(p, col_x(T._colf("taux")[1]) - 3 * scale, midn,
                    "NET À PAYER", "e", nf, QColor("white"))
-        if computed:
+        if computed and pres is not None:
             self._cell(p, col_x(T._colf("retenue")[1]) - 2.5 * scale, midn,
-                       fmt_montant(res.net_a_payer), "e", nf, QColor("white"))
+                       pres.net_str, "e", nf, QColor("white"))
 
     @staticmethod
     def _cell(p: QPainter, px, py, s, anchor, f: QFont, color: QColor):
@@ -960,6 +1102,7 @@ class BulletinTemplateScreen(Screen):
         self._calc_input = calc.PaieInput()
         self._calc_result = calc.compute(self._calc_input, self._load_cfg())
         self._bulletin_view = None                      # lignes.BulletinView (المحرّك)
+        self._presented = None                          # PZ.Presented (طبقة العرض)
         self._computed = False                 # نتيجة حقيقية مقابل «غير محسوبة»
 
         self.build_ui()
@@ -1893,19 +2036,27 @@ class BulletinTemplateScreen(Screen):
             w.move(int(v.x(x_mm)), int(top_px))
 
         # ---- خلايا صفوف الجسم الديناميكية ----
+        #  مستطيلٌ **مُوسَّطٌ رياضياً** موحَّد لكلّ الخلايا (§22): من
+        #  ``layout_spec.editor_rect_mm`` — لا رقم +0.7 سحريّ.
         f_row = v.tfont("table_body")             # نظام الخطوط المشترك (§9)
-        h_row = int(v.px(T.ROW_H - 0.8))
         for i, row in enumerate(self._visible_body_rows()):
-            top_mm = T.BODY_TOP + i * T.ROW_H + 0.7
             for cell, w in row.widgets.items():
+                #  الموضع أوّلاً (يبقى ضمن الجدول حتى لو أُخفيت لاحقاً)،
+                #  ثمّ الإظهار/الإخفاء.
+                x_mm, y_mm, w_mm, h_mm = L.editor_rect_mm(row.column(cell), i)
+                w.setFont(f_row)
+                w.setFixedWidth(max(int(v.px(w_mm)), 12))
+                w.setFixedHeight(max(int(v.px(h_mm)), 12))
+                w.move(int(v.x(x_mm)), int(v.y(y_mm)))
                 # خلية «classe» في «Autre» تظهر فقط حين sens = Gain
                 if row.kind == "autre" and cell == "classe":
                     w.setVisible(row.val("sens") == "Gain")
-                x_mm, _y0, w_mm = T._cell_mm(row.column(cell), 0)
-                w.setFont(f_row)
-                w.setFixedWidth(max(int(v.px(w_mm)), 12))
-                w.setFixedHeight(max(h_row, 12))
-                w.move(int(v.x(x_mm)), int(v.y(top_mm)))
+                #  §14: RETENUE في سطرٍ حرٍّ خارج Zone C غير متاحة — تُخفى
+                #  (لا تظهر رماديّةً؛ الخليّة تبقى كورقةٍ نظيفة).
+                elif row.kind == "free" and cell == "retenue":
+                    w.setVisible(row.zone == _ZONE_C)
+                elif w.isHidden():
+                    w.show()               # عادت مرئيّةً بعد تحويل/تغيّر منطقة
         self._canvas.update()
 
     # ----------------------- المظهر (كريمي/أبيض/شريط) -----------------------
@@ -2244,9 +2395,9 @@ class BulletinTemplateScreen(Screen):
                 #  ``eventFilter`` عند القفل.
                 w.setEnabled(True)
             elif hasattr(w, "setReadOnly"):
-                w.setReadOnly(locked)
-            if isinstance(w, _SmartLibelle):
-                w._arrow.setEnabled(not locked)
+                w.setReadOnly(True if isinstance(w, _InlineChoice) else locked)
+            if isinstance(w, (_SmartLibelle, _InlineChoice)):
+                w._arrow.setEnabled(not locked)     # القفل: لا قائمة، لا سهم
         if hasattr(self, "_add_btn"):
             self._add_btn.setEnabled(not locked)
         if locked:
@@ -2540,6 +2691,13 @@ class BulletinTemplateScreen(Screen):
                 self._build_entries(), cfg)
             self._calc_input = self._build_input()
             self._calc_result = self._view_to_paieresult(self._bulletin_view)
+            #  طبقة العرض المشتركة (§11): صفوفٌ ومجاميع معروضة — نفس ما
+            #  يستهلكه PDF/DOCX.
+            self._presented = PZ.build(
+                self._bulletin_view,
+                jours=_num(self._salaire_row().val("nbase"))
+                if self._salaire_row() else None,
+                pad_zone_c=False)
             self._computed = self._is_computable()
             #  المبلغ المحسوب للصفوف المتكيّفة — None حين لا يمكن الحساب
             #  (‏«صفر حقيقي» ≠ «غير محسوب»، §5).
@@ -2551,6 +2709,7 @@ class BulletinTemplateScreen(Screen):
         except Exception:                                    # noqa: BLE001
             logger.warning("إعادة حساب الكشف فشلت", exc_info=True)
             self._bulletin_view = None
+            self._presented = None
             for r in self._rows:
                 r._amount = None
             self._calc_input = self._build_input()

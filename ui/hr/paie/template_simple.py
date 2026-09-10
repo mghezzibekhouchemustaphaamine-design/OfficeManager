@@ -13,6 +13,7 @@ from programme.payroll import registry
 from programme.payroll.calc import fmt_montant
 from ui.hr.constants import MOIS_FR, PAIE_DEFAULT_CODES
 from ui.hr.paie import layout_spec as L
+from ui.hr.paie import presentation as PZ
 from ui.hr.render import TemplateNotReady
 
 # ============================================================================
@@ -468,55 +469,10 @@ def _row_from_lv(lv, jours=None):
 
 
 def _bulletin_rows_from_view(view, employee, *, jours=None):
-    """أسطر جدول الكشف من :class:`~programme.payroll.lignes.BulletinView`،
-    **بنفس ترتيب مناطق الشاشة** (Phase E §8 — SCREEN = PDF):
-
-        SALAIRE DE BASE
-        [ Zone A = أسطر Z1 عدا الأجر ]
-        CNAS
-        PANIER · (R+) TRANSPORT   (دائماً، حتى بصفر — §22)
-        [ Zone B = أسطر Z2 عدا السلة/النقل ]
-        IRG
-        [ Zone C = أسطر Z3 + Z4 ]
-        [ حشوٌ فارغ حتى _RENDER_MIN_BODY_ROWS ]
-
-    CNAS/IRG سطران نظاميّان من ‎[A]/[B]‎ و‎[C]/[D]‎. لا خلايا بلا معنى."""
-    c = PAIE_DEFAULT_CODES
-    res = view.result
-    by_zone = {"Z1": [], "Z2": [], "Z3": [], "Z4": []}
-    salaire = None
-    pt = {}
-    for lv in view.lignes:
-        if lv.key == "salaire_base":
-            salaire = lv
-            continue
-        if lv.key in ("panier", "transport"):
-            pt[lv.key] = lv
-            continue
-        by_zone.get(lv.zone, by_zone["Z3"]).append(lv)
-
-    rows = []
-    if salaire is not None:
-        rows.append(_row_from_lv(salaire, jours))
-    rows += [_row_from_lv(lv) for lv in by_zone["Z1"]]          # Zone A
-    rows.append({"code": c["cnas"], "libelle": "RETENUE SÉCU. SOCIALE",
-                 "nbase": fmt_montant(res.assiette_cnas), "taux": "9,00",
-                 "gain": "", "retenue": fmt_montant(res.retenue_cnas)})
-    for key, lab in (("panier", "PANIER"), ("transport", "(R+) TRANSPORT")):
-        if key in pt:
-            rows.append(_row_from_lv(pt[key]))
-        else:
-            rows.append({"code": c[key], "libelle": lab, "nbase": "",
-                         "taux": "", "gain": fmt_montant(0), "retenue": ""})
-    rows += [_row_from_lv(lv) for lv in by_zone["Z2"]]          # Zone B
-    rows.append({"code": c["irg"], "libelle": "RETENUE IRG",
-                 "nbase": fmt_montant(res.assiette_irg), "taux": "",
-                 "gain": "", "retenue": fmt_montant(res.irg)})
-    zone_c = [_row_from_lv(lv) for lv in by_zone["Z3"] + by_zone["Z4"]]
-    blank = {k: "" for k, *_ in COLS}
-    zone_c += [dict(blank) for _ in range(max(0, _RENDER_MIN_ZONE_C
-                                              - len(zone_c)))]
-    return rows + zone_c
+    """أسطر جدول الكشف من :class:`~programme.payroll.lignes.BulletinView`
+    عبر **طبقة العرض المشتركة** :mod:`ui.hr.paie.presentation` (Phase E.3
+    §11) — نفس الترتيب ونفس دلالة Absence/Retard الموجبة للشاشة و DOCX."""
+    return [pr.as_cols() for pr in PZ.build(view, jours=jours).rows]
 
 
 def _pad_rows(rows, minimum=_RENDER_MIN_BODY_ROWS):
@@ -816,11 +772,17 @@ class SimpleBulletinTemplate:
 
         doc.add_paragraph()
 
-        # جدول الرُّبريكات — من BulletinView إن مُرّر (مصدر الحقيقة، Phase C2)
-        #  المسار عبر view مبطَّنٌ أصلاً حتى MIN_ZONE_C (SCREEN = PDF)؛ المسار
-        #  القديم بلا view يأخذ الحدّ الأدنى الإجماليّ.
-        rows = (_bulletin_rows_from_view(view, employee, jours=pin.jours)
-                if view is not None else _pad_rows(_bulletin_rows(pin, res)))
+        # جدول الرُّبريكات + المجاميع — من طبقة العرض المشتركة (Phase E.3 §11)
+        if view is not None:
+            pres = PZ.build(view, jours=pin.jours)
+            rows = [pr.as_cols() for pr in pres.rows]
+            tot_gain, tot_ret = pres.total_gain_str, pres.total_retenue_str
+            tot_net = pres.net_str
+        else:
+            rows = _pad_rows(_bulletin_rows(pin, res))
+            tot_gain, tot_ret = (fmt_montant(res.total_gain),
+                                 fmt_montant(res.total_retenue))
+            tot_net = fmt_montant(res.net_a_payer)
         rt = doc.add_table(rows=1 + len(rows) + 2, cols=6)
         rt.style = "Table Grid"
         heads = [c[4] for c in COLS]
@@ -843,8 +805,8 @@ class SimpleBulletinTemplate:
         merged.text = "TOTAL"
         merged.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
         merged.paragraphs[0].runs[0].bold = True
-        for j, val in ((4, res.total_gain), (5, res.total_retenue)):
-            tr.cells[j].text = fmt_montant(val)
+        for j, txt in ((4, tot_gain), (5, tot_ret)):
+            tr.cells[j].text = txt
             tr.cells[j].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
             tr.cells[j].paragraphs[0].runs[0].bold = True
 
@@ -857,7 +819,7 @@ class SimpleBulletinTemplate:
         shade(nr.cells[5], "111111")
         nc = nr.cells[5].paragraphs[0]
         nc.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        run = nc.add_run(fmt_montant(res.net_a_payer))
+        run = nc.add_run(tot_net)
         run.bold = True
         run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
 
@@ -918,9 +880,17 @@ class SimpleBulletinTemplate:
                          "block_values")
         pg.draw_text(a_x, L.ident_row_y(1), "à", "block_labels")
 
-        # ---------- جدول الرُبريكات ----------
-        rows = (_bulletin_rows_from_view(view, employee, jours=pin.jours)
-                if view is not None else _pad_rows(_bulletin_rows(pin, res)))
+        # ---------- جدول الرُبريكات + المجاميع — طبقة العرض المشتركة (§11) ----------
+        if view is not None:
+            pres = PZ.build(view, jours=pin.jours)
+            rows = [pr.as_cols() for pr in pres.rows]
+            tot_gain, tot_ret, tot_net = (pres.total_gain_str,
+                                          pres.total_retenue_str, pres.net_str)
+        else:
+            rows = _pad_rows(_bulletin_rows(pin, res))
+            tot_gain, tot_ret = (fmt_montant(res.total_gain),
+                                 fmt_montant(res.total_retenue))
+            tot_net = fmt_montant(res.net_a_payer)
         n = len(rows)                                     # == screen _n_body_drawn
         head_y = L.TABLE_HEAD_Y_MM
         head_h = RH + 1.0
@@ -951,17 +921,16 @@ class SimpleBulletinTemplate:
         pg.draw_text(tx1 - 3.0, total_y + RH / 2 + 1.0, "TOTAL", "total_row",
                      align="r")
         pg.draw_text(gx1 - L.CELL_PAD_MM, total_y + RH / 2 + 1.0,
-                     fmt_montant(res.total_gain), "total_row", align="r")
+                     tot_gain, "total_row", align="r")
         pg.draw_text(rx1 - L.CELL_PAD_MM, total_y + RH / 2 + 1.0,
-                     fmt_montant(res.total_retenue), "total_row", align="r")
+                     tot_ret, "total_row", align="r")
 
         # ---------- NET À PAYER — شريط أسود بنصٍّ أبيض ----------
         pg.draw_rect(C0, net_y, CW, RH, fill=L.BAND_BLACK)
         pg.draw_text(tx1 - 3.0, net_y + RH / 2 + 1.3, "NET À PAYER", "net_row",
                      color=white, align="r")
         pg.draw_text(rx1 - L.CELL_PAD_MM, net_y + RH / 2 + 1.3,
-                     fmt_montant(res.net_a_payer), "net_row", color=white,
-                     align="r")
+                     tot_net, "net_row", color=white, align="r")
 
         # ---------- إطار خارجيّ متّصل من ترويسة الجدول حتى أسفل NET ----------
         pg.draw_line(C0, head_y + head_h, C0, tbl_bot)

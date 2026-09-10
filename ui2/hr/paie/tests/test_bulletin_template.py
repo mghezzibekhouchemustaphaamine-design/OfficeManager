@@ -1534,6 +1534,290 @@ class BulletinTemplateE3Insert(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateE3Calc(unittest.TestCase):
+    """E.3 §16/§17 — تدقيق الحساب الذكيّ بالمحرّك الفعليّ + التكرار."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_e3c_")
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        os.environ[paths._DATA_DIR_ENV_OVERRIDE] = self._tmp
+        open(os.path.join(self._tmp, "office_system.db"), "a").close()
+        database.init_db()
+        mod.confirm = lambda *_a, **_k: True
+        self.scr = BulletinTemplateScreen(conn=None)
+        w = self.scr._widgets
+        w["mois"].setText("OCTOBRE"); w["annee"].setText("2026")
+        w["id_date_embauche"].set_iso("2016-06-14")
+        sr = [r for r in self.scr._rows if r.kind == "salaire"][0]
+        sr.set_val("gain", "45000"); sr.set_val("nbase", "30")
+        self.scr._recompute()
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        for k in (paths._LOCAL_STATE_ENV_OVERRIDE, paths._DATA_DIR_ENV_OVERRIDE):
+            os.environ.pop(k, None)
+
+    def _add(self, kind, **cells):
+        r = self.scr._add_row(kind)
+        for c, v in cells.items():
+            r.set_val(c, v)
+        self.scr._recompute()
+        return r
+
+    def _lines(self, key):
+        return [lv for lv in self.scr._bulletin_view.lignes if lv.key == key]
+
+    def _base(self):
+        r = self.scr._calc_result
+        return (float(r.base_cnas), float(r.base_irg),
+                float(self.scr._bulletin_view.e))
+
+    # ---------- IEP ----------
+    def test_iep_amount_and_manual_override(self):
+        r = self._add("iep")
+        self.assertTrue(r.val("taux"))                 # نسبة مقترَحة
+        self.assertIsNotNone(r._amount)
+        self.assertGreater(r._amount, 0)
+        r.set_val("taux", "0.20"); r._iep_manual = True
+        self.scr._recompute()
+        self.assertEqual(r.val("taux"), "0.20")        # override مُحترَم
+        self.assertEqual(len(self._lines("iep")), 1)
+
+    def test_only_one_iep_contributes(self):
+        self._add("iep", taux="0.10")
+        self.scr._add_row("iep")                       # محجوب
+        self.assertLessEqual(len(self._lines("iep")), 1)
+
+    # ---------- HS ----------
+    def test_hs_50_and_100_amounts(self):
+        b0 = self.scr._calc_result.net_a_payer
+        r50 = self._add("hs", qty="10", coef="50%")
+        n50 = self.scr._calc_result.net_a_payer
+        self.assertGreater(n50, b0)
+        self.assertIsNotNone(r50._amount)
+        r100 = self._add("hs", qty="10", coef="100%")
+        self.assertGreater(self.scr._calc_result.net_a_payer, n50)
+        self.assertGreater(r100._amount, r50._amount)  # 100% > 50% لنفس الكمّية
+
+    def test_two_hs_rows_each_own_amount(self):
+        a = self._add("hs", qty="4", coef="50%")
+        b = self._add("hs", qty="9", coef="50%")
+        self.assertNotEqual(a._amount, b._amount)
+        tot = sum(float(lv.montant) for lv in self._lines("hs_50"))
+        self.assertAlmostEqual(float(a._amount) + float(b._amount), tot, 1)
+
+    # ---------- Absence / Retard: اقتطاع موجب + وعاء ينخفض ----------
+    def test_absence_jours_positive_retenue_and_bases(self):
+        c0, i0, n0 = self._base()
+        r = self._add("absence", qty="3", mode="Absence (jours)")
+        c1, i1, n1 = self._base()
+        self.assertGreater(r._amount, 0)               # مبلغٌ موجب
+        self.assertLess(c1, c0)                        # وعاء CNAS ينخفض
+        self.assertLess(n1, n0)                        # الصافي ينخفض
+        # يُعرَض في RETENUE لا GAIN
+        pr = [p for p in mod.PZ.build(self.scr._bulletin_view).rows
+              if p.key in ("abs_jours",)][0]
+        self.assertTrue(pr.retenue and not pr.gain)
+        self.assertFalse(pr.retenue.startswith("-"))
+
+    def test_absence_heures_and_retard_same_shape(self):
+        for kind, cells in (("absence", {"qty": "5",
+                                         "mode": "Absence (heures)"}),
+                            ("retard", {"qty": "4"})):
+            n0 = self.scr._calc_result.net_a_payer
+            r = self._add(kind, **cells)
+            self.assertGreater(r._amount, 0)
+            self.assertLess(self.scr._calc_result.net_a_payer, n0)
+
+    def test_repeated_absence_retard_sum_matches_engine(self):
+        self._add("absence", qty="2", mode="Absence (jours)")
+        self._add("absence", qty="1", mode="Absence (jours)")
+        self._add("retard", qty="3")
+        self._add("retard", qty="2")
+        for key, amounts in (
+                ("abs_jours", [r._amount for r in self.scr._rows
+                               if r.kind == "absence"]),
+                ("retard", [r._amount for r in self.scr._rows
+                            if r.kind == "retard"])):
+            eng = sum(float(lv.montant) for lv in self._lines(key))
+            self.assertAlmostEqual(sum(float(a) for a in amounts), eng, 1)
+
+    # ---------- Avance ----------
+    def test_avance_reduces_net_once_no_base_change(self):
+        c0, i0, n0 = self._base()
+        self._add("avance", montant="5000")
+        c1, i1, n1 = self._base()
+        self.assertAlmostEqual(c0, c1, 1)             # لا تمسّ وعاء CNAS
+        self.assertAlmostEqual(i0, i1, 1)             # ولا IRG
+        self.assertAlmostEqual(n0 - n1, 5000.0, 0)    # مرّة واحدة
+
+    # ---------- Free Gain A/B/C ----------
+    def test_free_gain_zone_effects(self):
+        c0, i0, _ = self._base()
+        ra = self.scr._insert_free_row("A"); ra.set_val("gain", "3000")
+        self.scr._recompute()
+        c1, i1, _ = self._base()
+        self.assertGreater(c1, c0); self.assertGreater(i1, i0)   # A ⇒ CNAS+IRG
+        self.scr._remove_row(ra)
+        rb = self.scr._insert_free_row("B"); rb.set_val("gain", "3000")
+        self.scr._recompute()
+        c2, i2, _ = self._base()
+        self.assertAlmostEqual(c2, c0, 1)            # B ⇒ لا CNAS
+        self.assertGreater(i2, i0)                   # B ⇒ IRG
+        self.scr._remove_row(rb)
+        n_before = self.scr._calc_result.net_a_payer
+        rc = self.scr._insert_free_row("C"); rc.set_val("gain", "3000")
+        self.scr._recompute()
+        c3, i3, _ = self._base()
+        self.assertAlmostEqual(c3, c0, 1); self.assertAlmostEqual(i3, i0, 1)
+        self.assertGreater(self.scr._calc_result.net_a_payer, n_before)
+
+    def test_free_retenue_c_reduces_net_once(self):
+        n0 = self.scr._calc_result.net_a_payer
+        r = self.scr._insert_free_row("C"); r.set_val("retenue", "1500")
+        self.scr._recompute()
+        self.assertAlmostEqual(n0 - self.scr._calc_result.net_a_payer,
+                               1500.0, 0)
+
+    def test_unsupported_free_retenue_ab_not_computed(self):
+        n0 = self.scr._calc_result.net_a_payer
+        for zone in ("A", "B"):
+            r = self.scr._insert_free_row(zone)
+            r.set_val("retenue", "2000")              # عبر مسوّدة قديمة فعلياً
+            self.scr._recompute()
+            self.assertIsNone(r.entry())              # لا تُحتسَب
+            self.assertAlmostEqual(self.scr._calc_result.net_a_payer, n0, 1)
+            v = self.scr.validate()
+            self.assertFalse(v.ready_for_final)       # مُبرَزة للمراجعة
+            self.scr._remove_row(r)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateE3UX(unittest.TestCase):
+    """E.3 §19/§21/§22 — توسيط المحرِّر + إكمال ذكيّ + مُنتقيات خفيفة."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_e3ux_")
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        mod.confirm = lambda *_a, **_k: True
+        self.scr = BulletinTemplateScreen(conn=None)
+        self.scr._scroll.viewport().resize(950, 1250)
+        self.scr._widgets["mois"].setText("OCTOBRE")
+        self.scr._widgets["annee"].setText("2026")
+        [r for r in self.scr._rows if r.kind == "salaire"][0].set_val("gain",
+                                                                      "45000")
+        self.scr._recompute()
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        os.environ.pop(paths._LOCAL_STATE_ENV_OVERRIDE, None)
+
+    # ---------- §22 توسيط مستطيل المحرِّر ----------
+    def test_editor_rect_vertically_centered(self):
+        import ui.hr.paie.layout_spec as LS
+        gap = LS.EDITOR_TOP_INSET_MM
+        self.assertAlmostEqual(gap, (LS.ROW_H_MM - LS.EDITOR_H_MM) / 2, 4)
+        for col in ("code", "libelle", "nbase", "taux", "gain", "retenue"):
+            x, y, w, h = LS.editor_rect_mm(col, 0)
+            top_gap = y - LS.body_row_y(0)
+            bot_gap = (LS.body_row_y(0) + LS.ROW_H_MM) - (y + h)
+            self.assertAlmostEqual(top_gap, bot_gap, 3, col)
+
+    def test_editor_centered_at_zooms(self):
+        r = self.scr._insert_free_row("A")
+        for zoom in (45, 100, 200, 260):
+            self.scr._set_zoom(zoom)
+            self.scr._relayout()
+            v = self.scr._view()
+            i = self.scr._visible_body_rows().index(r)
+            row_top = v.y(T.BODY_TOP + i * T.ROW_H)
+            row_bot = v.y(T.BODY_TOP + (i + 1) * T.ROW_H)
+            g = self.scr._widgets[r.cell_key("gain")].geometry()
+            self.assertAlmostEqual(g.top() - row_top,
+                                   row_bot - g.bottom(), delta=3,
+                                   msg=f"zoom {zoom}")
+
+    # ---------- §19 إكمال LIBELLÉ ----------
+    def test_right_arrow_completes_current_suggestion(self):
+        r = self.scr._insert_free_row("A")
+        w = r.widgets["libelle"]
+        w.setText("Heures s")
+        w._completer.setCompletionPrefix("Heures s")
+        ok = w._accept_current_completion()
+        self.assertTrue(ok)
+        self.assertEqual(w.text(), "Heures supplémentaires")
+
+    def test_enter_keeps_typed_text_not_highlighted(self):
+        from PySide6.QtCore import Qt as _Qt
+        from PySide6.QtGui import QKeyEvent
+        r = self.scr._insert_free_row("A")
+        w = r.widgets["libelle"]
+        got = []
+        w.committed.connect(lambda t: got.append(t))
+        w.setText("Prime maison")                     # نصٌّ لا يطابق
+        ev = QKeyEvent(QKeyEvent.KeyPress, _Qt.Key_Return, _Qt.NoModifier)
+        w.keyPressEvent(ev)
+        self.assertEqual(got[-1], "Prime maison")     # كما كُتب
+        nr = [x for x in self.scr._rows if x.rid == r.rid][0]
+        self.assertEqual(nr.kind, "free")             # بقي حرّاً
+
+    def test_two_char_gate_hides_popup(self):
+        r = self.scr._insert_free_row("A")
+        w = r.widgets["libelle"]
+        w._on_text_edited("H")
+        self.assertTrue(w._completer.popup().isHidden())
+
+    # ---------- §21 مُنتقيات خفيفة ----------
+    def test_hs_absence_use_inline_choice_not_combobox(self):
+        from PySide6.QtWidgets import QComboBox
+        r = self.scr._add_row("hs")
+        self.assertIsInstance(r.widgets["coef"], mod._InlineChoice)
+        self.assertNotIsInstance(r.widgets["coef"], QComboBox)
+        a = self.scr._add_row("absence")
+        self.assertIsInstance(a.widgets["mode"], mod._InlineChoice)
+
+    def test_inline_choice_pick_updates_and_recomputes(self):
+        r = self.scr._add_row("hs")
+        r.set_val("qty", "10")
+        self.scr._recompute()
+        r.widgets["coef"]._pick("100%")
+        self.assertEqual(r.val("coef"), "100%")
+
+    def test_inline_choice_yellow_not_gray(self):
+        r = self.scr._add_row("hs")
+        self.scr._style_field(r.cell_key("coef"))
+        ss = r.widgets["coef"].styleSheet()
+        self.assertIn("background:" + theme.FIELD_EMPTY, ss)
+
+    def test_inline_choice_locked_blocks_menu(self):
+        r = self.scr._add_row("hs")
+        self.scr._set_locked(True)
+        self.assertFalse(r.widgets["coef"]._arrow.isEnabled())
+        r.widgets["coef"]._popup()                    # لا ينفجر، لا قائمة
+        self.assertTrue(r.widgets["coef"].isReadOnly())
+
+    # ---------- §14 RETENUE حرّة مخفيّة في Zone A/B ----------
+    def test_free_retenue_hidden_zone_a_b(self):
+        for zone in ("A", "B"):
+            r = self.scr._insert_free_row(zone)
+            self.scr._relayout()
+            self.assertTrue(r.widgets["retenue"].isHidden(), zone)
+        rc = self.scr._insert_free_row("C")
+        self.scr._relayout()
+        self.assertFalse(rc.widgets["retenue"].isHidden())
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
 class BulletinTemplateValidation(unittest.TestCase):
     """Phase B — تحقّق مرن + ⚠️ غير مكتمل."""
 
@@ -2009,29 +2293,33 @@ class RendererFromViewC2(unittest.TestCase):
                       "RETARD"):
             self.assertIn(token, libs, token)
 
-    def test_absence_retard_are_negative_gain_not_retenue(self):
+    def test_absence_retard_shown_as_positive_retenue(self):
+        #  E.3 §9: المُنقِصات تُعرَض اقتطاعاً **موجباً** في RETENUE — لا −GAIN.
         self._full(absence={"qty": "2", "mode": "Absence (jours)"},
                    retard={"qty": "3"})
         for r in self._rows():
-            lib = r["libelle"]
-            if "ABSENCE" in lib or "TÂCHE" in lib or "GHIAB" in lib \
-                    or r["code"] == "4000" or r["code"] == "4010" \
-                    or r["code"] == "4020":
-                self.assertTrue(r["gain"].strip().startswith("-"), r)
-                self.assertEqual(r["retenue"].strip(), "", r)
+            if r["code"] in ("4000", "4010", "4020"):
+                self.assertEqual(r["gain"].strip(), "", r)
+                self.assertTrue(r["retenue"].strip(), r)
+                self.assertFalse(r["retenue"].strip().startswith("-"), r)
 
-    def test_columns_balance_to_net(self):
+    def test_columns_balance_to_displayed_net(self):
+        #  E.3 §10/§29: بعد المصالحة  Σ(GAIN معروض) − Σ(RETENUE معروض) == NET.
         self._full(iep={}, hs={"qty": "10", "coef": "50%"},
                    absence={"qty": "1", "mode": "Absence (jours)"},
                    retard={"qty": "2"},
                    avance={"libelle": "AV", "montant": "5000"})
+        import ui.hr.paie.presentation as PZ
+        pres = PZ.build(self.scr._bulletin_view, jours=26)
         rows = self._rows()
         g = sum(_money(r["gain"]) for r in rows)
         rr = sum(_money(r["retenue"]) for r in rows)
-        res = self.scr._bulletin_view.result
-        self.assertAlmostEqual(g, float(res.total_gains), places=1)
-        self.assertAlmostEqual(rr, float(res.total_retenues), places=1)
-        self.assertAlmostEqual(g - rr, float(self.scr._bulletin_view.e), places=1)
+        net = float(self.scr._bulletin_view.e)
+        self.assertAlmostEqual(g - rr, net, places=1)
+        self.assertAlmostEqual(g, float(pres.total_gain), places=1)
+        self.assertAlmostEqual(rr, float(pres.total_retenue), places=1)
+        self.assertAlmostEqual(float(pres.total_gain - pres.total_retenue),
+                               net, places=1)
 
     def test_totals_net_from_engine(self):
         self._full()

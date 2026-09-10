@@ -553,13 +553,13 @@ class BulletinTemplateValidation(unittest.TestCase):
         self.assertTrue(v.payroll_errors)
         self.assertGreaterEqual(len(v.problems), 10)
 
-    def test_generate_blocked_when_incomplete_emits_one_notice(self):
+    def test_finalize_blocked_when_incomplete_emits_one_notice(self):
         import ui2.alerts as alerts
         calls = []
         orig = alerts.warn
         alerts.warn = lambda *a, **k: calls.append(a)
         try:
-            self.scr._on_generate("docx")
+            self.scr._on_finalize()
         finally:
             alerts.warn = orig
         self.assertEqual(len(calls), 1)
@@ -900,6 +900,181 @@ class RendererFromViewC2(unittest.TestCase):
         self.assertIn("AVANCE", blob)
         self.assertIn("NET À PAYER", blob)
         self.assertIn(calc.fmt_montant(self.scr._bulletin_view.e), blob)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class FinalizeLockC3(unittest.TestCase):
+    """Phase C3 — Finalize شبه معامليّ + 🔒 قفل + فتح القفل + استبدال آمن."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_c3_")
+        os.environ[paths._LOCAL_STATE_ENV_OVERRIDE] = self._tmp
+        os.environ[paths._DATA_DIR_ENV_OVERRIDE] = self._tmp
+        os.environ[paths._TRAVAIL_ENV_OVERRIDE] = os.path.join(self._tmp, "travail")
+        database.init_db()
+        mod.confirm = lambda *_a, **_k: False        # لا تفتح الملفّ
+        import ui2.alerts as _al
+        self._al, self._al_warn = _al, _al.warn
+        _al.warn = lambda *_a, **_k: None            # لا صناديق حوار حاجبة
+        self.scr = BulletinTemplateScreen(conn=None)
+
+    def tearDown(self):
+        self._al.warn = self._al_warn
+        self.scr.deleteLater()
+        for k in (paths._LOCAL_STATE_ENV_OVERRIDE, paths._DATA_DIR_ENV_OVERRIDE,
+                  paths._TRAVAIL_ENV_OVERRIDE):
+            os.environ.pop(k, None)
+
+    def _row(self, kind, occ=-1):
+        rs = [r for r in self.scr._rows if r.kind == kind]
+        return rs[occ] if rs else None
+
+    def _fill_final(self, s=None):
+        s = s or self.scr
+        w = s._widgets
+        for k, v in {"emp_raison_sociale": "SARL X",
+                     "emp_adresse": "12 RUE, ALGER", "emp_cnas": "16 412 078 56",
+                     "mois": "OCTOBRE", "annee": "2026", "id_nom": "BENALI",
+                     "id_prenom": "Karim", "id_lieu_naissance": "ALGER",
+                     "id_fonction": "COMPTABLE"}.items():
+            w[k].setText(v)
+        w["id_date_naissance"].set_iso("1990-05-10")
+        w["id_date_embauche"].set_iso("2016-06-14")
+        sr = [r for r in s._rows if r.kind == "salaire"][0]
+        sr.set_val("gain", "45000"); sr.set_val("nbase", "26")
+        [r for r in s._rows if r.kind == "prime"][0].set_val("gain", "8000")
+        [r for r in s._rows if r.kind == "prime"][0].set_val("libelle", "RENDEMENT")
+        s._recompute()
+
+    # ---- الاختبارات ----
+    def test_finalize_blocked_when_invalid(self):
+        self.scr._widgets["id_nom"].setText("X")      # ناقص كثير
+        self.scr._on_finalize()
+        self.assertNotEqual(self.scr._work_state, "final")
+        self.assertFalse(self.scr._locked)
+        self.assertTrue(self.scr._warnings_active)
+
+    def test_successful_finalize_creates_docx_pdf_and_locks(self):
+        self._fill_final()
+        self.scr._on_finalize()
+        self.assertEqual(self.scr._work_state, "final")
+        self.assertTrue(self.scr._locked)
+        self.assertTrue(os.path.exists(self.scr._final_docx))
+        self.assertTrue(os.path.exists(self.scr._final_pdf))
+        row = database.get_hr_document(self.scr._work_id)
+        self.assertEqual(row["state"], "final")
+        self.assertEqual(row["file_path"], self.scr._final_docx)
+        self.assertEqual(row["pdf_path"], self.scr._final_pdf)
+        self.assertEqual(self.scr.work_badge(), "🔒")
+
+    def test_failed_pdf_does_not_lock_and_cleans_partials(self):
+        self._fill_final()
+        tpl = mod.T.get_renderer("simple")
+        orig = tpl.build_pdf
+
+        def boom(*a, **k):
+            raise RuntimeError("انفجار PDF")
+        tpl.build_pdf = staticmethod(boom)
+        try:
+            self.scr._on_finalize()
+        finally:
+            tpl.build_pdf = staticmethod(orig)
+        self.assertNotEqual(self.scr._work_state, "final")
+        self.assertFalse(self.scr._locked)
+        base = os.path.join(self._tmp, "travail", "Bulletins de paie")
+        leftovers = [f for f in (os.listdir(base) if os.path.isdir(base) else [])
+                     if f.endswith(".part")]
+        self.assertEqual(leftovers, [])
+
+    def test_db_save_failure_reverts_and_does_not_lock(self):
+        self._fill_final()
+        orig = database.save_hr_work
+        database.save_hr_work = lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("DB down"))
+        try:
+            self.scr._on_finalize()
+        finally:
+            database.save_hr_work = orig
+        self.assertIsNone(self.scr._work_state)
+        self.assertFalse(self.scr._locked)
+
+    def test_lock_covers_all_inputs_zoom_still_works(self):
+        self._fill_final()
+        self.scr._add_row("hs")
+        self._row("hs", -1).set_val("qty", "6")
+        self.scr._recompute()
+        self.scr._on_finalize()
+        # كلّ مدخلات الترويسة والصفوف للقراءة فقط
+        for k, w in self.scr._widgets.items():
+            if hasattr(w, "isReadOnly"):
+                self.assertTrue(w.isReadOnly(), k)
+        self.assertFalse(self.scr._add_btn.isEnabled())
+        # الزوم يبقى يعمل فوق العمل المقفول
+        self.scr._set_zoom(45)
+        self.assertEqual(self.scr.zoom, 45)
+        # + Ajouter / حذف صفّ محروسان
+        n = len(self.scr._rows)
+        self.scr._add_row("avance")
+        self.assertEqual(len(self.scr._rows), n)
+
+    def test_unlock_restores_editability(self):
+        self._fill_final()
+        self.scr._on_finalize()
+        mod.confirm = lambda *_a, **_k: True
+        self.scr._on_unlock()
+        self.assertFalse(self.scr._locked)
+        self.assertFalse(self.scr._widgets["id_nom"].isReadOnly())
+        self.assertTrue(self.scr._add_btn.isEnabled())
+        self.assertEqual(self.scr._work_state, "final")   # ما زال 🔒 داخلياً
+
+    def test_edit_after_unlock_save_does_not_touch_final_files(self):
+        self._fill_final()
+        self.scr._on_finalize()
+        pdf = self.scr._final_pdf
+        before = os.path.getmtime(pdf), os.path.getsize(pdf)
+        mod.confirm = lambda *_a, **_k: True
+        self.scr._on_unlock()
+        self.scr._widgets["id_prenom"].setText("Kamel")
+        self.scr._on_save()
+        self.assertEqual((os.path.getmtime(pdf), os.path.getsize(pdf)), before)
+        self.assertEqual(self.scr._work_state, "incomplete")
+        self.assertEqual(self.scr.work_badge(), "⚠️")
+        row = database.get_hr_document(self.scr._work_id)
+        self.assertEqual(row["state"], "incomplete")
+        self.assertEqual(row["pdf_path"], pdf)            # مرجع «آخر ما صدر»
+
+    def test_refinalize_same_work_replaces_artifacts(self):
+        self._fill_final()
+        self.scr._on_finalize()
+        wid, pdf = self.scr._work_id, self.scr._final_pdf
+        mod.confirm = lambda *_a, **_k: True
+        self.scr._on_unlock()
+        self.scr._widgets["id_prenom"].setText("Kamel")
+        self.scr._recompute()
+        mod.confirm = lambda *_a, **_k: False
+        self.scr._on_finalize()
+        self.assertEqual(self.scr._work_id, wid)
+        self.assertEqual(self.scr._final_pdf, pdf)        # نفس المسار
+        self.assertEqual(self.scr._work_state, "final")
+        rows = [r for r in database.list_hr_documents(
+            screen_key="hr_bulletin_paie") if r["id"] == wid]
+        self.assertEqual(len(rows), 1)
+
+    def test_reopen_final_work_is_locked(self):
+        self._fill_final()
+        self.scr._on_finalize()
+        wid = self.scr._work_id
+        other = BulletinTemplateScreen(conn=None)
+        other.load_work(database.get_hr_document(wid))
+        self.assertEqual(other._work_state, "final")
+        self.assertTrue(other._locked)
+        self.assertTrue(other._widgets["id_nom"].isReadOnly())
+        other.deleteLater()
 
 
 if __name__ == "__main__":

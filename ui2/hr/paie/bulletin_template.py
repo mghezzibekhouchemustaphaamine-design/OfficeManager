@@ -370,6 +370,15 @@ def _safe(text) -> str:
     return re.sub(r"\s+", "_", out) or "SN"
 
 
+def _silent_unlink(*paths_):
+    for p in paths_:
+        try:
+            if p and os.path.exists(p):
+                os.remove(p)
+        except OSError:
+            pass
+
+
 def _month_matches(prefix: str):
     p = prefix.upper()
     return [m for m in _MOIS_UP if m.startswith(p)]
@@ -662,6 +671,7 @@ class BulletinTemplateScreen(Screen):
         QTimer.singleShot(0, self._relayout)
         self._recompute()
         self._dirty = False        # بناء الشاشة الافتراضية ليس «تعديل مستخدم»
+        self._update_state_indicator()
 
     # ======================= نموذج الصفوف (Phase A2) =======================
     def _init_default_rows(self):
@@ -829,14 +839,30 @@ class BulletinTemplateScreen(Screen):
         self._incomplete_lbl.setVisible(False)
         lay.addWidget(self._incomplete_lbl)
 
+        # مؤشّر «🔒 نهائيّ» + فتح القفل للتحرير (§13/§14) — بديلٌ واضح عن
+        # نقرة مزدوجة على شارة في مستكشف غير موجود بعد.
+        self._state_lbl = QLabel("")
+        self._state_lbl.setWordWrap(True)
+        self._state_lbl.setStyleSheet(
+            f"color:{theme.COMPUTED}; font-weight:700;")
+        self._state_lbl.setVisible(False)
+        lay.addWidget(self._state_lbl)
+        self._unlock_btn = QPushButton("🔓 فتح القفل للتحرير")
+        self._unlock_btn.clicked.connect(self._on_unlock)
+        self._unlock_btn.setVisible(False)
+        lay.addWidget(self._unlock_btn)
+
         bf = QFrame()
         bf.setFrameShape(QFrame.StyledPanel)
         bl = QVBoxLayout(bf)
         self._save_btn = QPushButton("💾 حفظ")
         self._save_btn.clicked.connect(self._on_save)
         bl.addWidget(self._save_btn)
-        for txt, fn in (("توليد Word", lambda: self._on_generate("docx")),
-                        ("توليد PDF", lambda: self._on_generate("pdf")),
+        self._finalize_btn = QPushButton("✅ إصدار نهائيّ (Word + PDF)")
+        self._finalize_btn.clicked.connect(self._on_finalize)
+        bl.addWidget(self._finalize_btn)
+        for txt, fn in (("👁 معاينة / طباعة", self._on_preview),
+                        ("💾 حفظ باسم…", self._on_save_as),
                         ("السجلّ", self._on_history),
                         ("مسح", self._on_clear)):
             b = QPushButton(txt)
@@ -1473,6 +1499,7 @@ class BulletinTemplateScreen(Screen):
         self._dirty = False
         self.clear_draft()
         self._update_incomplete_indicator()
+        self._update_state_indicator()
         self.status.setText("فُتح العمل: %s" % (self.work_badge() or "—"))
 
     def work_badge(self) -> str:
@@ -1488,9 +1515,17 @@ class BulletinTemplateScreen(Screen):
         عملاً بحالة ⚠️ (لا DOCX/PDF نهائيَّين، لا قفل). عمل كان 🔒 ثمّ
         عُدِّل بعد فتح القفل ⇒ يعود ⚠️ ولا تُلمَس ملفّاته النهائية القديمة
         (§16)."""
+        if self._locked:
+            from ui2.alerts import warn
+            warn(self, self.TITLE,
+                 ["العمل مقفول (🔒). افتح القفل للتعديل قبل الحفظ."])
+            return
         self._recompute()
         state = "incomplete"                      # SAVE لا يُنتج نهائياً أبداً
-        rec = self._work_record(state)
+        #  §16: عمل كان 🔒 ثمّ فُتح وعُدِّل ⇒ يعود ⚠️، ولا تُلمَس ملفّاته
+        #  النهائية على القرص. نُبقي مساريهما في الصفّ كـ«آخر ما صدر» فقط.
+        rec = self._work_record(state, docx=self._final_docx or "",
+                                pdf=self._final_pdf)
         wd = self.work_data()
         try:
             if self._work_id is None:
@@ -1523,6 +1558,7 @@ class BulletinTemplateScreen(Screen):
                 w.setReadOnly(locked)
         if hasattr(self, "_add_btn"):
             self._add_btn.setEnabled(not locked)
+        self._update_state_indicator()
         if hasattr(self, "_canvas"):
             self._canvas.update()
 
@@ -1835,48 +1871,132 @@ class BulletinTemplateScreen(Screen):
                 f"_{_safe(self._w('annee'))}")
         return os.path.join(paths.get_screen_dir(self.OUTPUT_DIRNAME), stem + ext)
 
-    def _on_generate(self, kind):
+    def _finalize_paths(self):
+        """مسارا docx/pdf النهائيّين لهذا العمل. إعادة إصدار العمل نفسه ⇒
+        نفس المسارين (استبدال في المكان). أوّل إصدار ⇒ من الاسم/الفترة، مع
+        زيادة رقميّة إن اصطدم باسم ملفٍّ **لا يخصّ هذا العمل** (§29)."""
+        if self._final_docx and self._final_pdf:
+            return self._final_docx, self._final_pdf
+        base = paths.get_screen_dir(self.OUTPUT_DIRNAME)
+        stem0 = (f"Bulletin_{_safe(self._employee_fullname())}"
+                 f"_{_safe(self._w('mois'))}_{_safe(self._w('annee'))}")
+        stem, n = stem0, 2
+        while (os.path.exists(os.path.join(base, stem + ".pdf"))
+               or os.path.exists(os.path.join(base, stem + ".docx"))):
+            stem = f"{stem0}_{n:02d}"
+            n += 1
+        return (os.path.join(base, stem + ".docx"),
+                os.path.join(base, stem + ".pdf"))
+
+    def _on_finalize(self):
+        """إصدار نهائيّ **شبه معامليّ** (§8): تحقّق → بناء docx+pdf في ملفّات
+        مؤقّتة → استبدال ذرّيّ → حفظ الحالة → قفل. فشل أيّ خطوة ⇒ لا قفل،
+        لا ادّعاء نجاح، لا فقدان Work Data، وتُنظَّف الملفّات الجزئية."""
         from ui2.alerts import warn
         self._recompute()
-        # بوّابة الإصدار النهائي (Phase B §8): تحقّق واحد لكامل الشاشة —
-        # يُبرز كلّ المشاكل، ويركّز أوّلها، وينبّه تنبيهاً عامّاً واحداً.
-        # (دورة حياة Finalize/Lock الكاملة = Phase C.)
         if not self.show_required_warnings():
             warn(self, self.TITLE,
-                 ["توجد معلومات ناقصة قبل إصدار الكشف النهائي."])
+                 ["توجد معلومات ناقصة قبل إصدار الكشف النهائيّ."])
             return
+        docx_path, pdf_path = self._finalize_paths()
+        tmp_docx, tmp_pdf = docx_path + ".part", pdf_path + ".part"
         tpl = T.get_renderer(self._template_key)
-        ext = ".docx" if kind == "docx" else ".pdf"
-        path = self._resolve_out_path(ext)
         try:
-            builder = tpl.build_docx if kind == "docx" else tpl.build_pdf
-            #  المُصيِّر من BulletinView (مصدر حقيقة الشاشة نفسه، Phase C2)
-            builder(path, self._calc_input, self._calc_result,
-                    self._employer_data(), self._employee_data(),
-                    view=self._bulletin_view)
+            os.makedirs(os.path.dirname(docx_path), exist_ok=True)
+            tpl.build_docx(tmp_docx, self._calc_input, self._calc_result,
+                           self._employer_data(), self._employee_data(),
+                           view=self._bulletin_view)
+            tpl.build_pdf(tmp_pdf, self._calc_input, self._calc_result,
+                          self._employer_data(), self._employee_data(),
+                          view=self._bulletin_view)
         except TemplateNotReady as exc:
+            _silent_unlink(tmp_docx, tmp_pdf)
             warn(self, self.TITLE, [str(exc)])
             return
-        except Exception as exc:                             # noqa: BLE001
-            logger.warning("توليد %s فشل", kind, exc_info=True)
-            warn(self, self.TITLE, [f"تعذّر التوليد: {exc}"])
+        except Exception as exc:                              # noqa: BLE001
+            _silent_unlink(tmp_docx, tmp_pdf)
+            logger.warning("بناء ملفّات الإصدار فشل", exc_info=True)
+            warn(self, self.TITLE,
+                 ["لم يكتمل الإصدار النهائيّ — لم يُقفَل العمل ولم تُفقَد "
+                  f"البيانات.\n{exc}"])
             return
         try:
-            database.log_hr_document({
-                "screen_key": "hr_bulletin_paie", "doc_label": self.DOC_LABEL,
-                "employer_name": self._employer_data().get("raison_sociale", ""),
-                "employee_name": self._employee_fullname(),
-                "doc_date": f"{self._w('mois')} {self._w('annee')}".strip(),
-                "client_id": None, "file_path": path,
-                "pdf_path": path if kind == "pdf" else None,
-            }, full_data=self._collect_data())
-        except Exception:                                    # noqa: BLE001
-            logger.warning("تسجيل الوثيقة فشل", exc_info=True)
-        if confirm(self, self.TITLE, f"تمّ إنشاء الملف:\n{path}\n\nفتحه الآن؟"):
+            os.replace(tmp_docx, docx_path)
+            os.replace(tmp_pdf, pdf_path)
+        except OSError as exc:
+            _silent_unlink(tmp_docx, tmp_pdf)
+            logger.warning("استبدال ملفّات الإصدار فشل", exc_info=True)
+            warn(self, self.TITLE, [f"تعذّرت كتابة الملفّات النهائية: {exc}"])
+            return
+        prev = self._work_state
+        self._final_docx, self._final_pdf = docx_path, pdf_path
+        self._has_final_artifacts = True
+        self._work_state = "final"
+        rec = self._work_record("final", docx=docx_path, pdf=pdf_path)
+        try:
+            if self._work_id is None:
+                self._work_id = database.save_hr_work(rec, self.work_data())
+            else:
+                database.update_hr_work(self._work_id, rec, self.work_data())
+        except Exception as exc:                              # noqa: BLE001
+            self._work_state = prev                           # لا تدّعِ النجاح
+            self._has_final_artifacts = bool(prev == "final")
+            logger.warning("حفظ حالة الإصدار فشل", exc_info=True)
+            warn(self, self.TITLE,
+                 [f"وُلِّدت الملفّات لكن تعذّر حفظ حالة العمل — لم يُقفَل.\n{exc}"])
+            return
+        self._dirty = False
+        self.clear_draft()
+        self._set_locked(True)
+        self._update_incomplete_indicator()
+        self._update_state_indicator()
+        self.status.setText("🔒 صدر الكشف النهائيّ — Word + PDF.")
+        if confirm(self, self.TITLE,
+                   f"🔒 صدر الكشف النهائيّ:\n{pdf_path}\n\nفتحه الآن؟"):
             try:
-                os.startfile(path)                           # noqa: SIM115
+                os.startfile(pdf_path)                        # noqa: SIM115
             except OSError:
                 pass
+
+    def _on_unlock(self):
+        if not self._locked:
+            return
+        if not confirm(self, self.TITLE,
+                       "فتح القفل للتحرير؟\nالتعديل لن يغيّر الملفّات النهائية "
+                       "على القرص حتى تُعيد الإصدار (Finalize) أو تحفظ باسم."):
+            return
+        self._set_locked(False)
+        self._update_state_indicator()
+        self.status.setText("🔓 فُتح القفل — التعديل لا يمسّ النسخة النهائية "
+                            "حتى إعادة الإصدار.")
+
+    def _on_preview(self):
+        from ui2.alerts import warn
+        p = self._final_pdf or self._final_docx
+        if p and os.path.exists(p):
+            try:
+                os.startfile(p)                              # noqa: SIM115
+            except OSError as exc:
+                warn(self, self.TITLE, [f"تعذّر فتح الملف: {exc}"])
+        else:
+            warn(self, self.TITLE,
+                 ["لا توجد نسخة نهائية بعد — استعمل «إصدار نهائيّ»."])
+
+    def _on_save_as(self):
+        from ui2.alerts import warn
+        warn(self, self.TITLE, ["«حفظ باسم» يصل في المرحلة C4."])
+
+    def _update_state_indicator(self):
+        lbl = getattr(self, "_state_lbl", None)
+        if lbl is None or not hasattr(self, "_unlock_btn"):
+            return
+        if self._work_state == "final":
+            lbl.setText("🔒 كشف نهائيّ"
+                        + ("" if self._locked else " — مفتوح للتحرير"))
+            lbl.setVisible(True)
+        else:
+            lbl.setVisible(False)
+        self._unlock_btn.setVisible(self._locked)
 
     def _collect_data(self):
         pin = self._calc_input
@@ -1937,12 +2057,11 @@ class BulletinTemplateScreen(Screen):
     def _on_clear(self):
         if not confirm(self, "تأكيد", "مسح كل الحقول في هذه الشاشة؟"):
             return
-        if self._locked:
-            self._set_locked(False)
         self._work_id = None                   # مسح ⇒ عمل جديد بلا هويّة
         self._work_state = None
         self._has_final_artifacts = False
         self._final_docx = self._final_pdf = None
+        self._set_locked(False)
         self._suspend = set(self._widgets)
         try:
             for s in self._header_slots:
@@ -1969,6 +2088,7 @@ class BulletinTemplateScreen(Screen):
         self.mark_clean()
         self._recompute()
         self._relayout()
+        self._update_state_indicator()
 
     def has_unsaved_changes(self):
         #  Phase C §26: تغييرات فعلية منذ آخر حفظ/تحميل — لا «فيه محتوى».

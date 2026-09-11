@@ -486,6 +486,42 @@ def _autre_entry(r):
         "cotisable": _NO, "imposable": _NO}}
 
 
+# ---- ربط سطر الشاشة بسطر المحرّك (E.3-Review-2 §1-§3) --------------------
+#  ``key`` وحدها لا تكفي لمطابقة صفٍّ بسطر محرّكه: عدّة أنواع شاشة
+#  (free/prime/autre — كلّها "libre") قد تتشارك نفس المفتاح بينما تحمل
+#  دلالةً مختلفةً تماماً (منطقةً و/أو GAIN/RETENUE) — أشدّها Zone C حيث
+#  Free GAIN (Z3) و Free RETENUE (Z4) كلاهما ``key == "libre"``.
+#  ``compute_bulletin`` يُرتّب ``BulletinView.lignes`` حسب **منطقة
+#  المحرّك** (‏``ZONE_ORDER``) لا حسب ترتيب الإرسال — فإن اختلف ترتيب
+#  الشاشة عن ترتيب المناطق (Zone C تحديداً: RETENUE قبل GAIN بصرياً بينما
+#  GAIN=Z3 يسبق RETENUE=Z4 في ``BulletinView``) يُسنَد مبلغ سطرٍ لآخر خطأً
+#  لو طابقنا بـ``key`` فقط. التوقيع هنا ``(type, zone, sens)`` — من
+#  ``entry()`` الفعليّ نفسه (نفس القيَم المُرسَلة لـ``compute_bulletin``؛
+#  ``LineType.zone/.sens`` العامّان يُعيدان حساب المنطقة/الحساسيّة تماماً
+#  كما يفعل المحرّك — بلا تكرار منطقٍ ولا تخمينٍ من اسم عمودٍ بصريّ) —
+#  يُميّز كلّ اجتماعٍ ممكن، ويبقى ترتيب التكرار (نفس التوقيع) مستقرّاً.
+def _row_engine_signature(r):
+    """توقيع محرّك متوقَّع لصفّ شاشةٍ واحد، أو ``None`` إن كان بلا
+    ``entry()`` (فارغ، أو غير مدعوم — لا يدخل الحساب أصلاً)."""
+    ent = r.entry()
+    if ent is None:
+        return None
+    key = ent.get("type")
+    lt = lignes.LINE_TYPES.get(key)
+    if lt is None:
+        return None
+    values = ent.get("values", {})
+    zone = lt.zone(values)
+    sens = lt.sens or ("RETENUE" if values.get("est_retenue") == _YES else "GAIN")
+    return (key, zone, sens)
+
+
+def _line_engine_signature(lv):
+    """نفس بنية :func:`_row_engine_signature` من سطرٍ محسوبٍ فعلياً
+    (‏``lignes.LineView``)."""
+    return (lv.key, lv.zone, lv.sens)
+
+
 def _abs_type(r):
     return "abs_jours" if "jours" in r.val("mode").lower() else "abs_heures"
 
@@ -2659,29 +2695,34 @@ class BulletinTemplateScreen(Screen):
     def _assign_computed_amounts(self, view):
         """يُسنِد لكلّ صفٍّ **مبلغه هو** من ``view.lignes`` (E.3-Review
         §1/§2/§11 — يوحّد ما كان مقصوراً على iep/hs/absence/retard):
-        المطابقة بمفتاح ``entry()["type"]`` الفعليّ — نفس النوع الذي أُرسل
-        فعلاً لـ:func:`compute_bulletin` — بترتيب ``_visible_body_rows()``
-        (= ترتيب الإرسال في ``_build_entries``)، فيُصادف كلّ صفٍّ سطره
-        الصحيح حتى مع تكرار النوع (سطرا HS مثلاً — كلٌّ يأخذ مبلغه هو لا
-        مبلغ الآخر). صفٌّ بلا ``entry()`` (فارغ، أو اقتطاعٌ حرّ غير مدعوم
-        خارج Zone C) يبقى ``None`` — لا يدخل الحساب أصلاً، فلا مبلغ له."""
-        by_key = {}
+        المطابقة بتوقيع ``(type, zone, sens)`` الفعليّ
+        (‏:func:`_row_engine_signature`/:func:`_line_engine_signature`) —
+        **ليس** ``key`` وحدها (E.3-Review-2 §1-§3): عدّة أنواع شاشة
+        (free/prime/autre) قد تتشارك ``key == "libre"`` بمنطقةٍ/حساسيةٍ
+        مختلفة (Zone C: Free GAIN=Z3 و Free RETENUE=Z4 يتشاركان المفتاح)،
+        و``BulletinView.lignes`` مُرتَّبٌ حسب منطقة المحرّك لا حسب ترتيب
+        الشاشة — فمطابقةٌ بـ``key`` فقط قد تُسنِد مبلغ اقتطاعٍ لسطر مكسبٍ
+        أو العكس. بترتيب ``_visible_body_rows()`` (= ترتيب الإرسال في
+        ``_build_entries``) داخل كلّ توقيع، فيُصادف كلّ صفٍّ سطره الصحيح
+        حتى مع تكرار نفس التوقيع (3×Free GAIN B مثلاً — كلٌّ يأخذ مبلغه
+        هو لا مبلغ الآخر). صفٌّ بلا ``entry()`` (فارغ، أو اقتطاعٌ حرّ غير
+        مدعوم خارج Zone C) يبقى ``None`` — لا يدخل الحساب أصلاً."""
+        by_sig = {}
         for lv in view.lignes:
-            by_key.setdefault(lv.key, []).append(lv)
+            by_sig.setdefault(_line_engine_signature(lv), []).append(lv)
         used = {}
         for r in self._visible_body_rows():
             r._amount = None
             if r.role == "system":
                 continue
-            ent = r.entry()
-            if ent is None:
+            sig = _row_engine_signature(r)
+            if sig is None:
                 continue
-            key = ent.get("type")
-            lst = by_key.get(key, [])
-            n = used.get(key, 0)
+            lst = by_sig.get(sig, [])
+            n = used.get(sig, 0)
             if n < len(lst):
                 r._amount = lst[n].montant
-                used[key] = n + 1
+                used[sig] = n + 1
 
     def _sync_row_styles(self):
         for r in self._rows:

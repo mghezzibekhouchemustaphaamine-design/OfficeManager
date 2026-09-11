@@ -4403,3 +4403,50 @@ document.png`, `E3Review_complex_pdf.png` (مستندٌ واحد يجمع A/B1/B
   القديم بلا `view` إطلاقاً — تكامل tkinter المُزال من التسجيل) لا يزالان
   يكتبان `"9,00"` حرفياً؛ مسارٌ ميت غير مُتَّصلٍ بأيّ شاشة مسجَّلة اليوم،
   لم يُلمَس تفادياً لتوسيع نطاق tkinter بلا داعٍ (CLAUDE.md).
+
+## Phase E.3-Review-2 — 2026-09-11: ربط صفّ الشاشة بسطر المحرّك بتوقيعٍ كامل لا بـ`key` وحدها
+
+مراجعة كودٍ مباشرة كشفت أنّ `_assign_computed_amounts(view)` (المُعمَّمة
+في E.3-Review لتغطّي كلّ الصفوف عبر `entry()["type"]`) كانت لا تزال تُجمِّع
+أسطر المحرّك بـ`lv.key` **وحدها**. هذا غير كافٍ لـ`"libre"`: Free
+GAIN/RETENUE في A/B/C، وPrime/Autre القديمتان، كلّها تُرسَل بـ
+`type="libre"` بينما تحمل منطقةً/حساسيةً مختلفة تماماً. `compute_bulletin`
+يُرتّب `BulletinView.lignes` حسب **منطقة المحرّك** (‏`ZONE_ORDER`: Z1<Z2<
+Z3<Z4) لا حسب ترتيب الإرسال/الشاشة — فسطرٌ بصريّ (RETENUE Zone C=Z4 قبل
+GAIN Zone C=Z3 مثلاً) ينعكس ترتيبه في `view.lignes`، وربطٌ بـ`key` فقط
+كان يُسنِد مبلغ الاقتطاع لسطر المكسب أو العكس.
+
+### الإصلاح — توقيع `(type, zone, sens)` بدل `key` وحدها
+
+`_row_engine_signature(r)`: يبني `entry()` الفعليّ لصفّ الشاشة، ثمّ
+يستدعي `lignes.LINE_TYPES[type].zone(values)`/`.sens` العامَّين — **نفس**
+حساب المحرّك بالضبط على **نفس** القيَم المُرسَلة له، بلا تكرار منطقٍ
+ولا تخمين من اسم عمودٍ بصريّ (§0). `_line_engine_signature(lv)` = ‏
+`(lv.key, lv.zone, lv.sens)` من سطرٍ محسوبٍ فعلياً. `_assign_computed_
+amounts` يُجمِّع الآن بـ`by_sig` (لا `by_key`)، ويُطابِق كلّ صفٍّ ضمن
+توقيعه الخاصّ بترتيب الشاشة — فيتفرَّق GAIN Zone C (‏`"libre","Z3",
+"GAIN"`) عن RETENUE Zone C (‏`"libre","Z4","RETENUE"`) حتى إن تشاركا
+`key`، وتبقى الأسطر المتكرّرة بنفس التوقيع (‏3×Free GAIN B، مثلاً) كلٌّ
+بمبلغه هو (نفس آلية الترتيب الداخليّ لم تتغيَّر).
+
+Prime/Autre القديمتان تدخلان هذا المسار تلقائياً (تُنتِجان `type="libre"`
+أيضاً عبر `entry()`) — بلا أيّ كودٍ خاصّ بهما؛ الآلية واحدة للجميع (§7).
+
+**لا تغيير في `programme/payroll/calc.py` ولا في ترتيب `BulletinView.
+lignes`** — إصلاحٌ في طبقة ربط الشاشة بالمحرّك حصراً.
+
+### الاختبارات
+
+`ui2/hr/paie/tests` **224 OK** (220 سابقة + **4 جديدة** في
+`BulletinTemplateE3Review`: RETENUE-ثمّ-GAIN وGAIN-ثمّ-RETENUE في Zone C
+(الاتجاهان) بلا تبديل مبلغ · مستندٌ واحد بستّة أسطرٍ حرّة عبر A/B1/B2/B3/C
+(بعضها بنفس التوقيع في مناطق مختلفة) كلٌّ يحتفظ بمبلغه · Prime/Autre/Free
+معاً لا يسرق أحدها مبلغ الآخر رغم `key="libre"` المشترك.
+`programme/payroll/tests` 49 · `ui2/tests` 42 · معرض
+`ui2_paie_gallery --selftest` ALLOK — كلّها خضراء بلا تراجع.
+
+### الملفات المتأثرة
+
+`ui2/hr/paie/bulletin_template.py` (‏`_row_engine_signature`،
+`_line_engine_signature`، `_assign_computed_amounts` بتوقيعٍ لا بـ`key`) ·
+`ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.

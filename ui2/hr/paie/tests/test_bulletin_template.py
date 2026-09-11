@@ -3290,6 +3290,84 @@ class BulletinTemplateE3Review(unittest.TestCase):
         self.assertAlmostEqual(
             float(pres.total_gain - pres.total_retenue), float(pres.net), 2)
 
+    # ---------- E.3-Review-2 §5: Zone C — GAIN/RETENUE يتشاركان key="libre" ----------
+    def test_zone_c_retenue_then_gain_not_swapped(self):
+        #  ترتيبٌ بصريّ: RETENUE أوّلاً ثمّ GAIN — بينما BulletinView يرتّب
+        #  Z3(GAIN) قبل Z4(RETENUE) داخلياً. لا يجوز أن يُخلَط المبلغان.
+        r_ret = self._conv("C", "RET C", retenue="700")
+        r_ret.set_val("code", "RC")
+        r_gain = self._conv("C", "GAIN C", gain="2300")
+        r_gain.set_val("code", "GC")
+        self.scr._recompute()
+        self.assertEqual(float(r_ret._amount), 700.0)
+        self.assertEqual(float(r_gain._amount), 2300.0)
+        pr_ret = self._presented_row(code="RC")
+        pr_gain = self._presented_row(code="GC")
+        self.assertEqual(pr_ret.gain, "")
+        self.assertEqual(pr_ret.retenue, "700,00")
+        self.assertEqual(pr_gain.gain, "2 300,00")
+        self.assertEqual(pr_gain.retenue, "")
+
+    def test_zone_c_gain_then_retenue_not_swapped(self):
+        #  الترتيب المعاكس — يجب أن ينجح أيضاً.
+        r_gain = self._conv("C", "GAIN C", gain="2300")
+        r_gain.set_val("code", "GC")
+        r_ret = self._conv("C", "RET C", retenue="700")
+        r_ret.set_val("code", "RC")
+        self.scr._recompute()
+        self.assertEqual(float(r_ret._amount), 700.0)
+        self.assertEqual(float(r_gain._amount), 2300.0)
+        pr_ret = self._presented_row(code="RC")
+        pr_gain = self._presented_row(code="GC")
+        self.assertEqual(pr_ret.gain, "")
+        self.assertEqual(pr_ret.retenue, "700,00")
+        self.assertEqual(pr_gain.gain, "2 300,00")
+        self.assertEqual(pr_gain.retenue, "")
+
+    # ---------- E.3-Review-2 §6: خليطٌ من كلّ توقيعات "libre" معاً ----------
+    def test_mixed_free_signatures_each_row_keeps_its_own_amount(self):
+        rows = [
+            ("A", "GAIN A", "gain", "1000", "GA"),
+            ("B1", "GAIN B1", "gain", "2000", "GB1"),
+            ("B2", "GAIN B2", "gain", "3000", "GB2"),
+            ("B3", "GAIN B3", "gain", "4000", "GB3"),
+            ("C", "RET C", "retenue", "500", "RC2"),
+            ("C", "GAIN C", "gain", "600", "GC2"),
+        ]
+        created = []
+        for seg, lib, cell, val, code in rows:
+            r = self._conv(seg, lib, **{cell: val})
+            r.set_val("code", code)
+            created.append((r, cell, val, code))
+        self.scr._recompute()
+        for r, cell, val, code in created:
+            self.assertEqual(float(r._amount), float(val), code)
+            pr = self._presented_row(code=code)
+            self.assertIsNotNone(pr, code)
+            got = pr.gain if cell == "gain" else pr.retenue
+            other = pr.retenue if cell == "gain" else pr.gain
+            self.assertEqual(_money(got), float(val), code)
+            self.assertEqual(other, "", code)
+
+    # ---------- E.3-Review-2 §7: Prime/Autre القديمتان لا تسرقان مبلغاً ----------
+    def test_legacy_prime_autre_free_do_not_steal_each_others_amount(self):
+        p = self.scr._add_row("prime")
+        p.set_val("code", "PR"); p.set_val("gain", "1500")
+        au = self.scr._add_row("autre")
+        au.set_val("code", "AU"); au.set_val("sens", "Gain")
+        au.set_val("montant", "900")
+        fr = self._conv("A", "FREE A", gain="1200")
+        fr.set_val("code", "FA")
+        self.scr._recompute()
+        self.assertEqual(float(p._amount), 1500.0)
+        self.assertEqual(float(au._amount), 900.0)
+        self.assertEqual(float(fr._amount), 1200.0)
+        for code, val in (("PR", 1500.0), ("AU", 900.0), ("FA", 1200.0)):
+            pr = self._presented_row(code=code)
+            self.assertIsNotNone(pr, code)
+            self.assertEqual(_money(pr.gain), val, code)
+            self.assertEqual(pr.retenue, "", code)
+
 
 if __name__ == "__main__":
     unittest.main()

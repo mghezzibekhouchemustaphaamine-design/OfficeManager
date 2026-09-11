@@ -3899,6 +3899,59 @@ class BulletinTemplateE4Invariants(unittest.TestCase):
         self.assertTrue(pan.taux)
         self.assertTrue(pan.gain)
 
+    def test_actual_pdf_and_docx_contain_same_e4_values_as_screen(self):
+        #  E.4 §L: لا يكفي إثبات لقطة العرض في الذاكرة — نتحقّق من ملفّ
+        #  PDF/DOCX فعليّ مُولَّد، أنّ نفس القيَم المحسوبة (لا صيغة موازية
+        #  في أيّ مُصيِّر) تظهر فيه حرفياً.
+        for k, v in {"emp_raison_sociale": "SARL X", "emp_adresse": "ADR",
+                    "emp_cnas": "16 412 078 56", "id_nom": "BENALI",
+                    "id_prenom": "K", "id_lieu_naissance": "ALGER",
+                    "id_fonction": "C"}.items():
+            self.scr._widgets[k].setText(v)
+        self.scr._widgets["id_date_naissance"].set_iso("1990-05-10")
+        aj = self.scr._add_row("abs_jours")
+        aj.set_val("code", "AJ9"); aj.set_val("qty", "2")
+        self.scr._recompute()
+        pres_ret = self.scr._presented.rows
+        aj_pr = [p for p in pres_ret if p.code == "AJ9"][0]
+        rows = self.scr._row_snapshots()
+        cnas_taux = (self.scr._cfg or {}).get("cnas", {}).get("taux_salarie")
+        tmp_docx = os.path.join(self._tmp, "e4_parity.docx")
+        tmp_pdf = os.path.join(self._tmp, "e4_parity.pdf")
+        tpl = T.get_renderer(self.scr._template_key)
+        try:
+            tpl.build_docx(tmp_docx, self.scr._calc_input, self.scr._calc_result,
+                           self.scr._employer_data(), self.scr._employee_data(),
+                           view=self.scr._bulletin_view, row_snapshots=rows,
+                           cnas_taux=cnas_taux)
+        except Exception as exc:                             # noqa: BLE001
+            if "غير مثبّتة" in str(exc):
+                self.skipTest(str(exc))
+            raise
+        tpl.build_pdf(tmp_pdf, self.scr._calc_input, self.scr._calc_result,
+                      self.scr._employer_data(), self.scr._employee_data(),
+                      view=self.scr._bulletin_view, row_snapshots=rows,
+                      cnas_taux=cnas_taux)
+        # PDF
+        try:
+            import pymupdf
+        except Exception:                                     # noqa: BLE001
+            self.skipTest("pymupdf غير متوفّر")
+        d = pymupdf.open(tmp_pdf)
+        pdf_text = d[0].get_text()
+        d.close()
+        self.assertIn("AJ9", pdf_text)
+        self.assertIn(aj_pr.taux, pdf_text)
+        self.assertIn(aj_pr.retenue, pdf_text)
+        # DOCX
+        from docx import Document
+        doc = Document(tmp_docx)
+        docx_text = "\n".join(c.text for t in doc.tables for r in t.rows
+                              for c in r.cells)
+        self.assertIn("AJ9", docx_text)
+        self.assertIn(aj_pr.taux, docx_text)
+        self.assertIn(aj_pr.retenue, docx_text)
+
 
 if __name__ == "__main__":
     unittest.main()

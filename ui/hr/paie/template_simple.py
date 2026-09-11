@@ -468,11 +468,17 @@ def _row_from_lv(lv, jours=None):
     return row
 
 
-def _bulletin_rows_from_view(view, employee, *, jours=None):
+def _bulletin_rows_from_view(view, employee, *, jours=None, row_snapshots=None,
+                             cnas_taux=None):
     """أسطر جدول الكشف من :class:`~programme.payroll.lignes.BulletinView`
     عبر **طبقة العرض المشتركة** :mod:`ui.hr.paie.presentation` (Phase E.3
-    §11) — نفس الترتيب ونفس دلالة Absence/Retard الموجبة للشاشة و DOCX."""
-    return [pr.as_cols() for pr in PZ.build(view, jours=jours).rows]
+    §11) — نفس الترتيب ونفس دلالة Absence/Retard الموجبة للشاشة و DOCX.
+    بلا ``row_snapshots`` (الاستعمال المعتاد لهذه الدالة في اختباراتٍ
+    تفحص المحرّك مباشرةً) يعود ``PZ.build`` إلى مساره الاحتياطيّ التقريبيّ
+    (E.3-Review §1)."""
+    return [pr.as_cols() for pr in
+           PZ.build(view, rows=row_snapshots, jours=jours,
+                    cnas_taux=cnas_taux).rows]
 
 
 def _pad_rows(rows, minimum=_RENDER_MIN_BODY_ROWS):
@@ -702,7 +708,8 @@ class SimpleBulletinTemplate:
 
     # ===================== إخراج Word (.docx) =====================
     @staticmethod
-    def build_docx(path, pin, res, employer, employee, *, view=None):
+    def build_docx(path, pin, res, employer, employee, *, view=None,
+                   row_snapshots=None, cnas_taux=None):
         try:
             from docx import Document
             from docx.shared import Pt, Mm, RGBColor
@@ -772,9 +779,13 @@ class SimpleBulletinTemplate:
 
         doc.add_paragraph()
 
-        # جدول الرُّبريكات + المجاميع — من طبقة العرض المشتركة (Phase E.3 §11)
+        # جدول الرُّبريكات + المجاميع — من طبقة العرض المشتركة (Phase E.3
+        # §11؛ E.3-Review §1/§2: ``row_snapshots`` لقطة صفوف الشاشة إن
+        # وُجدت — فيُحافَظ على ترتيب B1/B2/B3 وقيَم CODE/N-BASE/TAUX
+        # المعروضة بالضبط).
         if view is not None:
-            pres = PZ.build(view, jours=pin.jours)
+            pres = PZ.build(view, rows=row_snapshots, jours=pin.jours,
+                            cnas_taux=cnas_taux)
             rows = [pr.as_cols() for pr in pres.rows]
             tot_gain, tot_ret = pres.total_gain_str, pres.total_retenue_str
             tot_net = pres.net_str
@@ -829,7 +840,8 @@ class SimpleBulletinTemplate:
 
     # ===================== إخراج PDF =====================
     @staticmethod
-    def build_pdf(path, pin, res, employer, employee, *, view=None):
+    def build_pdf(path, pin, res, employer, employee, *, view=None,
+                  row_snapshots=None, cnas_taux=None):
         """المُصيِّر **الإحداثيّ** (Phase E.1 §6): يرسم كشفاً ثابت الهندسة
         بالمليمتر من نفس :mod:`layout_spec` التي تستهلكها الشاشة — لا
         Platypus، لا Spacer، لا ارتفاعات تلقائية. الناتج = بنية الشاشة
@@ -880,9 +892,12 @@ class SimpleBulletinTemplate:
                          "block_values")
         pg.draw_text(a_x, L.ident_row_y(1), "à", "block_labels")
 
-        # ---------- جدول الرُبريكات + المجاميع — طبقة العرض المشتركة (§11) ----------
+        # ---------- جدول الرُبريكات + المجاميع — طبقة العرض المشتركة
+        # (§11؛ E.3-Review §1/§2: ``row_snapshots`` = ترتيب الشاشة الحقيقيّ)
+        # ----------
         if view is not None:
-            pres = PZ.build(view, jours=pin.jours)
+            pres = PZ.build(view, rows=row_snapshots, jours=pin.jours,
+                            cnas_taux=cnas_taux)
             rows = [pr.as_cols() for pr in pres.rows]
             tot_gain, tot_ret, tot_net = (pres.total_gain_str,
                                           pres.total_retenue_str, pres.net_str)

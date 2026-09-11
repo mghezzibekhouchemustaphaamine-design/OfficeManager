@@ -160,6 +160,15 @@ def validate_screen(screen) -> ValidationResult:
                 "اقتطاع حرّ في منطقة CNAS/IRG غير مدعوم — حوِّله إلى "
                 "Absence/Retard، أو انقله لأسفل IRG. لا يُحتسَب حالياً.",
                 "invalid"))
+        elif rev == "segment_mismatch":
+            #  E.3-Review §7: سطرٌ ذكيّ سلطويّ (IEP/HS/Absence/Retard/
+            #  Avance) وُجد في نسخةٍ قديمة بمنطقةٍ لا توافق قاعدته —
+            #  نُزِّل إلى «حرّ» بواسطة النموذج نفسه؛ يحتاج مراجعةً بشريّة.
+            res.invalid_fields.append(Problem(
+                screen._row_problem_key(r),
+                "نوعٌ ذكيّ من نسخةٍ قديمة وُجد في منطقةٍ غير متوافقة مع "
+                "قاعدته — راجِع هذا السطر: أعِد وضعه في منطقته الصحيحة أو "
+                "احذفه. لا يُحتسَب بدلالته الأصلية.", "invalid"))
         #  السطر الحرّ (§37): GAIN و RETENUE معاً، أو RETENUE سالبة ⇒ غير
         #  صالح شكلياً. RETENUE حرّة خارج Zone C ⇒ غير مدعومة (§13).
         if r.kind == "free":
@@ -178,6 +187,14 @@ def validate_screen(screen) -> ValidationResult:
                     r.cell_key("retenue"),
                     "اقتطاع حرّ في منطقة CNAS/IRG غير مدعوم (§13) — "
                     "استعمل Absence/Retard أو انقله لأسفل IRG.", "invalid"))
+        #  E.3-Review §8: «Autre» القديمة (RETENUE) تخضع لنفس قيد §13 —
+        #  اقتطاعٌ عامّ خارج Zone C غير مدعوم في المحرّك.
+        if r.kind == "autre" and r.val("sens") == "Retenue" \
+                and r.zone in ("A", "B") and not rev:
+            res.invalid_fields.append(Problem(
+                r.cell_key("montant"),
+                "اقتطاع «Autre» في منطقة CNAS/IRG غير مدعوم (§8/§13) — "
+                "استعمل Absence/Retard، أو انقله لأسفل IRG.", "invalid"))
         started, complete, label = screen._row_status(r)
         if started and not complete:
             res.incomplete_rows.append(Problem(

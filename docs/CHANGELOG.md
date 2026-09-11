@@ -4268,3 +4268,138 @@ centering_100/200 · sidebar_hidden · locked_final · pdf_page1).
 * مُنتقيا prime/autre ما زالا `QComboBox` (مُنمَّقان أصفر) — نوعان قديمان
   غير مُتاحَين للإضافة.
 * القيَم المحسوبة زرقاء على الشاشة (تلميح تحرير)، سوداء في PDF (§8).
+
+## Phase E.3-Review — 2026-09-11: إصلاح فجوات مراجعة `review/e3` (ترتيب B1/B2/B3 · حفظ القيَم المعروضة · حارس المنطقة)
+
+مراجعةٌ خارجيّة لـ`review/e3` كشفت أنّ طبقة العرض المشتركة
+(`ui.hr.paie.presentation`) كانت تُعيد تجميع صفوف PDF/Word من *مناطق*
+`BulletinView` وحدها (Salaire→Z1→CNAS→Panier→Transport→Z2→IRG→Z3/Z4) لا
+من **ترتيب الشاشة الحقيقيّ** (segment/order) — فيسقط ترتيب B1/B2/B3
+الدقيق في المستند النهائيّ رغم صحّته على الشاشة. عولجت مع ثغراتٍ مرتبطة.
+
+### §1/§2/§6 — لقطة صفوف الشاشة (`RowSnapshot`) هي مصدر الترتيب والعرض
+
+`ui.hr.paie.presentation.RowSnapshot` (dataclass بلا Qt): rid/kind/role/
+segment/order/zone/code/libelle/nbase/taux/gain_input/retenue_input/
+amount/review — لقطة صفٍّ واحد. `BulletinTemplateScreen._row_snapshots()`
+يبنيها بترتيب `_visible_body_rows()` **بالضبط** (نفس ترتيب `_build_entries`
+المُرسَل للمحرّك). `presentation.build(view, rows=…)` يمشي بهذا الترتيب
+حرفياً؛ بلا `rows` يبقى المسار الاحتياطيّ القديم (تجميعٌ تقريبيّ من
+المناطق) لاختباراتٍ تفحص `BulletinView` مباشرةً بلا شاشة. النتيجة: صفٌّ
+مُدرَجٌ بين CNAS و PANIER (شريحة B1) يظهر هناك بالضبط في PDF/Word — مُثبَتٌ
+عدديّاً بفتح PDF مُولَّد وفحص مواضع نصوصه (`BulletinTemplateE3Review.
+test_b1_b2_b3_order_in_generated_pdf`)، وبمقارنة صفوف الشاشة بصفوف
+`Presented` واحداً لواحد (`test_screen_presented_contract_same_order_
+and_cells`, §13).
+
+### §3/§4/§5/§12 — CODE/LIBELLÉ/N-BASE/TAUX المعروضة تُحفَظ حرفياً
+
+`_row_snapshots()` يبني `cols = {row.column(cell): row.val(cell) …}`
+فيلتقط قيمة كلّ خليّةٍ **تحت عمودها الفعليّ** (qty→N/BASE، coef/mode→TAUX،
+…) بلا تمييزٍ بين الأنواع. CODE اليدويّ (`ABS01`, `SUP`, `ANC`, …) يُطبَع
+حرفياً — لم يعُد يُقرَأ من `LineView.code` فقط. GAIN/RETENUE: المبلغ
+المحسوب حين يوجد (مطابقةٌ بـ`entry()["type"]`، انظر §11 أدناه)، وإلا القيمة
+الخام المحفوظة (حالات المراجعة القديمة، §9). N/BASE/TAUX للسطر الحرّ:
+النصّ الخام كما هو — **لا إعادة صياغة** (خيار Absence/HS يمرّ حرفياً؛ رقمٌ
+صِرف يُنسَّق بـ`fmt_montant` كبقيّة الأعمدة).
+
+### §7 — حارس المنطقة للأنواع الذكيّة السلطويّة على مستوى النموذج
+
+IEP/HS/Absence/Retard مُلزَمةٌ بـZone A، Avance بـZone C — الاقتراح
+التلقائيّ يحترم هذا أصلاً، لكن النموذج نفسه لم يكن يمنع خرقه. الآن:
+`_insert_row_at`/`_convert_row` يرفضان (`None`) إدراج/تحويلاً يضع نوعاً
+سلطويّاً خارج منطقته؛ `_add_row` يصحِّح الشريحة صامتاً بدل الرفض (الطلب
+جاء من كودٍ داخليّ، لا من مستخدم). نسخةٌ قديمة معطوبة (`apply_draft`)
+تُمرّ الآن بـ`_demote_zone_mismatched_smart_rows()` (بعد `_dedupe_unique`،
+نفس منطقها بالضبط): كلّ سطرٍ ذكيّ في شريحةٍ غير موافقة يُنزَّل إلى «حرّ +
+مراجعة» (`_review="segment_mismatch"`) في **مكانه**، بلا فقدان بياناته
+(القيَم القديمة تُضمَّن في LIBELLÉ). `validate_screen` يُبرزه كمشكلةٍ
+تمنع الإصدار النهائيّ (Finalize) وتترك الحفظ الناقص متاحاً.
+
+**إصلاحٌ جانبيّ ضروريّ:** `_dedupe_unique`/`_demote_zone_mismatched_
+smart_rows` كانا يستبدلان `self._rows[i]` بالصفّ الجديد **بعد** استدعاء
+`set_val` عليه — و`set_val` يُطلق `textChanged` الذي قد يستدعي `_recompute`
+متزامناً، وهي تمشي على `self._rows` كلّها؛ الفهرس `i` كان لا يزال يُشير
+للصفّ المهدوم (widgets فارغة) فيفشل أيّ كودٍ يقرأه (مثل اقتراح IEP)
+بـ`KeyError`. أُصلح بنقل `self._rows[i] = fr` إلى **قبل** أوّل `set_val`.
+
+### §8 — Prime/Autre القديمتان لا تُناقضان تصنيف الموضع بعد اليوم
+
+`_prime_entry`/`_autre_entry` (فرع Gain) كانتا تقرآن حقل `soumis`/`classe`
+القديم مباشرةً كمصدر تصنيف cotisable/imposable — يناقض قاعدة الموضع
+الجديدة لو حُرِّك السطر لشريحةٍ أخرى دون تحديث ذلك الحقل. الآن التصنيف من
+`_ZONE_CLASS[r.zone]` حصراً (كالسطر الحرّ)؛ الحقل القديم يبقى معروضاً/
+محفوظاً للتوافق البصريّ فقط. `Autre` بـRETENUE يخضع لنفس قيد §13 (Zone C
+فقط) — `validate_screen` تُبرز اقتطاعاً كهذا خارج C. اختباران قديمان كانا
+يرمِّزان الافتراض السابق (`test_prime_per_row_soumis`,
+`test_engine_recomputed_for_new_period`) حُدِّثا ليثبتا القاعدة الجديدة.
+
+### §9 — اقتطاعٌ حرّ قديم غير مدعوم في A/B يبقى ظاهراً للمراجعة
+
+`_relayout_impl` كان يُخفي خليّة RETENUE لكلّ سطرٍ حرّ خارج Zone C بلا
+شرط — يُخفي صامتاً مبلغاً محفوظاً من نسخةٍ قديمة أيضاً. الآن: تُخفى فقط
+حين تكون **فارغة** (ورقةٌ نظيفة لسطرٍ جديد)؛ قيمةٌ محفوظة تبقى ظاهرة —
+`validate_screen` تُبرزها (القاعدة قائمةٌ أصلاً منذ E.3 §13، تُطبَّق الآن
+فعلياً بصريّاً) وتظهر في PDF/Word للمراجعة، بلا دخول الحساب.
+
+### §10 — صيغة المجاميع المعروضة كما هي (بلا تغيير)
+
+`display_gain − display_retenue == display_net` كما في E.3 — لم تُمَسّ.
+
+### §11 — نسبة CNAS من `params_paie` لا رقماً ثابتاً في الكود
+
+`"9,00"` كانت مكتوبةً حرفياً في أربعة مواضع (شاشة، مُصيِّرا PDF/Word،
+الوضع الاحتياطيّ). الآن `presentation.fmt_rate_pct(rate)` (يعيد استعمال
+`fmt_montant` — لا مصدر قانونيّ ثانٍ) تُنسِّق النسبة الفعليّة من
+`cfg["cnas"]["taux_salarie"]`، المُمرَّرة صراحةً (`cnas_taux=`) من الشاشة
+إلى `presentation.build`/`build_pdf`/`build_docx`. حساب المحرّك لم يتغيَّر.
+
+### §15 — مصدرٌ واحد للترتيب/المطابقة
+
+`_assign_computed_amounts` كانت مقصورةً على iep/hs/absence/retard عبر
+حقل `lignes_key` الساكن في `_ROW_SPECS`. عُمِّمت لتُطابِق **كلّ** صفٍّ عبر
+`entry()["type"]` الفعليّ (نفس النوع المُرسَل لـ`compute_bulletin`) —
+تغطّي الآن salaire/panier/transport/avance/free أيضاً، فيُستهلَك مبلغٌ
+واحدٌ محسوبٌ في الرسم وفي `presentation.build` معاً؛ لا مصدر مطابقةٍ ثانٍ.
+
+### الاختبارات
+
+`ui2/hr/paie/tests` **220 OK** (203 سابقة + **17 جديدة**، منها
+`BulletinTemplateE3Review` — 16: ترتيب B1/B2/B3 في `Presented` وفي PDF
+مُولَّد فعلياً · حفظ CODE/LIBELLÉ/N-BASE/TAUX (سطرٍ حرّ، IEP، HS، Absence،
+Retard، Avance) · حارس إدراج/تحويل خارج المنطقة · تنزيل نسخةٍ قديمة
+معطوبة · بروز اقتطاعٍ حرّ قديم غير مدعوم للمراجعة · نسبة CNAS من config ·
+عقد شاشة↔معروض · صيغة المجاميع. اختباران قديمان حُدِّثا (`RendererFromViewC2
+.test_all_dynamic_rubriques_rendered` لعرض LIBELLÉ حرفيّ لا تسميةً كنسيّة؛
+`SmartNextD.test_engine_recomputed_for_new_period` لتصنيف Prime من
+الشريحة). `programme/payroll/tests` 49 · `programme/tests` 6 · `ui2/tests`
+42 · معرض `ui2_paie_gallery --selftest` ALLOK — كلّها خضراء بلا تراجع.
+
+### الملفات المتأثرة
+
+`ui/hr/paie/presentation.py` (إعادة كتابة جوهريّة) · `ui/hr/paie/
+template_simple.py` (تمرير `row_snapshots`/`cnas_taux`) · `ui2/hr/paie/
+bulletin_template.py` (`_row_snapshots`, حارس §7, تصنيف §8, رؤية §9, نسبة
+§11, تعميم §15) · `ui2/hr/paie/validation.py` (`segment_mismatch`, Autre
+RETENUE) · `ui2/hr/paie/tests/test_bulletin_template.py` · `docs/
+CHANGELOG.md`. لقطات: `docs/baseline_screenshots/E3Review_complex_
+document.png`, `E3Review_complex_pdf.png` (مستندٌ واحد يجمع A/B1/B2/B3/C
++ IEP/HS/Absence/Retard بتسمياتٍ مميَّزة يثبت الترتيب بالعين).
+
+### تنظيف — إزالة 3 صورٍ عالقة من التتبّع (بلا حذفها محلياً)
+
+`docs/baseline_screenshots/55b_fixes.png`، `55c_sel_empty.png`،
+`bulletin_paie_baseline_20260908_164543.png` دخلت التتبّع خطأً عبر
+`git add -A` أثناء E.3a (كوميت `8434686`) — أُزيلت من Git فقط (`git rm
+--cached`) في كوميتٍ منفصل؛ الملفّات المحليّة تبقى إن كانت لا تزال موجودة.
+لا إعادة كتابة تاريخ.
+
+### فروقٌ باقية
+
+* المسار الاحتياطيّ في `presentation.build` بلا `rows` (تجميعٌ تقريبيّ من
+  مناطق `BulletinView`) لا يزال يفقد ترتيب B1/B2/B3 عمداً — غير مُستعمَلٍ
+  من الشاشة الحيّة؛ محفوظٌ فقط لاختباراتٍ تفحص المحرّك مباشرةً.
+* `ui/hr/paie/template_simple.py::_bulletin_rows`/`_pad_rows` (المسار
+  القديم بلا `view` إطلاقاً — تكامل tkinter المُزال من التسجيل) لا يزالان
+  يكتبان `"9,00"` حرفياً؛ مسارٌ ميت غير مُتَّصلٍ بأيّ شاشة مسجَّلة اليوم،
+  لم يُلمَس تفادياً لتوسيع نطاق tkinter بلا داعٍ (CLAUDE.md).

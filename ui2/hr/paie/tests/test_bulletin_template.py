@@ -307,10 +307,22 @@ class BulletinTemplatePin(unittest.TestCase):
         r.set_val("sens", "Gain")
         self.assertEqual(r.entry()["values"]["est_retenue"], "لا")
 
-    def test_prime_per_row_soumis(self):
+    def test_prime_soumis_no_longer_a_second_classification_source(self):
+        #  E.3-Review §8: الموضع (segment/zone) يحسم التصنيف الجبائيّ —
+        #  «soumis» القديمة تبقى معروضة/محفوظة لكن لا تُستشار بعد اليوم.
+        #  Prime الافتراضيّة في الشريحة A ⇒ CNAS+IRG مهما قيل في «soumis».
         self._fill()
         base0 = self.scr._calc_result.base_cnas
         self._row("prime").set_val("soumis", "Net (ni CNAS ni IRG)")
+        self.scr._recompute()
+        self.assertEqual(self.scr._calc_result.base_cnas, base0)
+
+    def test_prime_classification_follows_segment_not_soumis(self):
+        self._fill()
+        pr = self._row("prime")
+        base0 = self.scr._calc_result.base_cnas
+        pr.segment = "C"                       # يُنقَل خارج CNAS/IRG
+        self.scr._reindex_segments()
         self.scr._recompute()
         self.assertLess(self.scr._calc_result.base_cnas, base0)
 
@@ -2306,9 +2318,10 @@ class RendererFromViewC2(unittest.TestCase):
         self.scr._recompute()
 
     def _rows(self):
-        return T._bulletin_rows_from_view(
-            self.scr._bulletin_view, self.scr._employee_data(),
-            jours=self.scr._calc_input.jours)
+        #  E.3-Review §1/§12: طبقة العرض الحقيقيّة كما تراها الشاشة نفسها
+        #  (لقطة صفوفٍ + نسبة CNAS الفعليّة) — لا إعادة بناءٍ تقريبيّ من
+        #  ``BulletinView`` وحده (يفقد ترتيب B1/B2/B3).
+        return [pr.as_cols() for pr in self.scr._presented.rows]
 
     # ---- الاختبارات ----
     def test_all_dynamic_rubriques_rendered(self):
@@ -2318,10 +2331,14 @@ class RendererFromViewC2(unittest.TestCase):
                    avance={"libelle": "AVANCE", "montant": "10000"},
                    autre={"sens": "Gain", "libelle": "BONUS", "montant": "1500"})
         libs = " ".join(r["libelle"] for r in self._rows())
+        #  E.3-Review §1/§2: LIBELLÉ المعروض هو نصّ الشاشة الحرفيّ (WYSIWYG)
+        #  — لا تسميةٌ فرنسيّة كنسيّة مُستبدَلة (كانت التسمية القديمة عبر
+        #  مسار BulletinView وحده تكتب "IND. EXPÉRIENCE PROF." رغم أنّ
+        #  الشاشة تعرض "IEP / Ancienneté" فعلياً).
         for token in ("SALAIRE DE BASE", "PRIME DE RENDEMENT", "PANIER",
                       "TRANSPORT", "RETENUE SÉCU", "RETENUE IRG", "AVANCE",
-                      "BONUS", "EXPÉRIENCE", "HEURES SUPP", "ABSENCE",
-                      "RETARD"):
+                      "BONUS", "Ancienneté", "Heures supplémentaires",
+                      "Absence", "Retard"):
             self.assertIn(token, libs, token)
 
     def test_absence_retard_shown_as_positive_retenue(self):
@@ -2920,6 +2937,10 @@ class SmartNextD(unittest.TestCase):
 
     # ---- COMPUTED ----
     def test_engine_recomputed_for_new_period(self):
+        #  E.3-Review §8: تصنيف Prime من موضعها (الشريحة A ⇒ CNAS+IRG) —
+        #  «soumis» في ``_fill`` معروضة/محفوظة لكن لا تُستشار بعد اليوم؛
+        #  ``create_next_period_work`` ينقل نفس الشريحة (§27) فيبقى نفس
+        #  التصنيف في الفترة الجديدة.
         self._fill(extras=False)
         self.scr.create_next_period_work()
         self.assertTrue(self.scr._computed)
@@ -2929,8 +2950,8 @@ class SmartNextD(unittest.TestCase):
             mois="NOVEMBRE", annee="2026", jours=26.0, salaire_base=45000.0,
             panier=0.0, transport=0.0,
             primes=[calc.Prime(code="LIBRE", libelle="RENDEMENT",
-                               montant=8000.0, soumis_cotisation=False,
-                               imposable=False)]), cfg)
+                               montant=8000.0, soumis_cotisation=True,
+                               imposable=True)]), cfg)
         self.assertEqual(self.scr._bulletin_view.e, exp.net_a_payer)
 
     # ---- LIFECYCLE ----
@@ -3027,6 +3048,247 @@ class SmartNextD(unittest.TestCase):
         self.assertFalse(self.scr._locked)
         self.assertFalse(self.scr._has_final_artifacts)
         self.assertEqual(database.get_hr_document(old_id)["state"], "final")
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateE3Review(unittest.TestCase):
+    """مراجعة E.3 (بعد النشر على ``review/e3``) — إغلاق فجوات الشاشة/PDF +
+    ثوابت النموذج: B1/B2/B3 حتى المستند النهائي (§1/§6)، حفظ CODE/N-BASE/
+    TAUX المعروضة (§3-§5)، حارس المنطقة للأنواع الذكيّة السلطويّة (§7)،
+    بروز الاقتطاع الحرّ القديم غير المدعوم للمراجعة (§9)، نسبة CNAS من
+    الإعدادات لا رقماً ثابتاً (§11)، عقد شاشة↔معروض (§13)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_e3r_")
+        _isolate_db(self._tmp)
+        mod.confirm = lambda *_a, **_k: True
+        import ui2.alerts as _al
+        self._al, self._al_warn = _al, _al.warn
+        _al.warn = lambda *_a, **_k: None
+        self.scr = BulletinTemplateScreen(conn=None)
+        w = self.scr._widgets
+        w["mois"].setText("OCTOBRE"); w["annee"].setText("2026")
+        w["id_date_embauche"].set_iso("2016-06-14")
+        sr = [r for r in self.scr._rows if r.kind == "salaire"][0]
+        sr.set_val("gain", "45000"); sr.set_val("nbase", "26")
+        [r for r in self.scr._rows if r.kind == "panier"][0].set_val("gain", "3000")
+        [r for r in self.scr._rows if r.kind == "transport"][0].set_val("gain", "2500")
+        self.scr._recompute()
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        self._al.warn = self._al_warn
+        os.environ.pop(paths._DATA_DIR_ENV_OVERRIDE, None)
+
+    def _conv(self, seg, libelle, **cells):
+        r = self.scr._insert_row_at(
+            "free", seg, len(self.scr._segment_rows(seg)))
+        r.set_val("libelle", libelle)
+        for c, v in cells.items():
+            r.set_val(c, v)
+        self.scr._recompute()
+        return r
+
+    def _presented_row(self, code=None, libelle=None):
+        for pr in self.scr._presented.rows:
+            if (code is not None and pr.code == code) or \
+               (libelle is not None and pr.libelle == libelle):
+                return pr
+        return None
+
+    # ---------- §1/§6: B1/B2/B3 حتى المستند النهائي ----------
+    def test_b1_b2_b3_exact_order_survives_to_presented(self):
+        self._conv("A", "LIG A1", gain="100")
+        self._conv("B1", "LIG B1", gain="200")
+        self._conv("B2", "LIG B2", gain="300")
+        self._conv("B3", "LIG B3", gain="400")
+        self._conv("C", "LIG C1", montant="50")
+        libs = [pr.libelle for pr in self.scr._presented.rows]
+        expected = ["SALAIRE DE BASE", "LIG A1", "RETENUE SÉCU. SOCIALE",
+                    "LIG B1", "PANIER", "LIG B2", "(R+) TRANSPORT", "LIG B3",
+                    "RETENUE IRG", "LIG C1"]
+        idx = [libs.index(e) for e in expected]
+        self.assertEqual(idx, sorted(idx), libs)   # نفس ترتيب الشاشة بالضبط
+
+    def test_b1_b2_b3_order_in_generated_pdf(self):
+        w = self.scr._widgets
+        for k, v in {"emp_raison_sociale": "SARL DATA NEWS",
+                    "emp_adresse": "12 RUE DES FRERES, ALGER",
+                    "emp_cnas": "16 412 078 56", "id_nom": "BENALI",
+                    "id_prenom": "Karim", "id_lieu_naissance": "ALGER",
+                    "id_fonction": "COMPTABLE"}.items():
+            w[k].setText(v)
+        w["id_date_naissance"].set_iso("1990-05-10")
+        self._conv("A", "LIG A1", gain="100")
+        self._conv("B1", "LIG B1", gain="200")
+        self._conv("B2", "LIG B2", gain="300")
+        self._conv("B3", "LIG B3", gain="400")
+        try:
+            import pymupdf
+        except Exception:                                    # noqa: BLE001
+            self.skipTest("pymupdf غير متوفّر")
+        self.scr._on_finalize()
+        self.assertEqual(self.scr._work_state, "final")
+        d = pymupdf.open(self.scr._final_pdf)
+        text = d[0].get_text()
+        d.close()
+        pos = [text.index(t) for t in
+              ("LIG A1", "RETENUE SÉCU", "LIG B1", "PANIER", "LIG B2",
+               "TRANSPORT", "LIG B3", "RETENUE IRG")]
+        self.assertEqual(pos, sorted(pos), text)
+
+    # ---------- §3/§4/§5/§12: حفظ CODE/N-BASE/TAUX المعروضة ----------
+    def test_free_row_cells_preserved_in_presented(self):
+        r = self._conv("B1", "TEST B1", nbase="12", taux="3%", gain="1000")
+        r.set_val("code", "B1X")
+        self.scr._recompute()
+        pr = self._presented_row(code="B1X")
+        self.assertIsNotNone(pr)
+        self.assertEqual(pr.libelle, "TEST B1")
+        self.assertEqual(pr.nbase, "12")
+        self.assertEqual(pr.taux, "3%")
+        self.assertEqual(_money(pr.gain), 1000.0)
+
+    def test_manual_code_prints_not_engine_code(self):
+        r = self.scr._add_row("iep")
+        r.set_val("code", "ANC")
+        r.set_val("taux", "0.08")
+        self.scr._recompute()
+        pr = self._presented_row(code="ANC")
+        self.assertIsNotNone(pr)
+        self.assertGreater(_money(pr.gain), 0)
+
+    def test_hs_qty_and_coef_preserved(self):
+        r = self.scr._add_row("hs")
+        r.set_val("code", "SUP")
+        r.set_val("qty", "10"); r.set_val("coef", "50%")
+        self.scr._recompute()
+        pr = self._presented_row(code="SUP")
+        self.assertIsNotNone(pr)
+        self.assertEqual(pr.taux, "50%")
+        self.assertGreater(_money(pr.gain), 0)
+
+    def test_absence_qty_mode_and_positive_retenue_preserved(self):
+        r = self.scr._add_row("absence")
+        r.set_val("code", "ABS01")
+        r.set_val("qty", "2"); r.set_val("mode", "Absence (jours)")
+        self.scr._recompute()
+        pr = self._presented_row(code="ABS01")
+        self.assertIsNotNone(pr)
+        self.assertEqual(pr.taux, "Absence (jours)")
+        self.assertTrue(pr.retenue and not pr.gain)
+        self.assertFalse(pr.retenue.startswith("-"))
+
+    def test_c_free_retenue_preserved(self):
+        self._conv("C", "AVANCE PERSO", retenue="2000")
+        pr = self._presented_row(libelle="AVANCE PERSO")
+        self.assertIsNotNone(pr)
+        self.assertEqual(_money(pr.retenue), 2000.0)
+        self.assertFalse(pr.gain)
+
+    # ---------- §7: حارس المنطقة للأنواع الذكيّة السلطويّة ----------
+    def test_insert_row_at_refuses_smart_type_outside_its_zone(self):
+        r = self.scr._insert_row_at("iep", "C", 0)     # IEP خارج Zone A
+        self.assertIsNone(r)
+        self.assertFalse(any(x.kind == "iep" for x in self.scr._rows))
+
+    def test_add_row_corrects_segment_for_smart_type(self):
+        r = self.scr._add_row("avance", segment="A")   # Avance ⇒ C فقط
+        self.assertIsNotNone(r)
+        self.assertEqual(r.zone, "C")
+
+    def test_convert_row_refuses_mismatched_zone(self):
+        r = self._conv("C", "Test")
+        nr = self.scr._convert_row(r, "iep")            # IEP يتطلّب Zone A
+        self.assertIsNone(nr)
+        self.assertEqual(r.kind, "free")
+
+    def test_legacy_smart_segment_mismatch_demoted_on_load(self):
+        legacy = {
+            "header": {"id_nom": "X"},
+            "rows": [
+                {"kind": "iep", "segment": "C", "cells": {"taux": "0.05"}},
+            ],
+        }
+        self.scr.apply_draft(legacy)
+        rows = [r for r in self.scr._rows if r.role == "optional"]
+        self.assertTrue(rows)
+        r = rows[0]
+        self.assertEqual(r.kind, "free")
+        self.assertEqual(r._review, "segment_mismatch")
+        self.assertIn("0.05", r.val("libelle"))         # لا فقدان بيانات
+
+    # ---------- §9: اقتطاعٌ حرّ قديم غير مدعوم — بارزٌ للمراجعة ----------
+    def test_legacy_free_retenue_ab_stays_visible_for_review(self):
+        legacy = {
+            "header": {"id_nom": "X"},
+            "rows": [
+                {"kind": "free", "segment": "A", "order": 0,
+                 "cells": {"libelle": "OLD RETENUE", "retenue": "750"}},
+            ],
+        }
+        self.scr.apply_draft(legacy)
+        r = [x for x in self.scr._rows if x.kind == "free"][0]
+        w = r.widgets["retenue"]
+        self.assertFalse(w.isHidden())                 # لا إخفاء صامت
+        self.assertEqual(w.text(), "750")
+        self.assertIsNone(r.entry())                    # غير محتسَب
+        pr = self._presented_row(libelle="OLD RETENUE")
+        self.assertIsNotNone(pr)
+        self.assertEqual(_money(pr.retenue), 750.0)     # يظهر في المستند
+        self.assertFalse(pr.gain)
+        v = self.scr._validation
+        self.assertTrue(any(p.key == r.cell_key("retenue") for p in v.problems))
+
+    # ---------- §8: Prime/Autre القديمة لا تناقض الموضع ----------
+    def test_legacy_prime_soumis_cannot_override_segment(self):
+        r = self.scr._add_row("prime")
+        r.set_val("gain", "1000")
+        r.set_val("soumis", "Net (ni CNAS ni IRG)")       # قيمةٌ متناقضة
+        self.scr._recompute()
+        base_a = self.scr._calc_result.base_cnas
+        r.segment = "C"
+        self.scr._reindex_segments()
+        self.scr._recompute()
+        self.assertLess(self.scr._calc_result.base_cnas, base_a)
+
+    # ---------- §11: نسبة CNAS من الإعدادات لا رقماً ثابتاً ----------
+    def test_cnas_rate_from_config_not_hardcoded(self):
+        cfg = self.scr._cfg
+        expected = mod.PZ.fmt_rate_pct(cfg["cnas"]["taux_salarie"])
+        pr = self._presented_row(code=mod._C["cnas"])
+        self.assertIsNotNone(pr)
+        self.assertEqual(pr.taux, expected)
+        self.assertNotEqual(expected, "")
+
+    # ---------- §13: عقد شاشة↔معروض ----------
+    def test_screen_presented_contract_same_order_and_cells(self):
+        self._conv("A", "AAA", gain="10")
+        self._conv("B2", "BBB", gain="20")
+        self._conv("C", "CCC", gain="30")
+        screen_rows = self.scr._visible_body_rows()
+        pres_rows = self.scr._presented.rows
+        #  استبعاد الفراغ (فراغٌ بصريّ مقصود) — الباقي يطابق صفوف الشاشة
+        #  عدداً وترتيباً بالضبط.
+        real = [p for p in pres_rows if p.kind != "blank"]
+        self.assertEqual(len(real), len(screen_rows))
+        for sr, pr in zip(screen_rows, real):
+            self.assertEqual(pr.rid, sr.rid)
+
+    # ---------- §10: صيغة المجاميع المعروضة (بلا تغيير) ----------
+    def test_display_totals_formula_unchanged(self):
+        self._conv("A", "PRIME", gain="4000")
+        r = self.scr._add_row("absence")
+        r.set_val("qty", "2"); r.set_val("mode", "Absence (jours)")
+        self.scr._recompute()
+        pres = self.scr._presented
+        self.assertAlmostEqual(
+            float(pres.total_gain - pres.total_retenue), float(pres.net), 2)
 
 
 if __name__ == "__main__":

@@ -450,7 +450,10 @@ class _InlineChoice(QLineEdit):
 
 
 def _prime_entry(r):
-    cot, imp = _soumis_class(r.val("soumis") or "CNAS + IRG")
+    #  E.3-Review §8: الموضع (الشريحة/المنطقة) يحسم التصنيف الجبائيّ —
+    #  «soumis» القديمة تبقى معروضةً ومحفوظةً للتوافق البصريّ فقط، ولم
+    #  تعُد تُستشار كمصدرٍ ثانٍ للحقيقة يناقض الشريحة.
+    cot, imp = _ZONE_CLASS[r.zone]
     return {"type": "libre", "values": {
         "libelle": r.val("libelle") or "PRIME / INDEMNITÉ",
         "montant": r.val("gain"), "est_retenue": _NO,
@@ -465,14 +468,19 @@ def _avance_entry(r):
 
 
 def _autre_entry(r):
-    #  fallback: gain أو retenue بخيار صريح داخل السطر. gain مصنَّف
-    #  بخيار مُعلَن (Net افتراضاً — الأكثر تحفّظاً). لا تخمين صامت (§0).
+    #  fallback: gain أو retenue بخيار صريح داخل السطر (§0 — لا تخمين
+    #  صامت). E.3-Review §8: GAIN يُصنَّف من موضع السطر (الشريحة) لا من
+    #  «classe» القديمة (تبقى معروضةً/محفوظةً بلا أثرٍ جبائيّ). RETENUE
+    #  حرّة مدعومةٌ في Zone C فقط — بلا مسارٍ عامّ في المحرّك لاقتطاعٍ
+    #  قبل الضريبة خارجها (§13)، بالضبط كالسطر الحرّ.
     lbl = r.val("libelle") or "AUTRE"
     if r.val("sens") == "Gain":
-        cot, imp = _soumis_class(r.val("classe") or _SOUMIS_CHOICES[2])
+        cot, imp = _ZONE_CLASS[r.zone]
         return {"type": "libre", "values": {
             "libelle": lbl, "montant": r.val("montant"), "est_retenue": _NO,
             "cotisable": cot, "imposable": imp}}
+    if r.zone != _ZONE_C:
+        return None                                    # §13: غير مدعوم
     return {"type": "libre", "values": {
         "libelle": lbl, "montant": r.val("montant"), "est_retenue": _YES,
         "cotisable": _NO, "imposable": _NO}}
@@ -639,7 +647,8 @@ class _Row:
         else:
             self.segment = None
             self.order = 0.0
-        #  حالة مراجعة (§8/§15): "" | "duplicate_unique" | "free_retenue_ab".
+        #  حالة مراجعة (§8/§15، E.3-Review §7/§9): "" | "duplicate_unique" |
+        #  "free_retenue_ab" | "segment_mismatch".
         self._review = ""
         self.code = spec["code"]
         self.libelle = spec["lib"]
@@ -966,7 +975,9 @@ class _SheetCanvas(QWidget):
                 cell("libelle", i, row.libelle, "w")
             if row.kind == "cnas" and computed:
                 cell("nbase", i, fmt_montant(res.base_cnas), "e", cc)
-                cell("taux", i, "9,00", "e", cc)
+                #  E.3-Review §11: نسبة CNAS الفعليّة من params_paie — لا
+                #  رقمٌ قانونيّ ثابت في الكود.
+                cell("taux", i, getattr(sc, "_cnas_taux_str", ""), "e", cc)
                 cell("retenue", i, fmt_montant(res.retenue_cnas), "e", cc)
             elif row.kind == "irg" and computed:
                 cell("nbase", i, fmt_montant(res.base_irg), "e", cc)
@@ -1103,6 +1114,7 @@ class BulletinTemplateScreen(Screen):
         self._calc_result = calc.compute(self._calc_input, self._load_cfg())
         self._bulletin_view = None                      # lignes.BulletinView (المحرّك)
         self._presented = None                          # PZ.Presented (طبقة العرض)
+        self._cnas_taux_str = ""            # نسبة CNAS معروضة (من params_paie)
         self._computed = False                 # نتيجة حقيقية مقابل «غير محسوبة»
 
         self.build_ui()
@@ -1171,6 +1183,11 @@ class BulletinTemplateScreen(Screen):
             return None
         seg = segment if segment in _SEGMENTS \
             else _DEFAULT_SEGMENT.get(kind, "C")
+        #  E.3-Review §7: حارس النوع/المنطقة على مستوى النموذج — نوعٌ ذكيّ
+        #  بمنطقةٍ سلطويّة (IEP/HS/Absence/Retard ⇒ A، Avance ⇒ C) لا
+        #  يُدرَج في منطقةٍ أخرى ولو طُلبت صراحةً؛ يُصحَّح إلى منطقته.
+        if kind in _SMART_TYPES and _SEGMENT_ZONE.get(seg) != _SMART_TYPES[kind]["zone"]:
+            seg = _DEFAULT_SEGMENT.get(kind, seg)
         return self._insert_row_at(kind, seg, len(self._segment_rows(seg)))
 
     def _insert_row_at(self, kind: str, segment: str, index: int):
@@ -1185,6 +1202,10 @@ class BulletinTemplateScreen(Screen):
                  ["بلغ الجدول الحدّ الأقصى للصفوف — احذف صفاً قبل الإضافة."])
             return None
         seg = segment if segment in _SEGMENTS else "A"
+        #  E.3-Review §7: رفضٌ نهائيّ — لا يُدرَج نوعٌ ذكيّ سلطويّ خارج
+        #  منطقته المسموحة، مهما كان مصدر الاستدعاء.
+        if kind in _SMART_TYPES and _SEGMENT_ZONE.get(seg) != _SMART_TYPES[kind]["zone"]:
+            return None
         index = max(0, min(int(index), len(self._segment_rows(seg))))
         r = _Row(self, kind, self._next_rid, segment=seg, order=index - 0.5)
         self._next_rid += 1
@@ -1229,15 +1250,50 @@ class BulletinTemplateScreen(Screen):
                 seg, order, rid = r.segment, r.order, r.rid
                 r.dispose()
                 fr = _Row(self, "free", rid, segment=seg, order=order)
+                #  E.3-Review: يُستبدَل في ``self._rows`` **قبل** أيّ
+                #  ``set_val`` — ``textChanged`` قد يُطلق ``_recompute()``
+                #  متزامناً، وهو يمشي على ``self._rows`` كلّها؛ لو بقي
+                #  الفهرس ``i`` مشيراً إلى ``r`` المهدوم (widgets فارغة)
+                #  فأيّ كودٍ يقرأ ``r.widgets[...]`` (مثل اقتراح IEP)
+                #  يفشل بـ KeyError.
+                self._rows[i] = fr
                 fr._review = "duplicate_unique"
                 fr.set_val("libelle",
                            f"{lbl} (DOUBLON à revoir{' — ' + extra if extra else ''})")
                 if code:
                     fr.set_val("code", code)
-                self._rows[i] = fr
                 changed = True
             else:
                 seen.add(r.kind)
+        return changed
+
+    def _demote_zone_mismatched_smart_rows(self) -> bool:
+        """E.3-Review §7: نسخةٌ محفوظة/معطوبة قد تحمل سطراً ذكيّاً
+        سلطويّاً (IEP/HS/Absence/Retard/Avance) في شريحةٍ لا توافق منطقته
+        المُلزَمة — يُستدعى بعد استعادة كلّ عملٍ (‏``apply_draft``). ينزِّل
+        كلّ سطرٍ كهذا إلى «حرّ + مراجعة» في **مكانه** (نفس الشريحة/الترتيب)
+        فلا يُحتسَب بدلالةٍ جبائيّة تناقض موضعه البصريّ، مع الحفاظ على كلّ
+        بياناته المرئيّة (§8) — بالضبط كما تفعل ``_dedupe_unique``."""
+        changed = False
+        for i, r in enumerate(list(self._rows)):
+            spec = _SMART_TYPES.get(r.kind)
+            if spec is None or spec["zone"] == r.zone:
+                continue
+            lbl = r.val("libelle") or spec["label"]
+            extra = " ".join(f"{c}={r.val(c)}" for c in r._cellspec
+                             if c not in ("code", "libelle") and r.val(c))
+            code = r.val("code") if "code" in r._cellspec else ""
+            seg, order, rid = r.segment, r.order, r.rid
+            r.dispose()
+            fr = _Row(self, "free", rid, segment=seg, order=order)
+            self._rows[i] = fr           # قبل set_val — انظر تعليق _dedupe_unique
+            fr._review = "segment_mismatch"
+            fr.set_val("libelle",
+                       f"{lbl} (نوعٌ ذكيّ خارج منطقته — يحتاج مراجعة"
+                       f"{' — ' + extra if extra else ''})")
+            if code:
+                fr.set_val("code", code)
+            changed = True
         return changed
 
     # ============= LIBELLÉ ذكيّ + التحويل (UX Redesign R3) =============
@@ -1293,6 +1349,12 @@ class BulletinTemplateScreen(Screen):
             return None
         #  §7/§20: لا نوعٌ فريد ثانٍ (حتى استدعاءً مباشراً).
         if not self._can_add_smart(new_kind, exclude=row):
+            return None
+        #  E.3-Review §7: لا تحويل إلى نوعٍ ذكيّ سلطويّ خارج منطقته
+        #  المسموحة — التحويل يبقى «في المكان» (نفس الشريحة)، فإن كانت
+        #  الشريحة غير موافقة لمنطقة ``new_kind`` يُرفَض التحويل بدل خرق
+        #  الثابت.
+        if new_kind in _SMART_TYPES and _SMART_TYPES[new_kind]["zone"] != row.zone:
             return None
         self._converting = True
         try:
@@ -1707,6 +1769,7 @@ class BulletinTemplateScreen(Screen):
             self._suspend = set()
         self._reindex_segments()
         self._dedupe_unique()                 # §8: لا نوعٌ فريد مكرَّر
+        self._demote_zone_mismatched_smart_rows()   # E.3-Review §7
         self._refresh_libelle_suggestions()
         self._rebuild_nav()
         for k in list(self._widgets):
@@ -2051,10 +2114,13 @@ class BulletinTemplateScreen(Screen):
                 # خلية «classe» في «Autre» تظهر فقط حين sens = Gain
                 if row.kind == "autre" and cell == "classe":
                     w.setVisible(row.val("sens") == "Gain")
-                #  §14: RETENUE في سطرٍ حرٍّ خارج Zone C غير متاحة — تُخفى
-                #  (لا تظهر رماديّةً؛ الخليّة تبقى كورقةٍ نظيفة).
+                #  §14: RETENUE في سطرٍ حرٍّ **جديد** خارج Zone C غير متاحة
+                #  — تُخفى (ورقةٌ نظيفة، لا رماديّ). لكن E.3-Review §9: لو
+                #  حَمَلت خليّةٌ كهذه قيمةً قديمة محفوظة (اقتطاعٌ حرّ غير
+                #  مدعوم من نسخةٍ سابقة) فلا إخفاء صامتٌ لبيانات المستخدم
+                #  — تبقى ظاهرة للمراجعة (يُبرزها ``validate_screen``).
                 elif row.kind == "free" and cell == "retenue":
-                    w.setVisible(row.zone == _ZONE_C)
+                    w.setVisible(row.zone == _ZONE_C or bool(row.val("retenue")))
                 elif w.isHidden():
                     w.show()               # عادت مرئيّةً بعد تحويل/تغيّر منطقة
         self._canvas.update()
@@ -2466,6 +2532,30 @@ class BulletinTemplateScreen(Screen):
                 out.append(ent)
         return out
 
+    def _row_snapshots(self):
+        """لقطة صفوف الشاشة (E.3-Review §2) — ``PZ.RowSnapshot`` بترتيب
+        ``_visible_body_rows()`` **الحقيقيّ بالضبط** (segment/order، لا
+        إعادة استنتاجٍ من مناطق المحرّك). لكلّ صفٍّ: قيَم العرض كما تظهر
+        فعلياً (CODE يشمل التعديل اليدويّ، LIBELLÉ، N/BASE، TAUX، ومدخل
+        GAIN/RETENUE الخام إن وُجد) + مبلغه المحسوب (``r._amount``، مُسنَدٌ
+        مسبقاً بـ :meth:`_assign_computed_amounts`). طبقة العرض المشتركة
+        (‏``ui.hr.paie.presentation.build``) تدمج هذا مع ``BulletinView``
+        فينتج ترتيب/محتوى واحدٌ للشاشة وPDF وWord معاً (§11/§15)."""
+        out = []
+        for r in self._visible_body_rows():
+            cols = {r.column(name): r.val(name) for name in r.widgets}
+            out.append(PZ.RowSnapshot(
+                rid=r.rid, kind=r.kind, role=r.role,
+                segment=r.segment or "", order=r.order or 0.0,
+                zone=(r.zone if r.role == "optional" else ""),
+                code=cols.get("code", r.code),
+                libelle=cols.get("libelle", r.libelle),
+                nbase=cols.get("nbase", ""), taux=cols.get("taux", ""),
+                gain_input=cols.get("gain", ""),
+                retenue_input=cols.get("retenue", ""),
+                amount=r._amount, review=r._review))
+        return out
+
     def _build_input(self):
         """‏``PaieInput`` للمُصيِّر (Word/PDF) — يُشتقّ من نتيجة المحرّك
         (‏``_bulletin_view``) فتظهر في المستند نفس المبالغ المحسوبة. القيَم
@@ -2567,16 +2657,26 @@ class BulletinTemplateScreen(Screen):
         row._iep_manual = False
 
     def _assign_computed_amounts(self, view):
+        """يُسنِد لكلّ صفٍّ **مبلغه هو** من ``view.lignes`` (E.3-Review
+        §1/§2/§11 — يوحّد ما كان مقصوراً على iep/hs/absence/retard):
+        المطابقة بمفتاح ``entry()["type"]`` الفعليّ — نفس النوع الذي أُرسل
+        فعلاً لـ:func:`compute_bulletin` — بترتيب ``_visible_body_rows()``
+        (= ترتيب الإرسال في ``_build_entries``)، فيُصادف كلّ صفٍّ سطره
+        الصحيح حتى مع تكرار النوع (سطرا HS مثلاً — كلٌّ يأخذ مبلغه هو لا
+        مبلغ الآخر). صفٌّ بلا ``entry()`` (فارغ، أو اقتطاعٌ حرّ غير مدعوم
+        خارج Zone C) يبقى ``None`` — لا يدخل الحساب أصلاً، فلا مبلغ له."""
         by_key = {}
         for lv in view.lignes:
             by_key.setdefault(lv.key, []).append(lv)
         used = {}
         for r in self._visible_body_rows():
             r._amount = None
-            lk = _ROW_SPECS[r.kind].get("lignes_key")
-            if not lk:
+            if r.role == "system":
                 continue
-            key = lk(r) if callable(lk) else lk
+            ent = r.entry()
+            if ent is None:
+                continue
+            key = ent.get("type")
             lst = by_key.get(key, [])
             n = used.get(key, 0)
             if n < len(lst):
@@ -2691,25 +2791,32 @@ class BulletinTemplateScreen(Screen):
                 self._build_entries(), cfg)
             self._calc_input = self._build_input()
             self._calc_result = self._view_to_paieresult(self._bulletin_view)
-            #  طبقة العرض المشتركة (§11): صفوفٌ ومجاميع معروضة — نفس ما
-            #  يستهلكه PDF/DOCX.
-            self._presented = PZ.build(
-                self._bulletin_view,
-                jours=_num(self._salaire_row().val("nbase"))
-                if self._salaire_row() else None,
-                pad_zone_c=False)
             self._computed = self._is_computable()
             #  المبلغ المحسوب للصفوف المتكيّفة — None حين لا يمكن الحساب
-            #  (‏«صفر حقيقي» ≠ «غير محسوب»، §5).
+            #  (‏«صفر حقيقي» ≠ «غير محسوب»، §5). **قبل** بناء طبقة العرض
+            #  (E.3-Review §1/§2): لقطة الصفوف تحتاج ``r._amount`` جاهزاً.
             if self._computed:
                 self._assign_computed_amounts(self._bulletin_view)
             else:
                 for r in self._rows:
                     r._amount = None
+            #  نسبة CNAS المعروضة (E.3-Review §11) — من params_paie
+            #  المُحمَّلة فعلياً، لا رقمٌ ثابتٌ في الكود.
+            self._cnas_taux_str = PZ.fmt_rate_pct(
+                (cfg.get("cnas") or {}).get("taux_salarie"))
+            #  طبقة العرض المشتركة (§11، E.3-Review §1/§2): صفوفٌ ومجاميع
+            #  معروضة بترتيب الشاشة **الحقيقيّ** — نفس ما يستهلكه PDF/DOCX.
+            self._presented = PZ.build(
+                self._bulletin_view, rows=self._row_snapshots(),
+                jours=_num(self._salaire_row().val("nbase"))
+                if self._salaire_row() else None,
+                pad_zone_c=False,
+                cnas_taux=(cfg.get("cnas") or {}).get("taux_salarie"))
         except Exception:                                    # noqa: BLE001
             logger.warning("إعادة حساب الكشف فشلت", exc_info=True)
             self._bulletin_view = None
             self._presented = None
+            self._cnas_taux_str = ""
             for r in self._rows:
                 r._amount = None
             self._calc_input = self._build_input()
@@ -2780,12 +2887,19 @@ class BulletinTemplateScreen(Screen):
         tpl = T.get_renderer(self._template_key)
         try:
             os.makedirs(os.path.dirname(docx_path), exist_ok=True)
+            #  E.3-Review §1/§11: نفس لقطة صفوف الشاشة ونسبة CNAS
+            #  الفعليّة يُمرَّران للمُصيِّرَين معاً — ترتيبٌ ومحتوًى واحد
+            #  للشاشة وWord وPDF (§15).
+            rows = self._row_snapshots()
+            cnas_taux = ((self._cfg or {}).get("cnas") or {}).get("taux_salarie")
             tpl.build_docx(tmp_docx, self._calc_input, self._calc_result,
                            self._employer_data(), self._employee_data(),
-                           view=self._bulletin_view)
+                           view=self._bulletin_view, row_snapshots=rows,
+                           cnas_taux=cnas_taux)
             tpl.build_pdf(tmp_pdf, self._calc_input, self._calc_result,
                           self._employer_data(), self._employee_data(),
-                          view=self._bulletin_view)
+                          view=self._bulletin_view, row_snapshots=rows,
+                          cnas_taux=cnas_taux)
         except TemplateNotReady as exc:
             _silent_unlink(tmp_docx, tmp_pdf)
             warn(self, self.TITLE, [str(exc)])

@@ -236,6 +236,36 @@ class BulletinTemplatePin(unittest.TestCase):
         self.scr._on_slot_write("id_date_embauche")
         self.assertNotEqual(r.val("taux"), t_old)
 
+    def test_iep_rate_display_is_percentage_engine_unchanged(self):
+        """تصحيح عرض TAUX لِـIEP (طلب المستخدم — presentation only، بلا
+        تغيير SPEC_PAIE_DZ): الكسر الداخليّ 0.10 يُعرَض "10,00" على
+        الشاشة (بشريّاً)، لكن ما يصل للمحرّك وما يُحفَظ يبقى الكسر بلا
+        أيّ مضاعفة — نفس GAIN بالضبط مقارنةً بإدخال 0.10 مباشرةً في
+        المحرّك. lignes.compute_bulletin لا يُلمَس."""
+        from programme.payroll import lignes
+        self._fill()
+        r = self._add("iep", taux="0.10")
+        #  العرض البشريّ (الشاشة/PDF/Word — display_text تغذّي اللقطة):
+        #  نسبة مئويّة، لا الكسر الخام.
+        self.assertEqual(r.display_text("taux"), "10,00")
+        #  القيمة الحقيقيّة (المحرّك + draft_state/work_data المحفوظان):
+        #  الكسر بلا تغيير — presentation فقط، لا مضاعفة قيمة المحرّك.
+        self.assertEqual(r.val("taux"), "0.10")
+        iep_entry = next(e for e in self.scr._build_entries()
+                          if e["type"] == "iep")
+        self.assertEqual(iep_entry["values"]["taux"], "0.10")
+        #  GAIN: مطابقٌ تماماً لما ينتجه المحرّك مباشرةً بنفس الكسر 0.10 —
+        #  لا فرق بين المسارَين (الشاشة → to_entry → المحرّك) و(مباشرةً).
+        self.assertIsNotNone(r._amount)
+        base = self._row("salaire")._amount
+        cfg = self.scr._load_cfg()
+        direct_view = lignes.compute_bulletin(
+            [{"type": "salaire_base", "values": {"montant": str(base)}},
+             {"type": "iep", "values": {"taux": "0.10"}}], cfg)
+        direct_gain = next(lv.montant for lv in direct_view.lignes
+                            if lv.key == "iep")
+        self.assertEqual(r._amount, direct_gain)
+
     def test_abs_jours_and_abs_heures_are_distinct_types(self):
         #  E.4 intentional contract change: "mode" ضمن سطرٍ واحد أُلغي —
         #  abs_jours/abs_heures صارا نوعين ذكيّين مستقلّين (§B)، لا خياراً

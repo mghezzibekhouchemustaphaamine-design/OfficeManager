@@ -508,6 +508,29 @@ class _InlineChoice(QLineEdit):
         self.setTextMargins(0, 0, s, 0)
 
 
+class _RateEdit(QLineEdit):
+    """خليّة TAUX لسطر IEP — **تصحيح عرض** (طلب المستخدم، لا SPEC_PAIE_DZ):
+    النصّ المعروض/المكتوب نسبةٌ مئويّة (0,10 داخليّاً ⇒ "10,00" على
+    الشاشة)؛ ``value()``/``set_value()`` وحدهما يتعاملان مع الكسر الحقيقيّ
+    (نفس ما يصل للمحرّك ويُحفَظ في المسوّدة/العمل — عبر ``_Row.val``/
+    ``set_val``؛ ``text()``/``setText()`` تبقيان النسبة المئويّة الخام
+    كما يراها المستخدم، تُستهلَك في ``_row_snapshots`` لتطابق
+    الشاشة/PDF/Word حرفياً).
+
+    التنسيق/الفكّ يعيدان استعمال ``PZ.fmt_rate_pct``/``PZ.parse_rate_pct``
+    (نفس زوج نسبة CNAS — لا مصدر قانونيّ ثانٍ). presentation فقط: **لا**
+    مضاعفة لقيمة المحرّك — الكسر المرسَل له هو نفسه المكتوب أصلاً، فقط
+    مقسومٌ ÷100 عند القراءة (عكس ×100 عند الكتابة)."""
+
+    def value(self) -> str:
+        t = self.text().strip()
+        return "" if not t else str(PZ.parse_rate_pct(t))
+
+    def set_value(self, raw) -> None:
+        raw = str(raw or "").strip()
+        self.setText(PZ.fmt_rate_pct(raw) if raw else "")
+
+
 def _prime_entry(r):
     #  E.3-Review §8: الموضع (الشريحة/المنطقة) يحسم التصنيف الجبائيّ —
     #  «soumis» القديمة تبقى معروضةً ومحفوظةً للتوافق البصريّ فقط، ولم
@@ -655,7 +678,10 @@ _ROW_SPECS = {
         primary="taux", computed="gain", computed_extra=("nbase",),
         cells=(_cs("code", "code", "text", default="110"),
                _cs("libelle", "libelle", "smart", default="IEP / ANCIENNETÉ"),
-               _cs("taux", "taux", "amount")),
+               #  "rate": عرضٌ كنسبة مئويّة (10,00) — الكسر الحقيقيّ
+               #  (0.10) يبقى ما يصل للمحرّك/يُحفَظ (تصحيح عرض IEP، لا
+               #  تغيير SPEC_PAIE_DZ — راجع _RateEdit).
+               _cs("taux", "taux", "rate")),
         to_entry=lambda r: {"type": "iep", "values": {"taux": r.val("taux")}}),
     "prime": dict(
         role="optional", code="", lib="", primary="gain",
@@ -845,7 +871,11 @@ class _Row:
                 w.committed.connect(
                     lambda _t=None, rr=self: screen._on_libelle_committed(rr))
             else:
-                w = QLineEdit(screen._canvas)
+                #  "rate" (TAUX IEP، تصحيح عرض): نفس QLineEdit بالضبط لكن
+                #  بصفّ فرعيّ يترجم كسرٌ↔نسبة مئويّة (§_RateEdit) — بلا
+                #  تكرار لبقيّة سلك الإشارات أدناه.
+                w = (_RateEdit if c["kind"] == "rate" else QLineEdit)(
+                    screen._canvas)
                 w.setFrame(False)
                 col = self.column(name)
                 w.setAlignment(_COL_ALIGN.get(col, Qt.AlignLeft) | Qt.AlignVCenter)
@@ -897,6 +927,25 @@ class _Row:
         return {n for n, c in self._cellspec.items() if c["kind"] == "choice"}
 
     def val(self, cell: str) -> str:
+        """قيمة الخليّة **الحقيقيّة** — ما يصل للمحرّك (``to_entry``)
+        ويُحفَظ في المسوّدة/العمل (``draft_state``). لخلايا ``_RateEdit``
+        (TAUX IEP): الكسر (0.10)، لا النسبة المئويّة المعروضة — تصحيح
+        العرض لا يغيّر ما يراه المحرّك أو ما يُحفَظ (§ توافق خلفيّ مع
+        عملٍ محفوظ قبل هذا التصحيح: كان يُخزَّن الكسر أصلاً)."""
+        w = self.widgets.get(cell)
+        if w is None:
+            return ""
+        if isinstance(w, QComboBox):
+            return w.currentText().strip()
+        if isinstance(w, _RateEdit):
+            return w.value()
+        return w.text().strip()
+
+    def display_text(self, cell: str) -> str:
+        """نصّ الخليّة **كما يظهر فعلياً على الشاشة** — يغذّي لقطة الصفوف
+        (‏``_row_snapshots``) فتطابق الشاشة PDF/Word حرفياً، حتى لخلايا
+        ذات تمثيلٍ مزدوج مثل TAUX IEP (نسبة مئويّة على الشاشة، كسر في
+        ``val()``). لغير ``_RateEdit`` مطابقةٌ لـ``val()`` تماماً."""
         w = self.widgets.get(cell)
         if w is None:
             return ""
@@ -910,6 +959,8 @@ class _Row:
             return
         if hasattr(w, "setCurrentText"):          # QComboBox / _InlineChoice
             w.setCurrentText(str(value or ""))
+        elif isinstance(w, _RateEdit):
+            w.set_value(value)                    # كسرٌ → نسبة مئويّة معروضة
         else:
             w.setText(str(value or ""))
 
@@ -2823,7 +2874,10 @@ class BulletinTemplateScreen(Screen):
         فينتج ترتيب/محتوى واحدٌ للشاشة وPDF وWord معاً (§11/§15)."""
         out = []
         for r in self._visible_body_rows():
-            cols = {r.column(name): r.val(name) for name in r.widgets}
+            #  ``display_text`` لا ``val``: يجب أن تطابق اللقطة (PDF/Word)
+            #  الشاشة حرفياً — بما فيها TAUX IEP المعروض نسبةً مئويّة
+            #  بينما ``val()`` يبقى الكسر الحقيقيّ (تصحيح عرض IEP).
+            cols = {r.column(name): r.display_text(name) for name in r.widgets}
             #  E.4 §8/§12: خلايا عرضٍ إضافيّة مرسومة (لا widget لها —
             #  IEP.BASE/Retard.TAUX/Panier،Transport.TAUX) تدخل اللقطة
             #  أيضاً، فيراها PDF/Word لا الشاشة فقط.
@@ -2942,7 +2996,9 @@ class BulletinTemplateScreen(Screen):
             return
         k = row.cell_key("taux")
         self._suspend.add(k)
-        row.widgets["taux"].setText(format(sug.taux, "f"))
+        #  sug.taux كسرٌ حقيقيّ (0.05 = 5%) — set_val يعرضه نسبةً مئويّة
+        #  (تصحيح عرض IEP)، لا setText مباشرةً (كان يكتب الكسر خامّاً).
+        row.set_val("taux", format(sug.taux, "f"))
         self._suspend.discard(k)
         row._iep_manual = False
 

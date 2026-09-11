@@ -4615,3 +4615,59 @@ abs_jours/abs_heures؛ كلّ آليّات E.3 القائمة (`_can_add_smart`�
 `ui2/hr/paie/bulletin_template.py` · `ui2/hr/paie/validation.py` ·
 `ui/hr/paie/presentation.py` · `ui2/hr/paie/tests/test_bulletin_template.py`
 · `docs/CHANGELOG.md`.
+
+## Phase E.4.7 — 2026-09-11: تصحيح عرض TAUX لِـIEP (نسبة مئويّة، presentation only)
+
+طلب المستخدم: عمود TAUX لسطر IEP كان يعرض الكسر الداخليّ خامّاً (مثلاً
+"0,10" لعشرة بالمئة) — إصلاحٌ **عرضيّ بحت**، لا يمسّ SPEC_PAIE_DZ ولا
+منطق الحساب: الكسر الحقيقيّ (0.10 = 10%) يبقى بالضبط ما يصل للمحرّك
+(‏`to_entry`) وما يُحفَظ في المسوّدة/العمل (‏`draft_state`/`work_data`)؛
+البشريّ وحده يرى "10,00" — على الشاشة **وPDF وWord معاً**.
+
+### `_RateEdit` (بديل خفيف عن QLineEdit، لخليّة IEP.TAUX فقط)
+
+`_cs("taux", "taux", "rate")` بدل `"amount"` — نفس الودجت تماماً
+(‏`QLineEdit`) لكن بصفٍّ فرعيّ: `text()`/`setText()` تبقيان النسبة
+المئويّة الخام كما يراها المستخدم (لا تغيير في سلك الإشارات/المحاذاة/
+الفاليديتور)؛ `value()`/`set_value()` وحدهما يترجمان كسرٌ↔نسبة (÷100
+عند القراءة، ×100 عند الكتابة) عبر زوجٍ جديد من الدوال النقيّة في طبقة
+العرض المشتركة — **لا مصدر قانونيّ ثانٍ**، نفس أسلوب نسبة CNAS تماماً:
+
+* `PZ.fmt_rate_pct(frac)` (موجودة أصلاً — نسبة CNAS) — كسرٌ → "10,00".
+* `PZ.parse_rate_pct(text)` (جديدة، عكسها تماماً) — "10,00" → كسرٌ.
+
+### `_Row.val()` يبقى الكسر — `_Row.display_text()` جديدة للعرض البشريّ
+
+`val(cell)` (تُستهلَك في `to_entry`، `draft_state`، `apply_draft`،
+`validate`) تنادي `_RateEdit.value()` لخليّة TAUX-IEP فتُرجع **الكسر
+دائماً** — بلا أيّ تغيير على ما يصل المحرّك أو ما يُحفَظ/يُستعاد؛ عملٌ
+محفوظ **قبل** هذا التصحيح (‏taux خامّاً "0.09") يُعاد فتحه بنفس القيمة
+تماماً (٪توافقٍ خلفيّ كامل، بلا هجرة، بلا خطر على مستندات تاريخيّة —
+§E.4 «Archived/final historical documents must remain re-openable/
+reprintable»). `display_text(cell)` **جديدة**: نصّ الودجت حرفياً كما
+يظهر على الشاشة (مطابقةٌ لِـ`val()` القديمة تماماً لغير `_RateEdit`) —
+`_row_snapshots()` تستعملها الآن بدل `val()` لبناء لقطة الصفوف، فتصل
+نفس النسبة المئويّة المعروضة إلى PDF/Word حرفياً (لا إعادة صياغة موازية).
+
+`_apply_iep_suggestion` تكتب النسبة المقترَحة عبر `row.set_val("taux", …)`
+لا `.setText()` مباشرةً (كانت تكتب الكسر خامّاً، تجاوزاً للتحويل الجديد).
+
+### اختبار الانحدار
+
+`test_iep_rate_display_is_percentage_engine_unchanged`: يضبط TAUX=0.10،
+يتحقّق أنّ `display_text("taux") == "10,00"` (العرض البشريّ) وأنّ
+`val("taux") == "0.10"` (المحرّك/الحفظ)، ثمّ يقارن `GAIN` الناتج فعلياً
+بما ينتجه `lignes.compute_bulletin` مباشرةً بنفس الكسر 0.10 — **مطابقان
+تماماً** (لا مضاعفة قيمة المحرّك). كلّ اختبارات IEP القائمة (اقتراح،
+Manual Override، توافق خلفيّ لمسوّدة قديمة بـ`taux: "0.05"`) خضراء بلا
+تعديل — تُثبت التوافق الخلفيّ عملياً لا نظرياً فقط.
+
+### الاختبارات
+
+`ui2/hr/paie/tests` **276 OK** (275 + اختبار الانحدار الجديد) — بلا
+تراجعٍ في أيّ اختبار IEP/Finalize/SmartNext/Draft قائم.
+
+### الملفات المتأثرة
+
+`ui2/hr/paie/bulletin_template.py` · `ui/hr/paie/presentation.py` ·
+`ui2/hr/paie/tests/test_bulletin_template.py` · `docs/CHANGELOG.md`.

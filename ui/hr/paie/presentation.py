@@ -72,9 +72,11 @@ _FR_LIBELLE = {
 _ZONE_OF = {"Z1": "A", "Z2": "B", "Z3": "C", "Z4": "C"}
 
 #  أنواع صفوفٍ ذكيّة أصيلة تُعرَض دائماً في GAIN (المبلغ من ``amount``).
-_GAIN_KINDS = {"salaire", "iep", "hs", "panier", "transport"}
+#  E.4 §B: hs_50/hs_100 نوعان مستقلّان (كانا "hs" واحداً بمُنتقي).
+_GAIN_KINDS = {"salaire", "iep", "hs_50", "hs_100", "panier", "transport"}
 #  أنواع تُعرَض دائماً في RETENUE (موجبةً — Absence/Retard §9، Avance).
-_RETENUE_KINDS = {"absence", "retard", "avance"}
+#  E.4 §B: abs_jours/abs_heures نوعان مستقلّان (كانا "absence" واحداً بمُنتقي).
+_RETENUE_KINDS = {"abs_jours", "abs_heures", "retard", "avance"}
 
 
 @dataclass
@@ -208,7 +210,7 @@ def _row_from_snapshot(snap: RowSnapshot, *, reducers_total: Decimal):
         else:
             gain = _fmt_display(snap.gain_input)
     elif col == "retenue":
-        if snap.kind in ("absence", "retard"):
+        if snap.kind in ("abs_jours", "abs_heures", "retard"):
             #  §9: Absence/Retard تُنقِص Z1 داخل المحرّك عمداً (لا يُغيَّر) —
             #  هنا تُعرَض اقتطاعاً **موجباً** دائماً وتُصالَح المجاميع.
             amt = abs(_dec(snap.amount)) if snap.amount is not None else Decimal(0)

@@ -19,6 +19,7 @@ import logging
 import os
 import re
 from datetime import date
+from decimal import Decimal
 
 from PySide6.QtCore import (
     QEvent, QPoint, QRegularExpression, QStringListModel, Qt, QTimer, Signal,
@@ -130,7 +131,8 @@ _ZONES = (_ZONE_A, _ZONE_B, _ZONE_C)
 #  ينقله لاحقاً عبر إعادة الإضافة/الحذف — R2). Absence/Retard/HS/IEP تؤثّر
 #  قبل CNAS/IRG ⇒ Zone A (§21-§24). Prime الافتراضي «CNAS + IRG» ⇒ Zone A
 #  (§25). Avance/Autre تحفّظاً ⇒ Zone C.
-_DEFAULT_ZONE = {"iep": _ZONE_A, "hs": _ZONE_A, "absence": _ZONE_A,
+_DEFAULT_ZONE = {"iep": _ZONE_A, "hs_50": _ZONE_A, "hs_100": _ZONE_A,
+                 "abs_jours": _ZONE_A, "abs_heures": _ZONE_A,
                  "retard": _ZONE_A, "prime": _ZONE_A, "free": _ZONE_A,
                  "avance": _ZONE_C, "autre": _ZONE_C}
 
@@ -154,15 +156,18 @@ _SEGMENT_BELOW_ANCHOR = {"salaire": "A", "cnas": "B1", "panier": "B2",
 _ANCHOR_RANK = {"salaire": 0, "cnas": 20, "panier": 40, "transport": 60,
                 "irg": 80}
 #  الشريحة الافتراضية عند ``_add_row(kind)`` بلا موضع صريح.
-_DEFAULT_SEGMENT = {"iep": "A", "hs": "A", "absence": "A", "retard": "A",
+_DEFAULT_SEGMENT = {"iep": "A", "hs_50": "A", "hs_100": "A",
+                    "abs_jours": "A", "abs_heures": "A", "retard": "A",
                     "prime": "A", "free": "A", "avance": "C", "autre": "C"}
 
 
 def _legacy_zone(kind, cells):
     """منطقة سطرٍ من Work/Draft قديم لا يحمل ``segment``/``zone`` صريحاً
-    (§5/§39): تُشتقّ من نوعه وتصنيفه القديم مرّة واحدة عند الاستعادة."""
+    (§5/§39): تُشتقّ من نوعه وتصنيفه القديم مرّة واحدة عند الاستعادة.
+    ‏``kind`` هنا **بعد** هجرة E.4 (‏:func:`_migrate_e4_row`) — الأسماء
+    الجديدة فقط."""
     cells = cells or {}
-    if kind in ("iep", "hs", "absence", "retard"):
+    if kind in ("iep", "hs_50", "hs_100", "abs_jours", "abs_heures", "retard"):
         return _ZONE_A
     if kind == "prime":
         cot, imp = _soumis_class(cells.get("soumis") or _SOUMIS_CHOICES[0])
@@ -177,6 +182,33 @@ def _legacy_segment(kind, cells):
     """‏``segment`` لسطرٍ قديم بلا حقل ``segment`` (§5): Zone A → A ·
     Zone B → **B3** (قبل IRG) · Zone C → C."""
     return {_ZONE_A: "A", _ZONE_B: "B3", _ZONE_C: "C"}[_legacy_zone(kind, cells)]
+
+
+def _migrate_e4_row(kind, cells, code_manual):
+    """يهاجر صفّاً محفوظاً قبل E.4 إلى بنية E.4 (§G):
+    ``hs`` + ``coef`` → ``hs_50``/``hs_100``؛ ``absence`` + ``mode`` →
+    ``abs_jours``/``abs_heures`` (غياب الساعات لا يتحوّل أبداً إلى
+    Retard). يُبقي كلّ قيمةٍ أخرى (segment/order/libelle/qty/…) كما هي
+    بالضبط — لا فقدان بيانات. CODE وحده يتغيّر، وبشرطٍ واحد: لم يُعدِّله
+    المستخدم يدوياً (‏``code_manual`` زائفة) — عندها يتبنّى افتراض E.4
+    الرقميّ الجديد؛ رمزٌ يدويّ (حتى لو ABS/HS/IEP قديماً أو 4 أرقام)
+    يبقى **حرفياً** إلى أن يُعدِّله المستخدم بنفسه.
+
+    ``kind`` غير معروفٍ إطلاقاً (لا "hs"/"absence" ولا اسمٌ حاليّ صالح)
+    يُعاد كما هو — يُرفَض لاحقاً بفحص ``_ROW_SPECS`` العاديّ."""
+    cells = dict(cells or {})
+    new_kind = kind
+    if kind == "hs":
+        coef = str(cells.pop("coef", ""))
+        new_kind = "hs_50" if coef.startswith("50") else "hs_100"
+    elif kind == "absence":
+        mode = str(cells.pop("mode", "")).lower()
+        new_kind = "abs_jours" if "jours" in mode else "abs_heures"
+    if new_kind not in _ROW_SPECS:
+        return kind, cells
+    if not code_manual:
+        cells["code"] = _ROW_SPECS[new_kind]["code"]
+    return new_kind, cells
 
 #  Smart Next (Phase D): ما يُنقَل إلى الشهر التالي. الباقي (absence /
 #  retard / hs / avance / autre) يُحذَف بالكامل — عرضيّ/شهريّ لا يتكرّر.
@@ -229,28 +261,51 @@ def _free_entry(r):
         "cotisable": cot, "imposable": imp}}
 
 
-# ======================= التحويل الذكيّ (UX Redesign R3) =======================
+# ======================= التحويل الذكيّ (UX Redesign R3 → E.4 §B/§C/§E) =======================
 #  LIBELLÉ المطابق لاسم نوع محرّك معروف يحوّل السطر الحرّ إليه (§14)،
 #  وبالعكس. المطابقة **محافِظة** (§16): تطابق كامل بعد التطبيع أو اسمٌ
 #  بديل موثوق — لا تخمين. لكلّ نوع منطقته المسموحة (§13/§19) و``code``
 #  افتراضيّ (§20). Prime ليست نوعاً ذكياً — سطرٌ حرّ في منطقته (§25).
+#
+#  E.4 §B/§C/§E: HS و Absence لم يعودا نوعاً مُركَّباً بمُنتقي (50%/100% ·
+#  jours/heures) — كلّ توليفة نوعٌ ذكيّ **مستقلّ** بمنطقته وCODE وLIBELLÉ
+#  الخاصّين (§C)، فيصير TAUX عمود عرضٍ محسوبٍ حقيقيّ (§D) بلا تصادمٍ مع
+#  أيّ مُنتقٍ حيّ. الأسماء المستعارة **دقيقة لا غامضة** (§E): "Absence"/
+#  "Heures supplémentaires" المجرَّدتان أُزيلتا من هنا عمداً — نصٌّ كهذا
+#  يبقى حرّاً حتى يختار المستخدم توليفةً دقيقة (LIBELLÉ الكامل، أو الاسم
+#  المستعار الموثوق القصير المتبقّي لكلّ نوع كما في §E).
 _SMART_TYPES = {
-    "iep": {"zone": _ZONE_A, "code": "IEP", "label": "IEP / Ancienneté",
-            "names": ("iep", "ancienneté", "anciennete", "ind. expérience prof.",
-                      "indemnité d'expérience", "منحة الأقدمية", "الأقدمية")},
-    "hs": {"zone": _ZONE_A, "code": "HS", "label": "Heures supplémentaires",
-           "names": ("hs", "heures supplémentaires", "heures supp", "heures sup",
-                     "h.s.", "ساعات إضافية", "ساعات اضافية")},
-    "absence": {"zone": _ZONE_A, "code": "ABS", "label": "Absence",
-                "names": ("absence", "absences", "abs", "غياب")},
-    "retard": {"zone": _ZONE_A, "code": "RET", "label": "Retard",
-               "names": ("retard", "retards", "تأخّر", "تاخر")},
-    "avance": {"zone": _ZONE_C, "code": "AV", "label": "Avance / Retenue",
-               "names": ("avance", "avance sur salaire", "acompte",
-                         "retenue sur salaire", "تسبيق", "سلفة")},
+    "iep": {"zone": _ZONE_A, "code": "110", "label": "IEP / ANCIENNETÉ",
+            "names": ("iep", "iep / ancienneté", "ancienneté", "anciennete",
+                      "ind. expérience prof.", "indemnité d'expérience",
+                      "منحة الأقدمية", "الأقدمية")},
+    "hs_50": {"zone": _ZONE_A, "code": "120",
+             "label": "HEURES SUPPLÉMENTAIRES (50 %)",
+             "names": ("heures supplémentaires (50 %)", "heures supplémentaires 50%",
+                       "hs50", "hs 50", "hs 50%", "h.s. 50%",
+                       "ساعات إضافية 50%")},
+    "hs_100": {"zone": _ZONE_A, "code": "121",
+              "label": "HEURES SUPPLÉMENTAIRES (100 %)",
+              "names": ("heures supplémentaires (100 %)", "heures supplémentaires 100%",
+                        "hs100", "hs 100", "hs 100%", "h.s. 100%",
+                        "ساعات إضافية 100%")},
+    "abs_jours": {"zone": _ZONE_A, "code": "130", "label": "ABSENCE (JOURS)",
+                 "names": ("absence (jours)", "absence jours", "abs jours",
+                           "غياب أيام")},
+    "abs_heures": {"zone": _ZONE_A, "code": "131", "label": "ABSENCE (HEURES)",
+                  "names": ("absence (heures)", "absence heures", "abs heures",
+                            "غياب ساعات")},
+    "retard": {"zone": _ZONE_A, "code": "140", "label": "RETARD (HEURES)",
+               "names": ("retard", "retard (heures)", "retards", "تأخّر", "تاخر")},
+    "avance": {"zone": _ZONE_C, "code": "210", "label": "AVANCE / ACOMPTE",
+               "names": ("avance", "avance / acompte", "avance sur salaire",
+                         "acompte", "retenue sur salaire", "تسبيق", "سلفة")},
 }
-#  أنواع فريدة (§24/§38): لا تُضاف مرّتين، وتُخفى من اقتراحات الأسطر الأخرى.
-_SMART_UNIQUE = {"iep"}
+#  أنواعٌ فريدة (E.4 §F: كلّها الآن — كان IEP فقط): لا تُضاف مرّتين، وتُخفى
+#  من اقتراحات الأسطر الأخرى. hs_50/hs_100 نوعان مستقلّان فيتعايشان؛
+#  كذلك abs_jours/abs_heures.
+_SMART_UNIQUE = {"iep", "hs_50", "hs_100", "abs_jours", "abs_heures",
+                 "retard", "avance"}
 
 
 def _norm_libelle(s) -> str:
@@ -539,15 +594,29 @@ def _row_display_extra(row, view):
     الحضور الفعليّة (‏``res.heures_presence`` — نفس الحقل في كلّ أوضاع
     التنسيب، بما فيها PRORATA_MIXTE الجديد §3).
 
-    ‏TAUX لـ absence/hs **غير مُضافة عمداً**: يشغل عمود TAUX عندهما
-    اختيار jours/heures أو 50%/100% (‏``_InlineChoice`` حيّ ومُختبَر) —
-    إضافة نصّ محسوبٍ هناك يتصادم مع الاختيار الفعليّ؛ يتطلّب استبدال
-    الاختيار بنوعٍ ذكيّ منفصل (خارج نطاق هذه الجلسة — انظر التقرير)."""
+    ‏E.4 §B/§D: ``abs_jours``/``abs_heures``/``hs_50``/``hs_100`` نوعٌ
+    مستقلّ لكلٍّ منها الآن — لا مُنتقٍ حيّ يشغل TAUX بعد اليوم، فتُضاف
+    قيَمها هنا أيضاً (كانت مُستبعَدة في E4.2 حصراً بسبب تصادمٍ مع
+    ``_InlineChoice`` القديم؛ التصادم زال بزوال المُنتقي نفسه)."""
     if view is None or getattr(view, "result", None) is None:
         return {}
     res = view.result
-    if row.kind == "retard":
+    if row.kind == "abs_jours":
+        return {"taux": res.taux_journalier}
+    if row.kind in ("abs_heures", "retard"):
         return {"taux": res.taux_horaire}
+    if row.kind in ("hs_50", "hs_100"):
+        #  المعدَّل الساعيّ المُعوَّض الفعليّ لهذا السطر بالذات = مبلغه
+        #  المحسوب ÷ ساعاته — مُشتقٌّ من نفس النتيجة الفعليّة
+        #  (‏``row._amount``، مطابَقٌ بتوقيع E.3-Review-2)، لا معاملاً
+        #  ثابتاً (1.5/2.0) يُعاد اختراعه موازياً هنا (§D). صحيحٌ حتى لو
+        #  غيّرت اتفاقيةٌ مستقبليّة معامل الاتفاقية — لا مصدر حقيقة ثانٍ.
+        if row._amount is None:
+            return {}
+        heures = _num(row.val("qty"))
+        if heures <= 0:
+            return {}
+        return {"taux": row._amount / Decimal(str(heures))}
     if row.kind == "iep":
         sr = row.screen._salaire_row()
         base = sr._amount if sr is not None and sr._amount is not None else None
@@ -555,20 +624,6 @@ def _row_display_extra(row, view):
     if row.kind in ("panier", "transport"):
         return {"taux": res.heures_presence}
     return {}
-
-
-def _abs_type(r):
-    return "abs_jours" if "jours" in r.val("mode").lower() else "abs_heures"
-
-
-def _abs_entry(r):
-    t = _abs_type(r)
-    return {"type": t, "values": {
-        ("jours" if t == "abs_jours" else "heures"): r.val("qty")}}
-
-
-def _hs_type(r):
-    return "hs_50" if r.val("coef").startswith("50") else "hs_100"
 
 
 #  spec خلية: (name, col, kind, opts, default). col نصّ عمود أو callable.
@@ -587,13 +642,15 @@ _ROW_SPECS = {
         to_entry=lambda r: {"type": "salaire_base",
                             "values": {"montant": r.val("gain")}}),
     #  ---- الأنواع الذكيّة (R3): LIBELLÉ ذكيّ + CODE قابل للتحرير (§12/§20).
-    #  jours/heures و50/100 خياراتٌ **داخل** السطر في عمود TAUX (§21/§23).
+    #  E.4 §B/§C/§D: كلّ توليفةٍ كانت خياراً داخل سطرٍ مُركَّب (jours/heures
+    #  · 50%/100%) صارت نوعاً ذكيّاً **مستقلاً** بذاته — CODE/LIBELLÉ
+    #  افتراضيّان خاصّان به (§C)، وTAUX عمود عرضٍ محسوبٍ حقيقيّ (§D) بلا
+    #  أيّ مُنتقٍ يشغل مكانه بعد اليوم.
     "iep": dict(
-        role="optional", code="IEP", lib="IND. EXPÉRIENCE PROF.",
+        role="optional", code="110", lib="IEP / ANCIENNETÉ",
         primary="taux", computed="gain", computed_extra=("base",),
-        lignes_key="iep",
-        cells=(_cs("code", "code", "text", default="IEP"),
-               _cs("libelle", "libelle", "smart", default="IEP / Ancienneté"),
+        cells=(_cs("code", "code", "text", default="110"),
+               _cs("libelle", "libelle", "smart", default="IEP / ANCIENNETÉ"),
                _cs("taux", "taux", "amount")),
         to_entry=lambda r: {"type": "iep", "values": {"taux": r.val("taux")}}),
     "prime": dict(
@@ -602,33 +659,46 @@ _ROW_SPECS = {
                _cs("soumis", "taux", "choice", _SOUMIS_CHOICES, _SOUMIS_CHOICES[0]),
                _cs("gain", "gain", "amount")),
         to_entry=_prime_entry),
-    "hs": dict(
-        role="optional", code="HS", lib="HEURES SUPPLÉMENTAIRES",
-        primary="qty", computed="gain", lignes_key=_hs_type,
-        cells=(_cs("code", "code", "text", default="HS"),
+    "hs_50": dict(
+        role="optional", code="120", lib="HEURES SUPPLÉMENTAIRES (50 %)",
+        primary="qty", computed="gain", computed_extra=("taux",),
+        cells=(_cs("code", "code", "text", default="120"),
                _cs("libelle", "libelle", "smart",
-                   default="Heures supplémentaires"),
-               _cs("qty", "nbase", "amount"),
-               _cs("coef", "taux", "choice", ("50%", "100%"), "50%")),
-        to_entry=lambda r: {"type": _hs_type(r),
-                            "values": {"heures": r.val("qty")}}),
+                   default="HEURES SUPPLÉMENTAIRES (50 %)"),
+               _cs("qty", "nbase", "amount")),
+        to_entry=lambda r: {"type": "hs_50", "values": {"heures": r.val("qty")}}),
+    "hs_100": dict(
+        role="optional", code="121", lib="HEURES SUPPLÉMENTAIRES (100 %)",
+        primary="qty", computed="gain", computed_extra=("taux",),
+        cells=(_cs("code", "code", "text", default="121"),
+               _cs("libelle", "libelle", "smart",
+                   default="HEURES SUPPLÉMENTAIRES (100 %)"),
+               _cs("qty", "nbase", "amount")),
+        to_entry=lambda r: {"type": "hs_100", "values": {"heures": r.val("qty")}}),
     #  Absence/Retard = Z1: تُنقِص وعاء [A] و``total_gains`` في المحرّك (لا
     #  يُغيَّر — §30). العرضُ (E.3 §9) **اقتطاعٌ موجب في عمود RETENUE**؛
     #  المجاميع تُصالَح في :mod:`ui.hr.paie.presentation`.
-    "absence": dict(
-        role="optional", code="ABS", lib="", primary="qty",
-        computed="retenue", lignes_key=_abs_type,
-        cells=(_cs("code", "code", "text", default="ABS"),
-               _cs("libelle", "libelle", "smart", default="Absence"),
-               _cs("qty", "nbase", "amount"),
-               _cs("mode", "taux", "choice",
-                   ("Absence (jours)", "Absence (heures)"), "Absence (jours)")),
-        to_entry=_abs_entry),
+    "abs_jours": dict(
+        role="optional", code="130", lib="ABSENCE (JOURS)", primary="qty",
+        computed="retenue", computed_extra=("taux",),
+        cells=(_cs("code", "code", "text", default="130"),
+               _cs("libelle", "libelle", "smart", default="ABSENCE (JOURS)"),
+               _cs("qty", "nbase", "amount")),
+        to_entry=lambda r: {"type": "abs_jours",
+                            "values": {"jours": r.val("qty")}}),
+    "abs_heures": dict(
+        role="optional", code="131", lib="ABSENCE (HEURES)", primary="qty",
+        computed="retenue", computed_extra=("taux",),
+        cells=(_cs("code", "code", "text", default="131"),
+               _cs("libelle", "libelle", "smart", default="ABSENCE (HEURES)"),
+               _cs("qty", "nbase", "amount")),
+        to_entry=lambda r: {"type": "abs_heures",
+                            "values": {"heures": r.val("qty")}}),
     "retard": dict(
-        role="optional", code="RET", lib="RETARD", primary="qty",
-        computed="retenue", computed_extra=("taux",), lignes_key="retard",
-        cells=(_cs("code", "code", "text", default="RET"),
-               _cs("libelle", "libelle", "smart", default="Retard"),
+        role="optional", code="140", lib="RETARD (HEURES)", primary="qty",
+        computed="retenue", computed_extra=("taux",),
+        cells=(_cs("code", "code", "text", default="140"),
+               _cs("libelle", "libelle", "smart", default="RETARD (HEURES)"),
                _cs("qty", "nbase", "amount")),
         to_entry=lambda r: {"type": "retard", "values": {"heures": r.val("qty")}}),
     #  Panier/Transport (E.4 §8.7/§8.8): BASE (الاستحقاق الشهريّ الكامل)
@@ -650,9 +720,9 @@ _ROW_SPECS = {
         to_entry=lambda r: {"type": "transport",
                             "values": {"montant_mensuel": r.val("gain")}}),
     "avance": dict(
-        role="optional", code="AV", lib="", primary="montant",
-        cells=(_cs("code", "code", "text", default="AV"),
-               _cs("libelle", "libelle", "smart", default="Avance / Retenue"),
+        role="optional", code="210", lib="AVANCE / ACOMPTE", primary="montant",
+        cells=(_cs("code", "code", "text", default="210"),
+               _cs("libelle", "libelle", "smart", default="AVANCE / ACOMPTE"),
                _cs("montant", "retenue", "amount")),
         to_entry=_avance_entry),
     "autre": dict(
@@ -682,13 +752,19 @@ _ROW_SPECS = {
 }
 
 #  قائمة «+ Ajouter» — منتَج مبسَّط فوق الـ domain (لا تعرض أنواع
-#  ``lignes.LINE_TYPES`` التقنية؛ jours/heures و50/100 خيارات **داخل** السطر).
-_AJOUTER_MENU = (("IEP / Ancienneté", "iep"),
+#  ``lignes.LINE_TYPES`` التقنية). E.4 §B/§C: سبعة أنواعٍ ذكيّة موجَّهة،
+#  كلٌّ مستقلّ بذاته (لا مُنتقي 50/100 ولا jours/heures داخل السطر بعد
+#  اليوم) — **ثابتٌ مرجعيّ حالياً**: القائمة الحيّة الفعليّة هي اللاصقة
+#  الذكيّة (‏``_smart_match``/`_on_libelle_committed``)؛ لا widget قائمة
+#  "+" منفصلٌ في هذه الشاشة بعد.
+_AJOUTER_MENU = (("IEP / ANCIENNETÉ", "iep"),
                  ("Prime / Indemnité", "prime"),
-                 ("Heures supplémentaires", "hs"),
-                 ("Absence", "absence"),
-                 ("Retard", "retard"),
-                 ("Avance / Retenue", "avance"),
+                 ("HEURES SUPPLÉMENTAIRES (50 %)", "hs_50"),
+                 ("HEURES SUPPLÉMENTAIRES (100 %)", "hs_100"),
+                 ("ABSENCE (JOURS)", "abs_jours"),
+                 ("ABSENCE (HEURES)", "abs_heures"),
+                 ("RETARD (HEURES)", "retard"),
+                 ("AVANCE / ACOMPTE", "avance"),
                  ("Autre", "autre"))
 
 _MAX_BODY_ROWS = 18          # حدّ عمليّ (لا pagination) — §31
@@ -703,7 +779,8 @@ _INLINE_CHOICE_CELLS = {"coef", "mode"}
 #  تُقيَّد لأرقامٍ فقط (بحدّ 3 خانات، صفرٌ بادئٌ مسموح) عبر مُدقِّق Qt —
 #  لا يمسّ ``setText`` البرمجيّ (توافقٌ خلفيّ كامل مع رموز نصّية قديمة
 #  محفوظة مثل "IEP"/"HS"/"ABS" — تبقى كما هي حتى يُعدِّلها المستخدم).
-_NUMERIC_CODE_KINDS = {"iep", "hs", "absence", "retard", "avance"}
+_NUMERIC_CODE_KINDS = {"iep", "hs_50", "hs_100", "abs_jours", "abs_heures",
+                       "retard", "avance"}
 _CODE3_RX = QRegularExpression(r"^\d{0,3}$")
 
 _COL_ALIGN = {"code": Qt.AlignHCenter, "libelle": Qt.AlignLeft,
@@ -1855,9 +1932,16 @@ class BulletinTemplateScreen(Screen):
             legacy_order = {}
             for spec in data.get("rows", []):
                 kind = spec.get("kind")
+                cells = spec.get("cells") or {}
+                code_manual = bool(spec.get("code_manual"))
+                #  E.4 §G: هجرة hs+coef → hs_50/hs_100، absence+mode →
+                #  abs_jours/abs_heures — **قبل** التحقّق من ``_ROW_SPECS``
+                #  (الاسمان القديمان لم يعودا مفتاحين صالحين). تحافظ على
+                #  كلّ قيمةٍ أخرى بالضبط؛ رمزٌ آليّ قديم (code_manual=False)
+                #  وحده يتبنّى افتراض E.4 الجديد — رمزٌ يدويّ يبقى حرفياً.
+                kind, cells = _migrate_e4_row(kind, cells, code_manual)
                 if kind not in _ROW_SPECS:
                     continue
-                cells = spec.get("cells") or {}
                 #  §5/§39: عملٌ قديم بلا ``segment`` ⇒ تُشتقّ من ``zone``
                 #  القديم (A→A · B→B3 · C→C) وترتيب الملفّ، مرّةً في الذاكرة
                 #  ثمّ تُحفَظ صريحةً عند الحفظ التالي.
@@ -1877,7 +1961,7 @@ class BulletinTemplateScreen(Screen):
                 for c, val in cells.items():
                     r.set_val(c, val)
                 r._iep_manual = bool(spec.get("iep_manual"))
-                r._code_manual = bool(spec.get("code_manual"))
+                r._code_manual = code_manual
                 r._review = spec.get("review") or ""
             for kind in self._FIXED_KINDS:
                 if not any(r.kind == kind for r in self._rows):
@@ -2364,13 +2448,12 @@ class BulletinTemplateScreen(Screen):
             return started, _num(r.val("gain")) > 0, "Prime / تعويض"
         if k == "iep":
             return started, _num(r.val("taux")) > 0, "نسبة الأقدمية (IEP)"
-        if k == "hs":
-            ok = _num(r.val("qty")) > 0 and r.val("coef") in ("50%", "100%")
-            return started, ok, "ساعات العمل الإضافيّ"
-        if k == "absence":
-            ok = (_num(r.val("qty")) > 0
-                  and r.val("mode") in ("Absence (jours)", "Absence (heures)"))
-            return started, ok, "كمّية الغياب"
+        if k in ("hs_50", "hs_100"):
+            #  E.4 §B/§D: النوع نفسه يحمل 50%/100% الآن — لا حقل coef.
+            return started, _num(r.val("qty")) > 0, "ساعات العمل الإضافيّ"
+        if k in ("abs_jours", "abs_heures"):
+            #  E.4 §B/§D: النوع نفسه يحمل jours/heures الآن — لا حقل mode.
+            return started, _num(r.val("qty")) > 0, "كمّية الغياب"
         if k == "retard":
             return started, _num(r.val("qty")) > 0, "ساعات التأخّر"
         if k == "avance":

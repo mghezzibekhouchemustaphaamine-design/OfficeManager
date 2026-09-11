@@ -198,7 +198,8 @@ def validate_screen(screen) -> ValidationResult:
         #  E.4 §6/§14: CODE رقميّ جزئيّ (١ أو ٢ خانة) غير مكتمل عند
         #  الإصدار النهائيّ — رمزٌ قديمٌ نصّيّ (غير رقميّ، مثل "ABS") مُعفًى
         #  دائماً (§6 «treat it as legacy until user explicitly edits it»).
-        if r.kind in ("iep", "hs", "absence", "retard", "avance"):
+        if r.kind in ("iep", "hs_50", "hs_100", "abs_jours", "abs_heures",
+                     "retard", "avance"):
             code = r.val("code").strip()
             if code and code.isdigit() and len(code) != 3:
                 res.invalid_fields.append(Problem(

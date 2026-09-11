@@ -266,6 +266,38 @@ class BulletinTemplatePin(unittest.TestCase):
                             if lv.key == "iep")
         self.assertEqual(r._amount, direct_gain)
 
+    def test_iep_manual_rate_0_15_percentage_display_and_gain(self):
+        """حالة نسبةٍ يدويّة أخرى غير 0.10 (طلب المراجعة §2): المستخدم
+        يكتب نسبةً يدويّةً 15% (Manual Override — `_iep_manual`، لا
+        اقتراح المحرّك). raw/domain 0.15 → عرضٌ بشريٌّ "15,00"؛ ما يصل
+        للمحرّك/يُحفَظ يبقى 0.15 بلا مضاعفة؛ GAIN مطابقٌ رياضياً لحساب
+        ما قبل E.4.7 (نفس صيغة base_iep_val × 0.15 بالضبط، دون أيّ عاملٍ
+        إضافيّ ×100 أو ÷100 يتسلّل للمحرّك)."""
+        from programme.payroll import lignes
+        self._fill()
+        r = self._add("iep")
+        r.set_val("taux", "0.15")                  # Manual Override
+        self.assertTrue(r._iep_manual)
+        self.assertEqual(r.display_text("taux"), "15,00")
+        self.assertEqual(r.val("taux"), "0.15")
+        self.scr._recompute()
+        iep_entry = next(e for e in self.scr._build_entries()
+                          if e["type"] == "iep")
+        self.assertEqual(iep_entry["values"]["taux"], "0.15")
+        self.assertIsNotNone(r._amount)
+        base = self._row("salaire")._amount
+        cfg = self.scr._load_cfg()
+        #  «حساب ما قبل E.4.7»: نفس الصيغة المباشرة base_iep_val × 0.15،
+        #  بلا مرورٍ بأيّ تحويل عرضٍ — يثبت أنّ GAIN غير متأثّرٍ بالتصحيح.
+        direct_view = lignes.compute_bulletin(
+            [{"type": "salaire_base", "values": {"montant": str(base)}},
+             {"type": "iep", "values": {"taux": "0.15"}}], cfg)
+        direct_gain = next(lv.montant for lv in direct_view.lignes
+                            if lv.key == "iep")
+        self.assertEqual(r._amount, direct_gain)
+        self.assertEqual(r._amount, (base * Decimal("0.15")).quantize(
+            Decimal("0.01")))
+
     def test_abs_jours_and_abs_heures_are_distinct_types(self):
         #  E.4 intentional contract change: "mode" ضمن سطرٍ واحد أُلغي —
         #  abs_jours/abs_heures صارا نوعين ذكيّين مستقلّين (§B)، لا خياراً

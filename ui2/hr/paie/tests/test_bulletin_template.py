@@ -657,10 +657,17 @@ class BulletinTemplateFreeRowR2(unittest.TestCase):
         self.assertFalse(self.scr._btn_plus.isHidden())
         self.assertTrue(self.scr._btn_minus.isHidden())
 
-    def test_gutter_plus_click_inserts_in_hovered_zone(self):
+    def test_gutter_plus_click_opens_menu_free_option_inserts_in_hovered_zone(self):
+        #  E4.6 intentional contract change: ＋ لم يعد يُدرج سطراً حرّاً
+        #  فوراً — يعرض قائمةً موجَّهة أوّلاً (§1). "سطر حرّ" فيها يحافظ
+        #  على السلوك القديم بالضبط.
         self.scr._gutter_mouse_move(self._canvas_pt(-5.0, 1))
         self.scr._plus_target = ("C", 0)
         self.scr._btn_plus.click()
+        self.assertIsNotNone(self.scr._ajouter_menu)
+        free_act = next(a for a in self.scr._ajouter_menu.actions()
+                        if a.text() == "سطر حرّ")
+        free_act.trigger()
         fr = [r for r in self.scr._rows if r.kind == "free"]
         self.assertTrue(fr and fr[-1].zone == "C")
 
@@ -3988,6 +3995,216 @@ class BulletinTemplateE4Invariants(unittest.TestCase):
         self.assertIn("AJ9", docx_text)
         self.assertIn(aj_pr.taux, docx_text)
         self.assertIn(aj_pr.retenue, docx_text)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateE46AjouterMenu(unittest.TestCase):
+    """E4.6 §1-§4 — قائمة ＋ الموجَّهة: سبعة أنواعٍ ذكيّة + Prime/Autre +
+    سطر حرّ. لا ``exec()``/``popup()`` في أيّ اختبار هنا — الفعل الحقيقيّ
+    الوحيد المُستعمَل هو ``QAction.trigger()`` على القائمة المُعادة من
+    ``_build_ajouter_menu`` (نفس الاتّصال الذي يستعمله نقرٌ حقيقيّ)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_e46_")
+        _isolate_db(self._tmp)
+        mod.confirm = lambda *_a, **_k: True
+        import ui2.alerts as _al
+        self._al, self._al_warn = _al, _al.warn
+        _al.warn = lambda *_a, **_k: None
+        self.scr = BulletinTemplateScreen(conn=None)
+        w = self.scr._widgets
+        w["mois"].setText("JUIN"); w["annee"].setText("2026")
+        w["id_date_embauche"].set_iso("2016-06-14")
+        [r for r in self.scr._rows if r.kind == "salaire"][0].set_val(
+            "gain", "45000")
+        self.scr._recompute()
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        self._al.warn = self._al_warn
+        os.environ.pop(paths._DATA_DIR_ENV_OVERRIDE, None)
+
+    def _trigger(self, label, target=("A", 0)):
+        menu = self.scr._build_ajouter_menu(target)
+        act = next(a for a in menu.actions() if a.text() == label)
+        act.trigger()
+        return menu, act
+
+    # ---------- §1: القائمة تحوي السبعة + Prime/Autre + سطر حرّ ----------
+    def test_menu_contains_all_seven_smart_labels(self):
+        menu = self.scr._build_ajouter_menu(("A", 0))
+        labels = [a.text() for a in menu.actions()]
+        for expected in ("IEP / ANCIENNETÉ",
+                        "HEURES SUPPLÉMENTAIRES (50 %)",
+                        "HEURES SUPPLÉMENTAIRES (100 %)",
+                        "ABSENCE (JOURS)", "ABSENCE (HEURES)",
+                        "RETARD (HEURES)", "AVANCE / ACOMPTE"):
+            self.assertIn(expected, labels, expected)
+
+    def test_menu_keeps_prime_autre_and_free(self):
+        menu = self.scr._build_ajouter_menu(("A", 0))
+        labels = [a.text() for a in menu.actions()]
+        self.assertIn("Prime / Indemnité", labels)
+        self.assertIn("Autre", labels)
+        self.assertIn("سطر حرّ", labels)
+
+    def test_menu_has_no_retenue_libre_item(self):
+        menu = self.scr._build_ajouter_menu(("C", 0))
+        labels = [a.text() for a in menu.actions()]
+        self.assertFalse(any("RETENUE LIBRE" in l.upper() for l in labels))
+
+    # ---------- كلّ اختيارٍ يُنشئ النوع الدلاليّ الصحيح + CODE/LIBELLÉ ----------
+    def test_each_smart_label_creates_correct_kind_code_libelle(self):
+        cases = (
+            ("IEP / ANCIENNETÉ", "iep", "110", "IEP / ANCIENNETÉ"),
+            ("HEURES SUPPLÉMENTAIRES (50 %)", "hs_50", "120",
+             "HEURES SUPPLÉMENTAIRES (50 %)"),
+            ("HEURES SUPPLÉMENTAIRES (100 %)", "hs_100", "121",
+             "HEURES SUPPLÉMENTAIRES (100 %)"),
+            ("ABSENCE (JOURS)", "abs_jours", "130", "ABSENCE (JOURS)"),
+            ("ABSENCE (HEURES)", "abs_heures", "131", "ABSENCE (HEURES)"),
+            ("RETARD (HEURES)", "retard", "140", "RETARD (HEURES)"),
+            ("AVANCE / ACOMPTE", "avance", "210", "AVANCE / ACOMPTE"),
+        )
+        for label, kind, code, libelle in cases:
+            scr = BulletinTemplateScreen(conn=None)
+            scr._widgets["mois"].setText("JUIN")
+            scr._widgets["annee"].setText("2026")
+            [r for r in scr._rows if r.kind == "salaire"][0].set_val(
+                "gain", "45000")
+            scr._recompute()
+            target = ("C", 0) if kind == "avance" else ("A", 0)
+            menu = scr._build_ajouter_menu(target)
+            act = next(a for a in menu.actions() if a.text() == label)
+            act.trigger()
+            r = [x for x in scr._rows if x.kind == kind]
+            self.assertTrue(r, label)
+            self.assertEqual(r[0].val("code"), code, label)
+            self.assertEqual(r[0].val("libelle"), libelle, label)
+            scr.deleteLater()
+
+    # ---------- التركيز على أوّل خليّة إدخالٍ فعليّة ----------
+    def test_focus_target_after_menu_insertion(self):
+        cases = (("ABSENCE (JOURS)", "abs_jours", "qty"),
+                ("HEURES SUPPLÉMENTAIRES (50 %)", "hs_50", "qty"),
+                ("RETARD (HEURES)", "retard", "qty"),
+                ("IEP / ANCIENNETÉ", "iep", "taux"))
+        for label, kind, cell in cases:
+            _menu, _act = self._trigger(label)
+            r = [x for x in self.scr._rows if x.kind == kind][-1]
+            self.assertIs(self.scr.focusWidget(), r.widgets[cell], label)
+
+    def test_avance_focus_is_retenue_cell(self):
+        _menu, _act = self._trigger("AVANCE / ACOMPTE", target=("C", 0))
+        r = [x for x in self.scr._rows if x.kind == "avance"][-1]
+        self.assertIs(self.scr.focusWidget(), r.widgets["montant"])
+
+    # ---------- التفرّد ----------
+    def test_duplicate_unique_selection_prevented(self):
+        self._trigger("IEP / ANCIENNETÉ")
+        n0 = len([r for r in self.scr._rows if r.kind == "iep"])
+        menu2 = self.scr._build_ajouter_menu(("A", 0))
+        act2 = next(a for a in menu2.actions() if a.text() == "IEP / ANCIENNETÉ")
+        self.assertFalse(act2.isEnabled())
+        act2.trigger()                     # حتى لو أُطلِق قسراً — لا يُنشئ
+        n1 = len([r for r in self.scr._rows if r.kind == "iep"])
+        self.assertEqual(n0, n1)
+
+    def test_hs50_and_hs100_coexist_via_menu(self):
+        self._trigger("HEURES SUPPLÉMENTAIRES (50 %)")
+        self._trigger("HEURES SUPPLÉMENTAIRES (100 %)")
+        self.assertEqual(len([r for r in self.scr._rows if r.kind == "hs_50"]), 1)
+        self.assertEqual(len([r for r in self.scr._rows if r.kind == "hs_100"]), 1)
+
+    def test_abs_jours_and_abs_heures_coexist_via_menu(self):
+        self._trigger("ABSENCE (JOURS)")
+        self._trigger("ABSENCE (HEURES)")
+        self.assertEqual(len([r for r in self.scr._rows if r.kind == "abs_jours"]), 1)
+        self.assertEqual(len([r for r in self.scr._rows if r.kind == "abs_heures"]), 1)
+
+    # ---------- Prime/Autre تبقيان تعملان ----------
+    def test_prime_and_autre_still_work_via_menu(self):
+        self._trigger("Prime / Indemnité")
+        self._trigger("Autre")
+        self.assertTrue(any(r.kind == "prime" for r in self.scr._rows))
+        self.assertTrue(any(r.kind == "autre" for r in self.scr._rows))
+
+    # ---------- §3: احترام/تصحيح شريحة النقر ----------
+    def test_smart_type_in_compatible_segment_respects_click(self):
+        _menu, _act = self._trigger("RETARD (HEURES)", target=("A", 0))
+        r = [x for x in self.scr._rows if x.kind == "retard"][-1]
+        self.assertEqual(r.segment, "A")
+
+    def test_smart_type_in_incompatible_segment_is_corrected_not_rejected(self):
+        #  النقر في Zone C على نوعٍ مُلزَمٍ بـZone A لا يُرفَض — يُصحَّح.
+        _menu, _act = self._trigger("IEP / ANCIENNETÉ", target=("C", 0))
+        r = [x for x in self.scr._rows if x.kind == "iep"][-1]
+        self.assertEqual(r.segment, "A")
+        self.assertEqual(r.zone, "A")
+
+    # ---------- بلا تغييرٍ ماليّ لمجرّد فتح/إلغاء القائمة ----------
+    def test_opening_and_discarding_menu_changes_nothing_financially(self):
+        net0 = self.scr._bulletin_view.e
+        menu = self.scr._build_ajouter_menu(("A", 0))
+        del menu                            # "إلغاء" — لا اختيار، لا تشغيل
+        self.scr._recompute()
+        self.assertEqual(self.scr._bulletin_view.e, net0)
+
+    # ---------- تكافؤ القائمة مع تحويل SmartLibelle ----------
+    def test_menu_created_row_matches_smart_libelle_converted_row(self):
+        via_menu = BulletinTemplateScreen(conn=None)
+        via_menu._widgets["mois"].setText("JUIN")
+        via_menu._widgets["annee"].setText("2026")
+        [r for r in via_menu._rows if r.kind == "salaire"][0].set_val(
+            "gain", "45000")
+        via_menu._recompute()
+        menu = via_menu._build_ajouter_menu(("A", 0))
+        act = next(a for a in menu.actions() if a.text() == "ABSENCE (JOURS)")
+        act.trigger()
+        r1 = [r for r in via_menu._rows if r.kind == "abs_jours"][0]
+        r1.set_val("qty", "3")
+        via_menu._recompute()
+
+        via_alias = BulletinTemplateScreen(conn=None)
+        via_alias._widgets["mois"].setText("JUIN")
+        via_alias._widgets["annee"].setText("2026")
+        [r for r in via_alias._rows if r.kind == "salaire"][0].set_val(
+            "gain", "45000")
+        via_alias._recompute()
+        fr = via_alias._insert_free_row("A")
+        fr.widgets["libelle"].setText("ABSENCE (JOURS)")
+        fr.widgets["libelle"].committed.emit("ABSENCE (JOURS)")
+        r2 = [r for r in via_alias._rows if r.kind == "abs_jours"][0]
+        r2.set_val("qty", "3")
+        via_alias._recompute()
+
+        self.assertEqual(r1.kind, r2.kind)
+        self.assertEqual(r1.val("qty"), r2.val("qty"))
+        self.assertEqual(via_menu._bulletin_view.e, via_alias._bulletin_view.e)
+        via_menu.deleteLater(); via_alias.deleteLater()
+
+    # ---------- توافق E.3 — الوضع اليدويّ/الحرّ محفوظ ----------
+    def test_gutter_still_supports_manual_free_placement(self):
+        self.scr._gutter_mouse_move(self._canvas_pt(-5.0, 1))
+        self.scr._plus_target = ("B2", 0)
+        self.scr._btn_plus.click()
+        self.assertIsNotNone(self.scr._ajouter_menu)
+        free_act = next(a for a in self.scr._ajouter_menu.actions()
+                        if a.text() == "سطر حرّ")
+        free_act.trigger()
+        fr = [r for r in self.scr._rows if r.kind == "free"]
+        self.assertTrue(fr and fr[-1].segment == "B2")
+
+    def _canvas_pt(self, mm_x, row_boundary):
+        from PySide6.QtCore import QPoint
+        v = self.scr._view()
+        return QPoint(int(v.x(mm_x)),
+                      int(v.y(T.BODY_TOP + row_boundary * T.ROW_H)))
 
 
 if __name__ == "__main__":

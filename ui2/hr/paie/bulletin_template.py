@@ -755,12 +755,13 @@ _ROW_SPECS = {
                 cells=(), primary=""),
 }
 
-#  قائمة «+ Ajouter» — منتَج مبسَّط فوق الـ domain (لا تعرض أنواع
-#  ``lignes.LINE_TYPES`` التقنية). E.4 §B/§C: سبعة أنواعٍ ذكيّة موجَّهة،
-#  كلٌّ مستقلّ بذاته (لا مُنتقي 50/100 ولا jours/heures داخل السطر بعد
-#  اليوم) — **ثابتٌ مرجعيّ حالياً**: القائمة الحيّة الفعليّة هي اللاصقة
-#  الذكيّة (‏``_smart_match``/`_on_libelle_committed``)؛ لا widget قائمة
-#  "+" منفصلٌ في هذه الشاشة بعد.
+#  قائمة «＋ إضافة» الموجَّهة — منتَج مبسَّط فوق الـ domain (لا تعرض
+#  أنواع ``lignes.LINE_TYPES`` التقنية). E.4 §B/§C: سبعة أنواعٍ ذكيّة
+#  موجَّهة، كلٌّ مستقلّ بذاته (لا مُنتقي 50/100 ولا jours/heures داخل
+#  السطر). E4.6 §1: هذا هو مصدر القائمة **الحيّة** الفعليّة التي يعرضها
+#  زرّ ＋ (‏``_build_ajouter_menu``) — بالإضافة إلى اللاصقة الذكيّة
+#  القائمة داخل سطرٍ حرٍّ موجود (‏``_smart_match``/`_on_libelle_
+#  committed``)، التي تبقى متاحةً بلا تغيير.
 _AJOUTER_MENU = (("IEP / ANCIENNETÉ", "iep"),
                  ("Prime / Indemnité", "prime"),
                  ("HEURES SUPPLÉMENTAIRES (50 %)", "hs_50"),
@@ -1614,10 +1615,9 @@ class BulletinTemplateScreen(Screen):
         self._btn_plus = QToolButton(self._canvas)
         self._btn_plus.setText("＋")
         self._btn_plus.setCursor(Qt.PointingHandCursor)
-        self._btn_plus.setToolTip("إدراج سطر هنا")
-        self._btn_plus.clicked.connect(
-            lambda: self._plus_target is not None
-            and self._insert_row_at("free", *self._plus_target))
+        self._btn_plus.setToolTip("إضافة سطر — موجَّه أو حرّ")
+        self._ajouter_menu = None           # E4.6 §1: يبقى حيّاً أثناء العرض
+        self._btn_plus.clicked.connect(self._on_plus_clicked)
         self._btn_minus = QToolButton(self._canvas)
         self._btn_minus.setText("－")
         self._btn_minus.setCursor(Qt.PointingHandCursor)
@@ -1646,6 +1646,80 @@ class BulletinTemplateScreen(Screen):
                   getattr(self, "_btn_minus", None)):
             if b is not None:
                 b.hide()
+
+    # ============= قائمة «＋ إضافة» الموجَّهة (E4.6 §1) =============
+    #  المستخدم العاديّ لا يحتاج معرفة/كتابة تسميات ذكيّة دقيقة — النقر
+    #  على ＋ يعرض قائمةً باختياراتٍ صريحة: سبعة أنواعٍ ذكيّة موجَّهة
+    #  (كودها/تسميتها الافتراضيّان الجديدان يُضبَطان مباشرةً، §C)، ثم
+    #  Prime/Autre العامّتان، ثم سطرٌ حرّ (الافتراضيّ القديم، محفوظ). لا
+    #  "RETENUE LIBRE" ذكيّة. اكتمال LIBELLÉ الذكيّ داخل سطرٍ حرٍّ قائم
+    #  (§14 E.3) يبقى متاحاً بلا تغيير — القائمة مسارٌ إضافيّ، لا بديل.
+    def _build_ajouter_menu(self, target):
+        """يبني ``QMenu`` حقيقيّاً لموضع ＋ ``target`` (segment, index).
+        مُعرَّضٌ صراحةً (لا داخل ``_on_plus_clicked`` فقط) كي تختبره
+        الاختبارات مباشرةً بـ ``action.trigger()`` — بلا ``exec()``/
+        ``popup()`` أبداً من كودٍ اختباريّ (§E4.6 قد يُعلِّق في Qt
+        الخلفيّ offscreen)."""
+        menu = QMenu(self)
+        for label, kind in _AJOUTER_MENU:
+            act = menu.addAction(label)
+            if kind in _SMART_TYPES and not self._can_add_smart(kind):
+                #  E4.6 §2: تفرّدٌ موجود مسبقاً ⇒ العنصر معطَّلٌ لا مخفيّ
+                #  (يبقى مرئياً — يوضح للمستخدم أنّ النوع موجودٌ أصلاً).
+                act.setEnabled(False)
+                act.setToolTip(f"«{label}» موجودة مسبقاً — سطرٌ واحد فقط.")
+            act.triggered.connect(
+                lambda _checked=False, k=kind: self._on_ajouter_menu_pick(k, target))
+        menu.addSeparator()
+        free_act = menu.addAction("سطر حرّ")
+        free_act.triggered.connect(
+            lambda _checked=False: self._insert_row_at("free", *target))
+        return menu
+
+    def _on_plus_clicked(self):
+        if self._plus_target is None:
+            return
+        menu = self._build_ajouter_menu(self._plus_target)
+        self._ajouter_menu = menu
+        menu.popup(self._btn_plus.mapToGlobal(self._btn_plus.rect().bottomLeft()))
+
+    def _on_ajouter_menu_pick(self, kind, target):
+        """اختيارٌ من قائمة ＋ (E4.6 §1/§3): يُنشئ الصفّ الدلاليّ مباشرةً
+        (لا مساراً وهمياً عبر كتابة نصّ) — CODE/LIBELLÉ الافتراضيّان
+        الجديدان من ``_ROW_SPECS`` نفسها، التركيز على أوّل خليّةٍ فعليّة،
+        المسار الكامل عبر ``_insert_row_at`` (نفس التحقّق/إعادة الحساب)."""
+        if kind in _SMART_TYPES:
+            self._insert_smart_from_gutter(kind, target)
+        else:
+            #  Prime/Autre — عامّتان، لا قفل منطقة؛ تُدرَجان في نفس موضع
+            #  النقر بالضبط (سلوك السطر الحرّ القديم نفسه).
+            seg, index = target
+            self._insert_row_at(kind, seg, index)
+
+    def _insert_smart_from_gutter(self, kind, target):
+        """يُدرج نوعاً ذكيّاً من القائمة الموجَّهة، محترماً شريحة النقر
+        الدقيقة إن وافقت منطقة النوع المُلزَمة (E4.6 §3)؛ وإلا يُصحَّح
+        تلقائياً إلى الشريحة الافتراضية الصحيحة لذلك النوع — لا رفضٌ
+        صامت لطلب المستخدم، ولا خرقٌ للقاعدة الماليّة (E.3-Review §7)."""
+        seg, index = target
+        if seg not in _SEGMENTS or _SEGMENT_ZONE.get(seg) != _SMART_TYPES[kind]["zone"]:
+            seg = _DEFAULT_SEGMENT.get(kind, seg)
+            index = len(self._segment_rows(seg))
+        if not self._can_add_smart(kind):
+            self.status.setText(
+                f"«{_SMART_TYPES[kind]['label']}» موجودة مسبقاً — سطرٌ واحد فقط.")
+            return None
+        r = self._insert_row_at(kind, seg, index)
+        if r is None:
+            return None
+        #  التركيز على أوّل خليّة إدخالٍ فعليّة — لا CODE (يحمل الافتراض
+        #  الجاهز) ولا LIBELLÉ الذكيّ (مملوءٌ مسبقاً بمعنى)؛ نفس منطق
+        #  ``_convert_row`` (§18 E.3) — اتّساقٌ واحد للتركيز بعد الإنشاء.
+        first_edit = next((c["name"] for c in _ROW_SPECS[kind]["cells"]
+                           if c["kind"] != "smart" and c["name"] != "code"), None)
+        if first_edit:
+            self._widgets[r.cell_key(first_edit)].setFocus()
+        return r
 
     def _gutter_mouse_move(self, canvas_pos):
         """يُستدعى من ``eventFilter`` عند حركة الفأرة فوق اللوحة (§E.5):

@@ -20,8 +20,12 @@ import os
 import re
 from datetime import date
 
-from PySide6.QtCore import QEvent, QPoint, QStringListModel, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPalette
+from PySide6.QtCore import (
+    QEvent, QPoint, QRegularExpression, QStringListModel, Qt, QTimer, Signal,
+)
+from PySide6.QtGui import (
+    QColor, QFont, QFontMetricsF, QPainter, QPalette, QRegularExpressionValidator,
+)
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QCompleter, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QMenu, QPushButton, QRadioButton, QScrollArea,
@@ -522,6 +526,37 @@ def _line_engine_signature(lv):
     return (lv.key, lv.zone, lv.sens)
 
 
+#  ---- خلايا عرضٍ إضافيّة للقراءة فقط (E.4 §8/§12) --------------------
+def _row_display_extra(row, view):
+    """قيَم عرضٍ إضافيّة للقراءة فقط — {عمود: Decimal|None} — من
+    ``BulletinView.result`` (‏``SequenceResult``) الفعليّ مباشرةً، بلا أيّ
+    صيغة موازية في Qt (§8/§12). ``{}`` إن تعذّر (لا حساب بعد).
+
+    ``retard``: TAUX = ``taux_horaire`` (عمود TAUX خالٍ من أيّ widget لهذا
+    النوع — آمنٌ للإضافة). ``iep``: BASE = مبلغ سطر الأجر القاعديّ الفعليّ
+    (نفس القاعدة المُستعمَلة فعلياً — SAL_BASE_BRUT، هذه الشاشة لا تمرّر
+    اتفاقية base_iep مغايرة). ``panier``/``transport``: TAUX = ساعات
+    الحضور الفعليّة (‏``res.heures_presence`` — نفس الحقل في كلّ أوضاع
+    التنسيب، بما فيها PRORATA_MIXTE الجديد §3).
+
+    ‏TAUX لـ absence/hs **غير مُضافة عمداً**: يشغل عمود TAUX عندهما
+    اختيار jours/heures أو 50%/100% (‏``_InlineChoice`` حيّ ومُختبَر) —
+    إضافة نصّ محسوبٍ هناك يتصادم مع الاختيار الفعليّ؛ يتطلّب استبدال
+    الاختيار بنوعٍ ذكيّ منفصل (خارج نطاق هذه الجلسة — انظر التقرير)."""
+    if view is None or getattr(view, "result", None) is None:
+        return {}
+    res = view.result
+    if row.kind == "retard":
+        return {"taux": res.taux_horaire}
+    if row.kind == "iep":
+        sr = row.screen._salaire_row()
+        base = sr._amount if sr is not None and sr._amount is not None else None
+        return {} if base is None else {"base": base}
+    if row.kind in ("panier", "transport"):
+        return {"taux": res.heures_presence}
+    return {}
+
+
 def _abs_type(r):
     return "abs_jours" if "jours" in r.val("mode").lower() else "abs_heures"
 
@@ -555,7 +590,8 @@ _ROW_SPECS = {
     #  jours/heures و50/100 خياراتٌ **داخل** السطر في عمود TAUX (§21/§23).
     "iep": dict(
         role="optional", code="IEP", lib="IND. EXPÉRIENCE PROF.",
-        primary="taux", computed="gain", lignes_key="iep",
+        primary="taux", computed="gain", computed_extra=("base",),
+        lignes_key="iep",
         cells=(_cs("code", "code", "text", default="IEP"),
                _cs("libelle", "libelle", "smart", default="IEP / Ancienneté"),
                _cs("taux", "taux", "amount")),
@@ -590,19 +626,27 @@ _ROW_SPECS = {
         to_entry=_abs_entry),
     "retard": dict(
         role="optional", code="RET", lib="RETARD", primary="qty",
-        computed="retenue", lignes_key="retard",
+        computed="retenue", computed_extra=("taux",), lignes_key="retard",
         cells=(_cs("code", "code", "text", default="RET"),
                _cs("libelle", "libelle", "smart", default="Retard"),
                _cs("qty", "nbase", "amount")),
         to_entry=lambda r: {"type": "retard", "values": {"heures": r.val("qty")}}),
+    #  Panier/Transport (E.4 §8.7/§8.8): BASE (الاستحقاق الشهريّ الكامل)
+    #  هي الخليّة الوحيدة المُحرَّرة — تبقى مُسمّاةً ``gain`` (توافقٌ خلفيّ
+    #  مع كلّ استدعاء ``set_val("gain", …)`` القائم) لكنها تُعرَض تحت عمود
+    #  N/BASE لا GAIN. TAUX (الحضور الفعليّ) وGAIN (المبلغ المنسَّب من
+    #  المحرّك، ``res.panier``/``res.transport`` عبر التوقيع §E.3-Review-2)
+    #  عمودان للقراءة فقط — لا تخمين حسابيّ في Qt.
     "panier": dict(
         role="basic", code=_C["panier"], lib="PANIER", primary="",
-        cells=(_cs("gain", "gain", "amount"),),
+        computed="gain", computed_extra=("taux",),
+        cells=(_cs("gain", "nbase", "amount"),),
         to_entry=lambda r: {"type": "panier",
                             "values": {"montant_mensuel": r.val("gain")}}),
     "transport": dict(
         role="basic", code=_C["transport"], lib="(R+) TRANSPORT", primary="",
-        cells=(_cs("gain", "gain", "amount"),),
+        computed="gain", computed_extra=("taux",),
+        cells=(_cs("gain", "nbase", "amount"),),
         to_entry=lambda r: {"type": "transport",
                             "values": {"montant_mensuel": r.val("gain")}}),
     "avance": dict(
@@ -653,6 +697,14 @@ _MAX_BODY_ROWS = 18          # حدّ عمليّ (لا pagination) — §31
 #  ``QComboBox`` — Absence(jours/heures) و HS(50%/100%). prime/autre تبقى
 #  ComboBox (أنواعٌ قديمة غير مُتاحة للإضافة).
 _INLINE_CHOICE_CELLS = {"coef", "mode"}
+
+#  E.4 §6: أنواعٌ ذكيّة رسميّتها CODE **رقميّة** (لا تُلمَس رموز الأنظمة/
+#  الأساسيّة — salaire/CNAS/panier/transport/IRG). الكتابة التفاعليّة
+#  تُقيَّد لأرقامٍ فقط (بحدّ 3 خانات، صفرٌ بادئٌ مسموح) عبر مُدقِّق Qt —
+#  لا يمسّ ``setText`` البرمجيّ (توافقٌ خلفيّ كامل مع رموز نصّية قديمة
+#  محفوظة مثل "IEP"/"HS"/"ABS" — تبقى كما هي حتى يُعدِّلها المستخدم).
+_NUMERIC_CODE_KINDS = {"iep", "hs", "absence", "retard", "avance"}
+_CODE3_RX = QRegularExpression(r"^\d{0,3}$")
 
 _COL_ALIGN = {"code": Qt.AlignHCenter, "libelle": Qt.AlignLeft,
               "nbase": Qt.AlignRight, "taux": Qt.AlignRight,
@@ -720,6 +772,13 @@ class _Row:
                 if name == "code":
                     w.textEdited.connect(
                         lambda _t=None, rr=self: setattr(rr, "_code_manual", True))
+                    if kind in _NUMERIC_CODE_KINDS:
+                        #  E.4 §6: كتابةٌ رقميّة فقط (≤3 خانات) لأنواعٍ ذكيّة
+                        #  معيَّنة — المُدقِّق يقيِّد **الكتابة التفاعليّة**
+                        #  فقط؛ لا ``setMaxLength`` عمداً (يقصّ أيّ نصٍّ عبر
+                        #  ``setText`` أيضاً، بما فيها رموزٌ يدويّة قديمة
+                        #  أطول محفوظة — §6 «never truncate old manual CODE»).
+                        w.setValidator(QRegularExpressionValidator(_CODE3_RX, w))
             w.setLayoutDirection(Qt.LeftToRight)
             w.installEventFilter(screen)
             self.widgets[name] = w
@@ -1019,12 +1078,22 @@ class _SheetCanvas(QWidget):
                 cell("nbase", i, fmt_montant(res.base_irg), "e", cc)
                 cell("retenue", i, fmt_montant(res.retenue_irg), "e", cc)
             else:
-                # المبلغ المحسوب (IEP/HS في GAIN · Absence/Retard **موجباً**
-                # في RETENUE، §9) — خليّةٌ للقراءة تُرسَم من BulletinView.
+                # المبلغ المحسوب (IEP/HS/Panier/Transport في GAIN ·
+                # Absence/Retard **موجباً** في RETENUE، §9) — خليّةٌ للقراءة
+                # تُرسَم من BulletinView.
                 spec = _ROW_SPECS[row.kind]
                 col = spec.get("computed")
                 if col and computed and row._amount is not None:
                     cell(col, i, fmt_montant(abs(row._amount)), "e", cc)
+                #  خلايا عرضٍ إضافيّة للقراءة فقط (E.4 §8/§12: BASE/TAUX
+                #  الفعليّان — IEP/Retard/Panier/Transport) — من نفس
+                #  ``BulletinView.result``، بلا صيغة موازية هنا.
+                if computed and spec.get("computed_extra"):
+                    extra = _row_display_extra(row, sc._bulletin_view)
+                    for excol in spec["computed_extra"]:
+                        exval = extra.get(excol)
+                        if exval is not None:
+                            cell(excol, i, fmt_montant(exval), "e", cc)
 
         # ---- TOTAL / NET À PAYER: بنيتهما تُرسَم **دائماً** (§3/§30) ----
         #  القيَم وحدها تبقى فارغة إذا تعذّر الحساب — «غير محسوبة» ≠ «صفر».
@@ -1091,7 +1160,7 @@ class BulletinTemplateScreen(Screen):
     DOC_LABEL = "Bulletin de paie"
     OUTPUT_DIRNAME = "Bulletins de paie"
     DRAFT_NAME = "paie_template"
-    DRAFT_VERSION = 6          # E.3: نموذج الشريحة+الترتيب (الموضع البصريّ)
+    DRAFT_VERSION = 7          # E.4: prorata_policy مُخزَّنةٌ صراحةً في draft_state
 
     #  أدنى عدد أسطر مرسومة تحت IRG (منطقة Zone C + فراغ) قبل TOTAL/NET —
     #  يُبقي أسفل الوثيقة ثابتاً بصرياً مهما قلّت الأسطر (§4). المساحة
@@ -1151,6 +1220,11 @@ class BulletinTemplateScreen(Screen):
         self._bulletin_view = None                      # lignes.BulletinView (المحرّك)
         self._presented = None                          # PZ.Presented (طبقة العرض)
         self._cnas_taux_str = ""            # نسبة CNAS معروضة (من params_paie)
+        #  E.4 §3/§4: سياسة تنسيب السلة/النقل لهذا العمل تحديداً — عملٌ
+        #  **جديد** يبدأ على PRORATA_MIXTE (المنتَج الافتراضيّ الجديد لهذه
+        #  الشاشة)؛ عملٌ قديمٌ مُستعاد (بلا الحقل الجديد) يُبقي سلوكه
+        #  القديم — ``apply_draft`` يُعيد ضبطها صراحةً.
+        self._prorata_policy = "PRORATA_MIXTE"
         self._computed = False                 # نتيجة حقيقية مقابل «غير محسوبة»
 
         self.build_ui()
@@ -1744,6 +1818,10 @@ class BulletinTemplateScreen(Screen):
                       "review": r._review}
                      for r in self._rows],
             "incomplete": bool(v is not None and v.is_incomplete),
+            #  E.4 §4: سياسة تنسيب صريحة — تُحفَظ ليبقى العمل قابلاً لإعادة
+            #  فتحه/طباعته بنفس النتيجة المالية بالضبط (§4: «Archived/final
+            #  historical documents must remain re-openable/reprintable»).
+            "prorata_policy": self._prorata_policy,
         }
 
     def apply_draft(self, data):
@@ -1753,6 +1831,11 @@ class BulletinTemplateScreen(Screen):
         # محفوظ رسمياً كـ«غير مكتمل» = Phase C عبر ``show_required_warnings``.
         self._restored_incomplete = bool(data.get("incomplete"))
         self._cfg = None          # الفترة قد تختلف ⇒ أعِد تحميل params
+        #  E.4 §4: عملٌ قديم بلا الحقل الجديد (DRAFT_VERSION/WORK_VERSION
+        #  أقدم) ⇒ يبقى على السلوك القديم (PRORATA_HEURES) — لا يُعاد
+        #  تفسيره صامتاً كـMIXTE. عملٌ يحمل الحقل صراحةً (جديد أو أُعيد
+        #  حفظه بعد E.4) ⇒ يُحترَم كما هو.
+        self._prorata_policy = data.get("prorata_policy") or "PRORATA_HEURES"
         self._suspend = set(self._widgets)
         try:
             for k, v in data.get("header", {}).items():
@@ -2381,7 +2464,7 @@ class BulletinTemplateScreen(Screen):
     #  حالتان مرئيّتان فقط: ⚠️ Incomplete · 🔒 Final. Auto-draft آليّة
     #  استرداد داخلية لا حالة مستند.
 
-    WORK_VERSION = 3          # E.3: segment + order لكلّ صفّ
+    WORK_VERSION = 4          # E.4: prorata_policy مُخزَّنة
 
     def work_data(self) -> dict:
         """Work Data كاملة — مصدر إعادة بناء الشاشة (لا DOCX/PDF). تلفّ
@@ -2580,13 +2663,23 @@ class BulletinTemplateScreen(Screen):
         out = []
         for r in self._visible_body_rows():
             cols = {r.column(name): r.val(name) for name in r.widgets}
+            #  E.4 §8/§12: خلايا عرضٍ إضافيّة مرسومة (لا widget لها —
+            #  IEP.BASE/Retard.TAUX/Panier،Transport.TAUX) تدخل اللقطة
+            #  أيضاً، فيراها PDF/Word لا الشاشة فقط.
+            extra = _row_display_extra(r, self._bulletin_view)
+            nbase = cols.get("nbase", "")
+            taux = cols.get("taux", "")
+            if "base" in extra and not nbase:
+                nbase = fmt_montant(extra["base"])
+            if "taux" in extra and not taux:
+                taux = fmt_montant(extra["taux"])
             out.append(PZ.RowSnapshot(
                 rid=r.rid, kind=r.kind, role=r.role,
                 segment=r.segment or "", order=r.order or 0.0,
                 zone=(r.zone if r.role == "optional" else ""),
                 code=cols.get("code", r.code),
                 libelle=cols.get("libelle", r.libelle),
-                nbase=cols.get("nbase", ""), taux=cols.get("taux", ""),
+                nbase=nbase, taux=taux,
                 gain_input=cols.get("gain", ""),
                 retenue_input=cols.get("retenue", ""),
                 amount=r._amount, review=r._review))
@@ -2826,10 +2919,14 @@ class BulletinTemplateScreen(Screen):
                 self._apply_iep_suggestion(r)
         try:
             cfg = self._load_cfg()
-            #  مصدر الحساب الوحيد: lignes.compute_bulletin (بلا Convention/
-            #  Catalogue). _calc_input / _calc_result للمُصيِّر يُشتقّان منه.
+            #  مصدر الحساب الوحيد: lignes.compute_bulletin. لا Catalogue.
+            #  Convention محدودةٌ عمداً لمفتاحٍ واحد فقط (E.4 §3/§4):
+            #  ``prorata_panier_transport`` — سياسة تنسيب السلة/النقل
+            #  المُختارة لهذا العمل تحديداً (``self._prorata_policy``،
+            #  مُحفَّظة/مُستعادة صريحةً — لا كتالوج، لا اتفاقية شركة).
             self._bulletin_view = lignes.compute_bulletin(
-                self._build_entries(), cfg)
+                self._build_entries(), cfg,
+                convention={"prorata_panier_transport": self._prorata_policy})
             self._calc_input = self._build_input()
             self._calc_result = self._view_to_paieresult(self._bulletin_view)
             self._computed = self._is_computable()

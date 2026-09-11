@@ -195,6 +195,16 @@ def validate_screen(screen) -> ValidationResult:
                 r.cell_key("montant"),
                 "اقتطاع «Autre» في منطقة CNAS/IRG غير مدعوم (§8/§13) — "
                 "استعمل Absence/Retard، أو انقله لأسفل IRG.", "invalid"))
+        #  E.4 §6/§14: CODE رقميّ جزئيّ (١ أو ٢ خانة) غير مكتمل عند
+        #  الإصدار النهائيّ — رمزٌ قديمٌ نصّيّ (غير رقميّ، مثل "ABS") مُعفًى
+        #  دائماً (§6 «treat it as legacy until user explicitly edits it»).
+        if r.kind in ("iep", "hs", "absence", "retard", "avance"):
+            code = r.val("code").strip()
+            if code and code.isdigit() and len(code) != 3:
+                res.invalid_fields.append(Problem(
+                    r.cell_key("code"),
+                    f"رمز «{code}» رقميّ غير مكتمل — يجب أن يكون 3 أرقام "
+                    "بالضبط (§6)، أو استعمل رمزاً نصّياً.", "invalid"))
         started, complete, label = screen._row_status(r)
         if started and not complete:
             res.incomplete_rows.append(Problem(

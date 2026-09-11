@@ -13,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import tempfile
 import unittest
 from datetime import date
+from decimal import Decimal
 
 try:
     from PySide6.QtCore import QPoint
@@ -3367,6 +3368,162 @@ class BulletinTemplateE3Review(unittest.TestCase):
             self.assertIsNotNone(pr, code)
             self.assertEqual(_money(pr.gain), val, code)
             self.assertEqual(pr.retenue, "", code)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateE4(unittest.TestCase):
+    """Phase E.4 — PRORATA_MIXTE (تنسيب سلة/نقل يجمع الأيام والساعات) +
+    خلايا عرضٍ محسوبة إضافيّة (BASE/TAUX الفعليّان) + عقد CODE الرقميّ
+    للأنواع الذكيّة. نطاقٌ مقصودٌ (انظر التقرير): لا إعادة تسمية kind
+    لـ hs/absence (تبقى ``hs``/``absence`` بمُنتقياتهما الحيّة كما في
+    E.3 — محميّة صراحةً)؛ TAUX الحيّ محجوزٌ لهما، والفرق الجديد يقتصر على
+    ما لا يتصادم مع تلك المُنتقيات (IEP/Retard/Panier/Transport)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_e4_")
+        _isolate_db(self._tmp)
+        mod.confirm = lambda *_a, **_k: True
+        import ui2.alerts as _al
+        self._al, self._al_warn = _al, _al.warn
+        _al.warn = lambda *_a, **_k: None
+        self.scr = BulletinTemplateScreen(conn=None)
+        w = self.scr._widgets
+        w["mois"].setText("JUIN"); w["annee"].setText("2026")
+        w["id_date_embauche"].set_iso("2016-06-14")
+        self._sr = [r for r in self.scr._rows if r.kind == "salaire"][0]
+        self._sr.set_val("gain", "27472.53"); self._sr.set_val("nbase", "26")
+        self._pan = [r for r in self.scr._rows if r.kind == "panier"][0]
+        self._tra = [r for r in self.scr._rows if r.kind == "transport"][0]
+        self._pan.set_val("gain", "2500")           # = BASE (نفس الخليّة، §8.7)
+        self._tra.set_val("gain", "2500")
+        self.scr._recompute()
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        self._al.warn = self._al_warn
+        os.environ.pop(paths._DATA_DIR_ENV_OVERRIDE, None)
+
+    # ---------- §3/§4: PRORATA_MIXTE افتراضيّ لعملٍ جديد ----------
+    def test_new_work_defaults_to_prorata_mixte(self):
+        self.assertEqual(self.scr._prorata_policy, "PRORATA_MIXTE")
+
+    def test_legacy_load_without_policy_keeps_prorata_heures(self):
+        self.scr.apply_draft({"header": {}, "rows": []})   # بلا prorata_policy
+        self.assertEqual(self.scr._prorata_policy, "PRORATA_HEURES")
+
+    def test_draft_roundtrip_preserves_explicit_policy(self):
+        st = self.scr.draft_state()
+        self.assertEqual(st["prorata_policy"], "PRORATA_MIXTE")
+        other = BulletinTemplateScreen(conn=None)
+        other.apply_draft(st)
+        self.assertEqual(other._prorata_policy, "PRORATA_MIXTE")
+        other.deleteLater()
+
+    # ---------- §20: الحالة الذهبية الحقيقيّة عبر الشاشة الكاملة ----------
+    def test_real_slip_panier_taux_and_gain_via_screen(self):
+        a = self.scr._add_row("absence")
+        a.set_val("qty", "64"); a.set_val("mode", "Absence (heures)")
+        b = self.scr._add_row("absence")
+        b.set_val("qty", "8"); b.set_val("mode", "Absence (heures)")
+        r = self.scr._add_row("retard")
+        r.set_val("qty", "11.38")
+        self.scr._recompute()
+        pr = self._presented_row(code=mod._C["panier"])
+        self.assertIsNotNone(pr)
+        self.assertEqual(pr.taux, "101,33")
+        self.assertEqual(_money(pr.gain), 1461.52)
+
+    def _presented_row(self, code=None):
+        for pr in self.scr._presented.rows:
+            if pr.code == code:
+                return pr
+        return None
+
+    # ---------- §8.6: IEP BASE = مبلغ سطر الأجر القاعديّ الفعليّ ----------
+    def test_iep_base_shows_actual_salaire_amount(self):
+        r = self.scr._add_row("iep")
+        r.set_val("taux", "0.10")
+        self.scr._recompute()
+        extra = mod._row_display_extra(r, self.scr._bulletin_view)
+        self.assertEqual(extra["base"], Decimal("27472.53"))
+
+    # ---------- §8.3: Retard TAUX = taux_horaire الفعليّ ----------
+    def test_retard_taux_shows_actual_hourly_rate(self):
+        r = self.scr._add_row("retard")
+        r.set_val("qty", "5")
+        self.scr._recompute()
+        extra = mod._row_display_extra(r, self.scr._bulletin_view)
+        self.assertEqual(extra["taux"], self.scr._bulletin_view.result.taux_horaire)
+
+    # ---------- §8.7/§8.8: Panier/Transport BASE يبقى ثابتاً رغم الغياب ----------
+    def test_panier_base_unchanged_gain_reduced_by_absence(self):
+        base0 = self._pan.val("gain")
+        a = self.scr._add_row("absence")
+        a.set_val("qty", "72"); a.set_val("mode", "Absence (heures)")
+        self.scr._recompute()
+        self.assertEqual(self._pan.val("gain"), base0)      # BASE لم يتغيّر
+        self.assertLess(self.scr._bulletin_view.result.panier, Decimal("2500"))
+
+    def test_panier_gain_returns_to_base_when_attendance_full(self):
+        a = self.scr._add_row("absence")
+        a.set_val("qty", "72"); a.set_val("mode", "Absence (heures)")
+        self.scr._recompute()
+        self.scr._remove_row(a)
+        self.scr._recompute()
+        self.assertEqual(self.scr._bulletin_view.result.panier, Decimal("2500.00"))
+
+    # ---------- §6: عقد CODE الرقميّ ----------
+    def test_code_validator_rejects_letters_for_smart_kinds(self):
+        r = self.scr._add_row("iep")
+        w = r.widgets["code"]
+        v = w.validator()
+        self.assertIsNotNone(v)
+        state, _, _ = v.validate("A1", 2)
+        from PySide6.QtGui import QValidator
+        self.assertNotEqual(state, QValidator.Acceptable)
+        state2, _, _ = v.validate("110", 3)
+        self.assertEqual(state2, QValidator.Acceptable)
+
+    def test_code_validator_absent_for_free_rows(self):
+        r = self.scr._insert_free_row("A")
+        self.assertIsNone(r.widgets["code"].validator())
+
+    def test_legacy_long_manual_code_not_truncated(self):
+        #  E.4 §6: setText برمجيّاً (استعادة/تحويل) لا يمسّه المُدقِّق ولا
+        #  حدّ طول — رمزٌ قديم أطول من 3 خانات يبقى كما هو بالضبط.
+        r = self.scr._add_row("absence")
+        r.set_val("code", "ABS01")
+        self.assertEqual(r.val("code"), "ABS01")
+
+    # ---------- §14: اكتمال CODE الرقميّ عند الإصدار فقط ----------
+    def test_partial_numeric_code_flagged_invalid(self):
+        r = self.scr._add_row("iep")
+        r.set_val("code", "11")           # رقميّ لكن غير مكتمل
+        r.set_val("taux", "0.05")
+        self.scr._recompute()
+        v = self.scr._validation
+        self.assertTrue(any(p.key == r.cell_key("code") for p in v.problems))
+
+    def test_legacy_text_code_not_flagged(self):
+        r = self.scr._add_row("iep")
+        r.set_val("code", "IEP")          # نصّيّ قديم — معفًى
+        r.set_val("taux", "0.05")
+        self.scr._recompute()
+        v = self.scr._validation
+        self.assertFalse(any(p.key == r.cell_key("code") for p in v.problems))
+
+    def test_complete_numeric_code_not_flagged(self):
+        r = self.scr._add_row("iep")
+        r.set_val("code", "110")
+        r.set_val("taux", "0.05")
+        self.scr._recompute()
+        v = self.scr._validation
+        self.assertFalse(any(p.key == r.cell_key("code") for p in v.problems))
 
 
 if __name__ == "__main__":

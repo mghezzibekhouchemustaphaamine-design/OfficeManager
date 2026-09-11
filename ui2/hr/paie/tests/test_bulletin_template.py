@@ -3485,7 +3485,36 @@ class BulletinTemplateE4(unittest.TestCase):
         r.set_val("taux", "0.10")
         self.scr._recompute()
         extra = mod._row_display_extra(r, self.scr._bulletin_view)
-        self.assertEqual(extra["base"], Decimal("27472.53"))
+        self.assertEqual(extra["nbase"], Decimal("27472.53"))
+
+    def test_iep_row_paints_without_swallowed_exception(self):
+        #  انحدارٌ حقيقيّ اكتُشف أثناء QA البصريّ اليدويّ لهذه المراجعة:
+        #  ``computed_extra=("base",)`` (اسم عمودٍ خاطئ — الصحيح "nbase")
+        #  كان يُسقِط KeyError داخل ``_paint_form``، تُبتلَع صامتاً في
+        #  ``paintEvent`` (except عامّ + logger.warning فقط) — فيفشل رسم
+        #  الاستمارة **كاملةً** (لا TOTAL/NET حتى) كلّما وُجد سطر IEP، بلا
+        #  أن يفشل أيّ اختبار (canvas.render لا يُعيد الاستثناء). يتحقّق
+        #  هذا الاختبار من غياب أيّ سجلّ فشل رسمٍ عبر مراقبة logger مباشرةً.
+        import logging
+        r = self.scr._add_row("iep")
+        r.set_val("taux", "0.10")
+        self.scr._recompute()
+        self.scr._relayout()
+        from PySide6.QtGui import QImage
+        img = QImage(1200, 1800, QImage.Format_ARGB32)
+        self.scr._canvas.resize(1200, 1800)
+        log_records = []
+        handler = logging.Handler()
+        handler.emit = lambda rec: log_records.append(rec)
+        paie_logger = logging.getLogger("ui2.hr.paie.bulletin_template")
+        paie_logger.addHandler(handler)
+        try:
+            self.scr._canvas.render(img)
+        finally:
+            paie_logger.removeHandler(handler)
+        failures = [rec for rec in log_records if "رسم الاستمارة فشل" in
+                   rec.getMessage()]
+        self.assertEqual(failures, [])
 
     # ---------- §8.3: Retard TAUX = taux_horaire الفعليّ ----------
     def test_retard_taux_shows_actual_hourly_rate(self):
@@ -3890,9 +3919,17 @@ class BulletinTemplateE4Invariants(unittest.TestCase):
         self.scr._recompute()
         pres = self.scr._presented
         by_code = {p.code: p for p in pres.rows}
-        for code in ("AJ1", "AH1", "RT1", "H51", "H11", "IE1"):
+        #  E.4 §8: TAUX محسوبٌ للأنواع الأربعة؛ IEP استثناءٌ — TAUX عندها
+        #  مدخلٌ يدويّ (النسبة)، والمحسوب هو BASE (§8.6) — خطأٌ سابقٌ هنا
+        #  (فحص .taux لِـIEP أيضاً) أخفى عطلاً حقيقياً (مفتاح عمودٍ خاطئ
+        #  "base" بدل "nbase" كان يُسقِط رسم الاستمارة صامتاً كلّما وُجد
+        #  IEP — اكتُشف أثناء QA البصريّ اليدويّ لهذه المراجعة، وأُصلح).
+        for code in ("AJ1", "AH1", "RT1", "H51", "H11"):
             self.assertIn(code, by_code, code)
-            self.assertTrue(by_code[code].taux, code)   # TAUX/BASE محسوبٌ حاضر
+            self.assertTrue(by_code[code].taux, code)
+        self.assertIn("IE1", by_code)
+        self.assertTrue(by_code["IE1"].nbase, "IEP BASE يجب أن يكون محسوباً")
+        self.assertEqual(_money(by_code["IE1"].nbase), 45000.0)
         self.assertIn("AV1", by_code)
         self.assertTrue(by_code["AV1"].retenue)
         pan = [p for p in pres.rows if p.code == mod._C["panier"]][0]

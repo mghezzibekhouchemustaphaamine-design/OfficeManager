@@ -618,9 +618,13 @@ def _row_display_extra(row, view):
             return {}
         return {"taux": row._amount / Decimal(str(heures))}
     if row.kind == "iep":
+        #  اسم العمود الفعليّ "nbase" (N/BASE) — لا عمود باسم "base" في
+        #  layout_spec/COLS؛ استعمال "base" هنا كان يُسقِط استثناءً صامتاً
+        #  (يُبتلَع في paintEvent) يُفشِل رسم الاستمارة كاملةً كلّما وُجد
+        #  سطر IEP — أُصلح إلى مفتاح العمود الحقيقيّ.
         sr = row.screen._salaire_row()
         base = sr._amount if sr is not None and sr._amount is not None else None
-        return {} if base is None else {"base": base}
+        return {} if base is None else {"nbase": base}
     if row.kind in ("panier", "transport"):
         return {"taux": res.heures_presence}
     return {}
@@ -648,7 +652,7 @@ _ROW_SPECS = {
     #  أيّ مُنتقٍ يشغل مكانه بعد اليوم.
     "iep": dict(
         role="optional", code="110", lib="IEP / ANCIENNETÉ",
-        primary="taux", computed="gain", computed_extra=("base",),
+        primary="taux", computed="gain", computed_extra=("nbase",),
         cells=(_cs("code", "code", "text", default="110"),
                _cs("libelle", "libelle", "smart", default="IEP / ANCIENNETÉ"),
                _cs("taux", "taux", "amount")),
@@ -2752,8 +2756,8 @@ class BulletinTemplateScreen(Screen):
             extra = _row_display_extra(r, self._bulletin_view)
             nbase = cols.get("nbase", "")
             taux = cols.get("taux", "")
-            if "base" in extra and not nbase:
-                nbase = fmt_montant(extra["base"])
+            if "nbase" in extra and not nbase:
+                nbase = fmt_montant(extra["nbase"])
             if "taux" in extra and not taux:
                 taux = fmt_montant(extra["taux"])
             out.append(PZ.RowSnapshot(

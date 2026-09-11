@@ -195,6 +195,26 @@ def compute_sequence(
         facteur = Decimal("1")
     elif prorata_panier_transport == "PRORATA_JOURS":
         facteur = (jours_presence / jours_mois) if jours_mois else Decimal("1")
+    elif prorata_panier_transport == "PRORATA_MIXTE":
+        #  E.4 §3: وضعٌ جديدٌ صريح — غياب الأيام **و** غياب الساعات معاً
+        #  يُنقصان الاستحقاق (نسبةً لا حالة تراكميّة)؛ التأخّر مستثنًى
+        #  افتراضياً (نفس علم retard_reduit_heures_presence أعلاه). لا
+        #  تُغيَّر صيغة خصم الغياب نفسها (يومٌ يبقى salaire_base/jours_mois،
+        #  ساعةٌ salaire_base/heures_mois) — هذا حصراً لعامل الحضور
+        #  المُستهلَك في تنسيب السلة/النقل.
+        fraction_jours = ((_pos(si.jours_absence) / jours_mois)
+                          if jours_mois else _ZERO)
+        heures_abs_mixte = (_pos(si.heures_absence_irreguliere)
+                            + _pos(si.heures_absence_justifiee))
+        if retard_reduit_heures_presence:
+            heures_abs_mixte += _pos(si.heures_retard)
+        fraction_heures = ((heures_abs_mixte / heures_mois)
+                           if heures_mois else _ZERO)
+        absence_fraction = fraction_jours + fraction_heures
+        facteur = max(_ZERO, min(Decimal("1"), Decimal("1") - absence_fraction))
+        #  عرضٌ موحَّد لساعات الحضور المكافئة لهذا الوضع فقط — **لا** تُستعمَل
+        #  لحساب خصم الغياب (يبقى من heures_absence_* الفعليّة أعلاه، §2).
+        heures_presence = heures_mois * facteur
     else:  # PRORATA_HEURES (افتراضي)
         facteur = (heures_presence / heures_mois) if heures_mois else Decimal("1")
     panier = da(_pos(si.panier_mensuel) * facteur)

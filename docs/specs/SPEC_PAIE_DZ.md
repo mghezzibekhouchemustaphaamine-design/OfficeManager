@@ -118,7 +118,7 @@
 |---|---|---|---|
 | `base_iep` | `SAL_BASE_BRUT` / `SAL_BASE_APRES_ABSENCES` | `SAL_BASE_BRUT` | سائد في برامج القطاع الخاص |
 | `base_pri` | نفسها | `SAL_BASE_BRUT` | اتساقاً مع IEP |
-| `prorata_panier_transport` | `AUCUN` / `PRORATA_HEURES` / `PRORATA_JOURS` | `PRORATA_HEURES` | مؤكَّد بالسنتيم في كشفين مستقلين |
+| `prorata_panier_transport` | `AUCUN` / `PRORATA_HEURES` / `PRORATA_JOURS` / `PRORATA_MIXTE` (E.4) | `PRORATA_HEURES` (قديم) / `PRORATA_MIXTE` (شاشة كشف الراتب PySide6 الجديدة، §1.2.3-bis) | مؤكَّد بالسنتيم في كشفين مستقلين |
 | `retard_reduit_heures_presence` | `true` / `false` | `false` | مؤكَّد ميدانياً |
 | `taux_hs_*` | ≥ 1,50 | 1,50 / 2,00 | الحد القانوني الأدنى (م.32 ق.90-11) |
 
@@ -140,6 +140,35 @@ montant = montant_mensuel × heures_presence / heures_mois
 ```
 
 مؤكَّد بالسنتيم: 2 500 × 101,33 ÷ 173,33 = 1 461,52 · و 5 000 × 96 ÷ 173,33 = 2 769,28
+
+### 1.2.3-bis `PRORATA_MIXTE` (E.4 — شاشة كشف الراتب PySide6 الجديدة)
+
+وضعٌ اتفاقيّ رابعٌ صريح (لا يُغيَّر السلوك القديم للثلاثة الآخرين
+إطلاقاً): غياب **الأيام** وغياب **الساعات** كلاهما يُنقصان استحقاق
+السلة/النقل معاً — نسبةً واحدة تُجمَع، لا حالةً تراكميّة. التأخّر خارج
+الحساب افتراضياً (نفس علم `retard_reduit_heures_presence` أعلاه).
+
+```
+fraction_jours  = jours_absence / jours_mois
+fraction_heures = (heures_absence_irreguliere + heures_absence_justifiee) / heures_mois
+                  (+ heures_retard/heures_mois إن retard_reduit_heures_presence = true)
+
+facteur_presence = clamp(1 − fraction_jours − fraction_heures, 0, 1)
+
+montant = montant_mensuel × facteur_presence
+```
+
+عرض ساعات الحضور المكافئة في هذا الوضع (لعمود TAUX فحسب — **لا** تُستعمَل
+لحساب خصم الغياب، الذي يبقى `salaire_base/jours_mois` لليوم و
+`salaire_base/heures_mois` للساعة، بلا تغيير):
+
+```
+heures_presence_affichée = heures_mois × facteur_presence
+```
+
+بلا أيّ غياب: `facteur_presence = 1` — نفس نتيجة `PRORATA_HEURES` عند
+غيابٍ ساعيّ فقط (الحالة R4 أعلاه صحيحةٌ بالوضعين معاً: 101,33 = 2500×
+101,33÷173,33 = 1 461,52).
 
 ### 1.2.4 منحة الأقدمية — تُقترَح ولا تُفرَض
 

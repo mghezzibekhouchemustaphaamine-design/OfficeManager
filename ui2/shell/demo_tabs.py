@@ -15,6 +15,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from ui2 import theme
+from ui2.shell.close_types import SaveResult
 from ui2.shell.commands import CommandId
 from ui2.shell.work import WorkKey, WorkSession
 
@@ -72,34 +73,61 @@ def build_demo_session(spec: DemoWorkSpec) -> WorkSession:
     return session
 
 
-def _bind_demo_commands(session: WorkSession, spec: DemoWorkSpec) -> None:
-    """‏P2 §9/§10: Handlers تجريبية فقط — تُثبت أنّ التوجيه الحقيقيّ يعمل
-    (QAction → CommandManager → Active Work → handler → state تتغيّر →
-    CommandBar يُحدَّث) بلا أيّ منطق حفظ/طباعة/إصدار حقيقيّ."""
+def _demo_save_success(session: WorkSession) -> SaveResult:
+    session.set_dirty(False)
+    return SaveResult.SUCCESS
 
-    def demo_save() -> None:
-        session.set_dirty(False)
+
+def _bind_demo_commands(session: WorkSession, spec: DemoWorkSpec) -> None:
+    """‏P2 §9/§10 → P2.5 §15: Handlers تجريبية فقط — تُثبت أنّ التوجيه
+    الحقيقيّ يعمل (QAction → CommandManager → Active Work → handler →
+    state تتغيّر → CommandBar يُحدَّث) بلا أيّ منطق حفظ/طباعة/إصدار
+    حقيقيّ. ``session.save`` (لا دالّة منفصلة) هي WorkCommandBinding
+    الخاصّ بـSAVE — نفس العملية بالضبط التي يستدعيها CloseCoordinator
+    عند إغلاق عملٍ dirty (P2.5 §15: لا save_handler_A للزرّ وsave_
+    handler_B للإغلاق)."""
 
     if spec.key.service_key == "paie":
         #  ‏Bulletin Ahmed: SAVE/PRINT/FINALIZE مدعومة ومفعَّلة (dirty
         #  يُطفئ نفسه بعد Save — إثباتٌ حيّ لكامل الأنبوب، P2 §10).
-        session.set_command(CommandId.SAVE, demo_save, enabled=lambda: session.dirty)
+        session.set_save_handler(lambda: _demo_save_success(session), can_save=True)
+        session.set_command(CommandId.SAVE, session.save, enabled=lambda: session.dirty)
         session.set_command(CommandId.PRINT, lambda: None, enabled=True)
         session.set_command(CommandId.FINALIZE, lambda: None, enabled=True)
     elif spec.key.service_key == "cd":
-        #  ‏CD 1584: مقفلٌ — SAVE/UNDO/REDO مدعومة لكن معطَّلة (SUPPORTED
-        #  BUT DISABLED)، PRINT مدعومة ومفعَّلة، FINALIZE غير مدعومة إطلاقاً.
+        #  ‏CD 1584: مقفلٌ — can_save=False طالما locked (P2.5 §14: لا
+        #  زرّ Save سينتهي دائماً بالفشل لأنه غير مدعوم أصلاً؛ حوار
+        #  الإغلاق يُخفيه تلقائياً عبر session.can_save()). UNDO/REDO
+        #  مدعومة لكن معطَّلة (SUPPORTED BUT DISABLED)، PRINT مفعَّلة،
+        #  FINALIZE غير مدعومة إطلاقاً.
+        session.set_save_handler(
+            lambda: _demo_save_success(session), can_save=lambda: not session.locked
+        )
         session.set_command(
-            CommandId.SAVE, demo_save,
-            enabled=lambda: session.dirty and not session.locked,
+            CommandId.SAVE, session.save,
+            enabled=lambda: session.dirty and session.can_save(),
         )
         session.set_command(CommandId.PRINT, lambda: None, enabled=True)
         session.set_command(CommandId.UNDO, lambda: None, enabled=False)
         session.set_command(CommandId.REDO, lambda: None, enabled=False)
     else:
         #  ‏Attestation Nadia: SAVE/PRINT فقط.
-        session.set_command(CommandId.SAVE, demo_save, enabled=lambda: session.dirty)
+        session.set_save_handler(lambda: _demo_save_success(session), can_save=True)
+        session.set_command(CommandId.SAVE, session.save, enabled=lambda: session.dirty)
         session.set_command(CommandId.PRINT, lambda: None, enabled=True)
+
+
+def build_failing_demo_session() -> WorkSession:
+    """‏P2.5 §16/§21: عملٌ تجريبيّ **لاختبارات الحفظ الفاشل فقط** — save
+    يرجع دائماً ``SaveResult.FAILED``، لإثبات أنّ CloseCoordinator يُبقي
+    العمل مفتوحاً ويُبلِّغ الخطأ بدل الإغلاق الصامت. غير مُستعمَل في أيّ
+    مسار CLI عاديّ (لا يُفسِد demo المعتادة)."""
+    key = WorkKey("demo-fail", "always-fails")
+    widget = DemoWorkContent("Demo — حفظ فاشل دائماً")
+    session = WorkSession(key, "Demo Fail", widget, dirty=True)
+    session.set_save_handler(lambda: SaveResult.FAILED, can_save=True)
+    session.set_command(CommandId.SAVE, session.save, enabled=lambda: session.dirty)
+    return session
 
 
 #  ‏P2.1 §15: عناوين قصيرة وطويلة متعمَّدة — تثبت العرض الموحَّد +

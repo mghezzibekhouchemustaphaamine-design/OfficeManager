@@ -10,6 +10,7 @@ from typing import Callable, Dict, Optional, Union
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QWidget
 
+from ui2.shell.close_types import SaveResult
 from ui2.shell.commands import CommandId
 
 
@@ -75,6 +76,14 @@ class WorkSession(QObject):
         self._dirty = bool(dirty)
         self._locked = bool(locked)
         self._commands: Dict[CommandId, WorkCommandBinding] = {}
+        #  ‏P2.5 §2: عقد الحفظ/الإغلاق — ``None`` يعني "لا يمكن الحفظ"
+        #  (‏``can_save()`` تُرجع False تلقائياً بلا حاجة لفحصٍ صريح).
+        #  متعمَّدٌ الفصل عن ``CommandId.SAVE``: ``save()`` هنا هي العملية
+        #  الوحيدة، وWorkCommandBinding الخاصّ بزرّ/اختصار SAVE يمكن أن
+        #  يستدعيها مباشرةً (``session.save``) — توحيدٌ بلا اقترانٍ هشّ
+        #  بمعرّف أمرٍ بعينه (P2.5 §15).
+        self._save_handler: Optional[Callable[[], SaveResult]] = None
+        self._can_save_flag: Union[bool, Callable[[], bool]] = False
         #  ‏dirty/locked يؤثّران غالباً على enabled() لأوامر مثل SAVE/
         #  UNDO/REDO — إعادة تقييمٍ تلقائية بلا أن يعرف WorkSession شيئاً
         #  عن أيّ Command بعينه (P2 §5).
@@ -139,3 +148,37 @@ class WorkSession(QObject):
         """Hook عامّ صريح (P2 §5) لأيّ خدمةٍ مستقبلية تريد طلب إعادة
         تقييم enabled/visible لأسبابٍ غير dirty/locked (مثل تغيّر تحديد)."""
         self.commandsChanged.emit()
+
+    # -------------------------------------------------------- Save Contract
+    def set_save_handler(self, handler: Callable[[], SaveResult], *,
+                          can_save: Union[bool, Callable[[], bool]] = True) -> None:
+        """يُعلن أنّ هذا العمل **يمكنه** الحفظ — ``handler`` هو التنفيذ
+        الفعليّ (يُرجع ``SaveResult``؛ إرجاع ``None`` يُفسَّر SUCCESS
+        تسهيلاً). ``can_save`` ثابتٌ أو دالّة (مثلاً ``lambda: not
+        self.locked``) — Work مقفلة قد تُعلن ``can_save=False`` فلا
+        يظهر زرّ Save فعّالاً في حوار الإغلاق إطلاقاً (P2.5 §14)."""
+        self._save_handler = handler
+        self._can_save_flag = can_save
+
+    def can_save(self) -> bool:
+        if self._save_handler is None:
+            return False
+        if callable(self._can_save_flag):
+            return bool(self._can_save_flag())
+        return bool(self._can_save_flag)
+
+    def save(self) -> SaveResult:
+        """العملية الوحيدة للحفظ لهذا العمل (P2.5 §15) — تصل إليها
+        Ctrl+S/CommandBar (عبر ``WorkCommandBinding.handler = session.
+        save`` مباشرةً في تعريف Work) وحوار الإغلاق غير المحفوظ كلاهما،
+        فلا يوجد ``save_handler_A`` للزرّ و``save_handler_B`` للإغلاق.
+        استثناء من ``handler`` → ``FAILED`` بلا crash (P2.5 §3)؛ لا
+        ``handler`` مُسجَّل أصلاً → ``FAILED`` أيضاً (دفاعٌ إن استُدعيت
+        رغم ``can_save() == False``)."""
+        if self._save_handler is None:
+            return SaveResult.FAILED
+        try:
+            result = self._save_handler()
+        except Exception:
+            return SaveResult.FAILED
+        return result if result is not None else SaveResult.SUCCESS

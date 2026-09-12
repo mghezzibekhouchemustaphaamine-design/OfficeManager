@@ -177,6 +177,16 @@ class OfficeMainWindow(QMainWindow):
         if sizes:
             self.top_bar.set_brand_width(sizes[0])
 
+    # ------------------------------------------------- Safe Close (P2.5 §12)
+    def closeEvent(self, event) -> None:  # noqa: N802 — Qt override
+        """إغلاق OfficeManager نفسه يمرّ بنفس نظام الإغلاق الآمن —
+        حوارٌ مجمّعٌ واحد إن وُجدت أعمالٌ dirty (لا سلسلة نوافذ لكلّ
+        Tab، P2.5 §12)."""
+        if self.workspace.close_coordinator.request_app_close():
+            event.accept()
+        else:
+            event.ignore()
+
     # -------------------------------------------- Explorer dynamic max (P2.2 §3)
     def resizeEvent(self, event) -> None:  # noqa: N802 — Qt override
         super().resizeEvent(event)

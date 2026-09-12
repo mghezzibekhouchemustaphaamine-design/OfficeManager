@@ -1490,5 +1490,489 @@ class WorkTabsAtVariousSizesTest(unittest.TestCase):
         self._check_at(metrics.WINDOW_MIN_WIDTH, metrics.WINDOW_MIN_HEIGHT)
 
 
+def _add_save(session, result=None, can_save=True, on_call=None):
+    """‏P2.5: يربط ``session`` بِـsave handler تجريبيّ — ``result``
+    الافتراضيّة (``None``) تُفلح وتُطفئ dirty (محاكاة حفظٍ حقيقيّ)."""
+    from ui2.shell.close_types import SaveResult
+
+    def handler():
+        if on_call is not None:
+            on_call()
+        r = result if result is not None else SaveResult.SUCCESS
+        if r == SaveResult.SUCCESS:
+            session.set_dirty(False)
+        return r
+
+    session.set_save_handler(handler, can_save=can_save)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class WorkSaveContractTest(unittest.TestCase):
+    """‏P2.5 §2/§3: عقد الحفظ على WorkSession — بمعزلٍ عن أيّ Dialog/UI."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def test_no_handler_means_cannot_save(self):
+        a = _session("x", "1")
+        self.assertFalse(a.can_save())
+
+    def test_can_save_reflects_flag(self):
+        from ui2.shell.close_types import SaveResult
+        a = _session("x", "1")
+        locked = {"v": True}
+        a.set_save_handler(lambda: SaveResult.SUCCESS, can_save=lambda: not locked["v"])
+        self.assertFalse(a.can_save())
+        locked["v"] = False
+        self.assertTrue(a.can_save())
+
+    def test_save_success_returns_success(self):
+        from ui2.shell.close_types import SaveResult
+        a = _session("x", "1", dirty=True)
+        _add_save(a)
+        self.assertEqual(a.save(), SaveResult.SUCCESS)
+        self.assertFalse(a.dirty)
+
+    def test_save_failure_returns_failed_without_crash(self):
+        from ui2.shell.close_types import SaveResult
+        a = _session("x", "1", dirty=True)
+        _add_save(a, result=SaveResult.FAILED)
+        self.assertEqual(a.save(), SaveResult.FAILED)
+        self.assertTrue(a.dirty)   # لم يُغلَق/يُحفَظ فعلياً
+
+    def test_save_exception_becomes_failed(self):
+        from ui2.shell.close_types import SaveResult
+
+        def boom():
+            raise RuntimeError("عطلٌ متعمَّد للاختبار")
+
+        a = _session("x", "1", dirty=True)
+        a.set_save_handler(boom, can_save=True)
+        self.assertEqual(a.save(), SaveResult.FAILED)   # بلا crash
+
+    def test_save_with_no_handler_registered_fails_defensively(self):
+        from ui2.shell.close_types import SaveResult
+        a = _session("x", "1", dirty=True)
+        self.assertEqual(a.save(), SaveResult.FAILED)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class CloseCoordinatorSingleWorkTest(unittest.TestCase):
+    """‏P2.5 §6/§23: مسار إغلاق عملٍ واحد — decision_provider مُحقَن،
+    بلا أيّ QMessageBox حقيقيّ."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        from ui2.shell.close_controller import CloseCoordinator
+        self.mgr = WorkspaceManager()
+        self._decision = None
+        self._errors = []
+        self.coord = CloseCoordinator(
+            self.mgr,
+            decision_provider=lambda session: self._decision,
+            error_reporter=lambda session: self._errors.append(session.key),
+        )
+
+    def test_clean_work_closes_without_prompt(self):
+        called = {"n": 0}
+        from ui2.shell.close_controller import CloseCoordinator
+        coord = CloseCoordinator(
+            self.mgr,
+            decision_provider=lambda session: called.__setitem__("n", called["n"] + 1),
+        )
+        a = _session("x", "1", dirty=False)
+        self.mgr.open_work(a)
+        self.assertTrue(coord.request_close_work(a.key))
+        self.assertFalse(self.mgr.is_open(a.key))
+        self.assertEqual(called["n"], 0)   # decision_provider لم يُستدعَ إطلاقاً
+
+    def test_dirty_save_success_closes(self):
+        from ui2.shell.close_types import CloseDecision
+        a = _session("x", "1", dirty=True)
+        _add_save(a)
+        self.mgr.open_work(a)
+        self._decision = CloseDecision.SAVE
+        self.assertTrue(self.coord.request_close_work(a.key))
+        self.assertFalse(self.mgr.is_open(a.key))
+
+    def test_dirty_save_failure_stays_open(self):
+        from ui2.shell.close_types import CloseDecision, SaveResult
+        a = _session("x", "1", dirty=True)
+        _add_save(a, result=SaveResult.FAILED)
+        self.mgr.open_work(a)
+        self._decision = CloseDecision.SAVE
+        self.assertFalse(self.coord.request_close_work(a.key))
+        self.assertTrue(self.mgr.is_open(a.key))
+        self.assertEqual(self._errors, [a.key])   # خطأ أُبلِغ
+
+    def test_dirty_save_cancelled_stays_open(self):
+        from ui2.shell.close_types import CloseDecision, SaveResult
+        a = _session("x", "1", dirty=True)
+        _add_save(a, result=SaveResult.CANCELLED)
+        self.mgr.open_work(a)
+        self._decision = CloseDecision.SAVE
+        self.assertFalse(self.coord.request_close_work(a.key))
+        self.assertTrue(self.mgr.is_open(a.key))
+
+    def test_dirty_discard_closes(self):
+        from ui2.shell.close_types import CloseDecision
+        a = _session("x", "1", dirty=True)
+        self.mgr.open_work(a)
+        self._decision = CloseDecision.DISCARD
+        self.assertTrue(self.coord.request_close_work(a.key))
+        self.assertFalse(self.mgr.is_open(a.key))
+
+    def test_dirty_cancel_stays_open(self):
+        from ui2.shell.close_types import CloseDecision
+        a = _session("x", "1", dirty=True)
+        self.mgr.open_work(a)
+        self._decision = CloseDecision.CANCEL
+        self.assertFalse(self.coord.request_close_work(a.key))
+        self.assertTrue(self.mgr.is_open(a.key))
+
+    def test_can_close_veto_still_respected(self):
+        from ui2.shell.close_types import CloseDecision
+        a = _session("x", "1", dirty=True, can_close=lambda: False)
+        self.mgr.open_work(a)
+        self._decision = CloseDecision.DISCARD
+        self.assertFalse(self.coord.request_close_work(a.key))
+        self.assertTrue(self.mgr.is_open(a.key))
+
+    def test_can_close_veto_respected_when_clean_too(self):
+        a = _session("x", "1", dirty=False, can_close=lambda: False)
+        self.mgr.open_work(a)
+        self.assertFalse(self.coord.request_close_work(a.key))
+        self.assertTrue(self.mgr.is_open(a.key))
+
+    def test_unknown_key_returns_false(self):
+        self.assertFalse(self.coord.request_close_work(WorkKey("x", "missing")))
+
+    def test_save_exception_treated_as_failed_no_close(self):
+        from ui2.shell.close_types import CloseDecision
+
+        def boom():
+            raise RuntimeError("عطلٌ")
+
+        a = _session("x", "1", dirty=True)
+        a.set_save_handler(boom, can_save=True)
+        self.mgr.open_work(a)
+        self._decision = CloseDecision.SAVE
+        self.assertFalse(self.coord.request_close_work(a.key))
+        self.assertTrue(self.mgr.is_open(a.key))
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class UnsavedDialogStructureTest(unittest.TestCase):
+    """‏P2.5 §5/§21: بنية الحوارات — بلا استدعاء ``exec()`` (لا حلقة
+    Modal في الاختبارات)، إثباتٌ أنّ Cancel هو المسار الآمن فعلياً."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def test_single_dialog_defaults_to_cancel(self):
+        from ui2.shell.unsaved_dialog import build_single_close_dialog
+        a = _session("x", "1", dirty=True)
+        _add_save(a)
+        box, save_btn, discard_btn, cancel_btn = build_single_close_dialog(None, a)
+        self.assertIs(box.defaultButton(), cancel_btn)
+        self.assertIs(box.escapeButton(), cancel_btn)
+        self.assertIsNotNone(save_btn)
+
+    def test_single_dialog_hides_save_when_cannot_save(self):
+        from ui2.shell.unsaved_dialog import build_single_close_dialog
+        a = _session("x", "1", dirty=True, locked=True)   # بلا save handler → can_save() False
+        box, save_btn, discard_btn, cancel_btn = build_single_close_dialog(None, a)
+        self.assertIsNone(save_btn)
+
+    def test_multi_dialog_defaults_to_cancel(self):
+        from ui2.shell.unsaved_dialog import build_multi_close_dialog
+        from ui2.shell.close_types import MultiCloseDecision
+        a = _session("x", "1", dirty=True)
+        dlg, decision, btn_save_all, btn_discard_all, btn_cancel = \
+            build_multi_close_dialog(None, [a])
+        self.assertEqual(decision[0], MultiCloseDecision.CANCEL)   # قبل أيّ تفاعل
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class CloseCoordinatorBulkTest(unittest.TestCase):
+    """‏P2.5 §8/§9/§10/§11/§25: Close Others وClose All."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def _coord(self, single=None, multi=None):
+        from ui2.shell.close_controller import CloseCoordinator
+        return CloseCoordinator(
+            self.mgr,
+            decision_provider=single or (lambda s: None),
+            multi_decision_provider=multi or (lambda ss: None),
+            #  ‏error_reporter الافتراضيّ يفتح QMessageBox.critical حقيقية
+            #  (exec() يحجب) — نُعطِّله هنا (سلوكه مُختبَرٌ بمعزلٍ في
+            #  CloseCoordinatorSingleWorkTest عبر تمريره صراحةً هناك).
+            error_reporter=lambda s: None,
+        )
+
+    def setUp(self):
+        self.mgr = WorkspaceManager()
+
+    # --------------------------------------------------------- Close Others
+    def test_close_others_targets_correct_keys_after_reorder(self):
+        a, b, c = _session("a", "1"), _session("b", "2"), _session("c", "3")
+        for s in (a, b, c):
+            self.mgr.open_work(s)
+        self.mgr.move_work(2, 0)   # [c, a, b] — لا يغيّر الهويّات
+        coord = self._coord()
+        coord.request_close_others(b.key)
+        self.assertTrue(self.mgr.is_open(b.key))
+        self.assertFalse(self.mgr.is_open(a.key))
+        self.assertFalse(self.mgr.is_open(c.key))
+
+    def test_close_others_stops_on_cancel(self):
+        from ui2.shell.close_types import CloseDecision
+        a, b, c = _session("a", "1", dirty=True), _session("b", "2"), _session("c", "3", dirty=True)
+        for s in (a, b, c):
+            self.mgr.open_work(s)
+        #  ‏a تُلغَى — العملية تتوقّف قبل الوصول لِـc (تسلسليّة، P2.5 §8).
+        coord = self._coord(single=lambda s: CloseDecision.CANCEL)
+        result = coord.request_close_others(b.key)
+        self.assertFalse(result)
+        self.assertTrue(self.mgr.is_open(a.key))
+        self.assertTrue(self.mgr.is_open(b.key))
+
+    def test_close_others_all_clean_succeeds(self):
+        a, b, c = _session("a", "1"), _session("b", "2"), _session("c", "3")
+        for s in (a, b, c):
+            self.mgr.open_work(s)
+        coord = self._coord()
+        self.assertTrue(coord.request_close_others(b.key))
+        self.assertEqual([s.key for s in self.mgr.open_works()], [b.key])
+
+    # ----------------------------------------------------------- Close All
+    def test_close_all_no_dirty_closes_directly_no_dialog(self):
+        called = {"n": 0}
+        a, b = _session("a", "1"), _session("b", "2")
+        for s in (a, b):
+            self.mgr.open_work(s)
+        coord = self._coord(multi=lambda ss: called.__setitem__("n", called["n"] + 1))
+        self.assertTrue(coord.request_close_all())
+        self.assertEqual(self.mgr.open_works(), [])
+        self.assertEqual(called["n"], 0)
+
+    def test_close_all_save_all_success_closes(self):
+        from ui2.shell.close_types import MultiCloseDecision
+        a, b = _session("a", "1", dirty=True), _session("b", "2", dirty=True)
+        _add_save(a)
+        _add_save(b)
+        for s in (a, b):
+            self.mgr.open_work(s)
+        coord = self._coord(multi=lambda ss: MultiCloseDecision.SAVE_ALL)
+        self.assertTrue(coord.request_close_all())
+        self.assertEqual(self.mgr.open_works(), [])
+
+    def test_close_all_save_all_failure_stops_nothing_closes(self):
+        from ui2.shell.close_types import MultiCloseDecision, SaveResult
+        a, b = _session("a", "1", dirty=True), _session("b", "2", dirty=True)
+        _add_save(a)
+        _add_save(b, result=SaveResult.FAILED)
+        for s in (a, b):
+            self.mgr.open_work(s)
+        coord = self._coord(multi=lambda ss: MultiCloseDecision.SAVE_ALL)
+        self.assertFalse(coord.request_close_all())
+        self.assertTrue(self.mgr.is_open(a.key))
+        self.assertTrue(self.mgr.is_open(b.key))
+
+    def test_close_all_save_all_cancelled_stops(self):
+        from ui2.shell.close_types import MultiCloseDecision, SaveResult
+        a = _session("a", "1", dirty=True)
+        _add_save(a, result=SaveResult.CANCELLED)
+        self.mgr.open_work(a)
+        coord = self._coord(multi=lambda ss: MultiCloseDecision.SAVE_ALL)
+        self.assertFalse(coord.request_close_all())
+        self.assertTrue(self.mgr.is_open(a.key))
+
+    def test_close_all_discard_all_closes_without_save(self):
+        from ui2.shell.close_types import MultiCloseDecision
+        saved = {"n": 0}
+        a = _session("a", "1", dirty=True)
+        _add_save(a, on_call=lambda: saved.__setitem__("n", saved["n"] + 1))
+        self.mgr.open_work(a)
+        coord = self._coord(multi=lambda ss: MultiCloseDecision.DISCARD_ALL)
+        self.assertTrue(coord.request_close_all())
+        self.assertEqual(self.mgr.open_works(), [])
+        self.assertEqual(saved["n"], 0)
+
+    def test_close_all_cancel_keeps_everything_open(self):
+        from ui2.shell.close_types import MultiCloseDecision
+        a = _session("a", "1", dirty=True)
+        self.mgr.open_work(a)
+        coord = self._coord(multi=lambda ss: MultiCloseDecision.CANCEL)
+        self.assertFalse(coord.request_close_all())
+        self.assertTrue(self.mgr.is_open(a.key))
+
+    def test_only_dirty_works_passed_to_multi_provider(self):
+        seen = []
+        a, b = _session("a", "1", dirty=True), _session("b", "2", dirty=False)
+        for s in (a, b):
+            self.mgr.open_work(s)
+        coord = self._coord(multi=lambda ss: (seen.extend(ss), None)[1])
+        coord.request_close_all()
+        self.assertEqual([s.key for s in seen], [a.key])
+
+    def test_save_all_order_matches_open_works(self):
+        from ui2.shell.close_types import MultiCloseDecision
+        order = []
+        a, b, c = (_session("a", "1", dirty=True), _session("b", "2", dirty=True),
+                   _session("c", "3", dirty=True))
+        for s in (a, b, c):
+            _add_save(s, on_call=lambda s=s: order.append(s.key))
+            self.mgr.open_work(s)
+        coord = self._coord(multi=lambda ss: MultiCloseDecision.SAVE_ALL)
+        coord.request_close_all()
+        self.assertEqual(order, [a.key, b.key, c.key])
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class AppCloseTest(unittest.TestCase):
+    """‏P2.5 §12/§26: ``OfficeMainWindow.closeEvent`` عبر نفس النظام."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self.win = OfficeMainWindow()
+
+    def tearDown(self):
+        self.win.deleteLater()
+
+    def _inject(self, multi_decision):
+        from ui2.shell.close_controller import CloseCoordinator
+        self.win.workspace.close_coordinator = CloseCoordinator(
+            self.win.workspace.workspace_manager, self.win,
+            multi_decision_provider=lambda sessions: multi_decision,
+            error_reporter=lambda s: None,   # لا QMessageBox.critical حقيقية في الاختبار
+        )
+
+    def _fire_close(self):
+        from PySide6.QtGui import QCloseEvent
+        event = QCloseEvent()
+        self.win.closeEvent(event)
+        return event.isAccepted()
+
+    def test_no_dirty_work_accepts_close(self):
+        self._inject(None)
+        self.assertTrue(self._fire_close())
+
+    def test_dirty_cancel_ignores_close(self):
+        from ui2.shell.close_types import MultiCloseDecision
+        a = _session("paie", "1", dirty=True)
+        self.win.workspace.workspace_manager.open_work(a)
+        self._inject(MultiCloseDecision.CANCEL)
+        self.assertFalse(self._fire_close())
+
+    def test_dirty_discard_all_accepts_close(self):
+        from ui2.shell.close_types import MultiCloseDecision
+        a = _session("paie", "1", dirty=True)
+        self.win.workspace.workspace_manager.open_work(a)
+        self._inject(MultiCloseDecision.DISCARD_ALL)
+        self.assertTrue(self._fire_close())
+
+    def test_dirty_save_all_success_accepts_close(self):
+        from ui2.shell.close_types import MultiCloseDecision
+        a = _session("paie", "1", dirty=True)
+        _add_save(a)
+        self.win.workspace.workspace_manager.open_work(a)
+        self._inject(MultiCloseDecision.SAVE_ALL)
+        self.assertTrue(self._fire_close())
+
+    def test_dirty_save_failure_ignores_close(self):
+        from ui2.shell.close_types import MultiCloseDecision, SaveResult
+        a = _session("paie", "1", dirty=True)
+        _add_save(a, result=SaveResult.FAILED)
+        self.win.workspace.workspace_manager.open_work(a)
+        self._inject(MultiCloseDecision.SAVE_ALL)
+        self.assertFalse(self._fire_close())
+
+    def test_app_close_shows_single_grouped_dialog_not_per_tab(self):
+        """‏P2.5 §12: استدعاءٌ واحد فقط لِـmulti_decision_provider، بلا
+        استشارةٍ منفصلة لكلّ Tab dirty."""
+        from ui2.shell.close_types import MultiCloseDecision
+        calls = []
+        a = _session("paie", "1", dirty=True)
+        b = _session("cd", "2", dirty=True)
+        _add_save(a)
+        _add_save(b)
+        self.win.workspace.workspace_manager.open_work(a)
+        self.win.workspace.workspace_manager.open_work(b)
+        from ui2.shell.close_controller import CloseCoordinator
+        self.win.workspace.close_coordinator = CloseCoordinator(
+            self.win.workspace.workspace_manager, self.win,
+            multi_decision_provider=lambda sessions: (
+                calls.append(len(sessions)), MultiCloseDecision.SAVE_ALL)[1],
+        )
+        self.assertTrue(self._fire_close())
+        self.assertEqual(calls, [2])   # نداءٌ واحد بكلّ الأعمال الـdirty معاً
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class SaveCommandUnificationTest(unittest.TestCase):
+    """‏P2.5 §15/§24: Ctrl+S/CommandBar وحوار الإغلاق يصلان لنفس العملية."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def test_demo_command_save_binding_is_session_save_itself(self):
+        from ui2.shell.demo_tabs import DEMO_WORK_SPECS, build_demo_session
+        spec = next(s for s in DEMO_WORK_SPECS if s.key.service_key == "paie")
+        session = build_demo_session(spec)
+        binding = session.command_binding(CommandId.SAVE)
+        #  ‏نفس الكائن المرتبط (bound method) الذي يستدعيه CloseCoordinator
+        #  عبر session.save() — لا دالّةً موازية منفصلة.
+        self.assertEqual(binding.handler, session.save)
+
+    def test_triggering_save_action_and_close_dialog_save_share_effect(self):
+        from ui2.shell.close_types import CloseDecision
+        from ui2.shell.close_controller import CloseCoordinator
+        from ui2.shell.demo_tabs import DEMO_WORK_SPECS, build_demo_session
+        spec = next(s for s in DEMO_WORK_SPECS if s.key.service_key == "paie")
+        mgr = WorkspaceManager()
+        session = build_demo_session(spec)
+        mgr.open_work(session)
+        owner = QLabel()   # مرجعٌ حيّ — بلا هذا يُجمَع القمامة فتُحذَف QActions المُقترَنة به
+        cm = CommandManager(mgr, owner)
+        self.assertTrue(session.dirty)
+        cm.action(CommandId.SAVE).trigger()
+        self.assertFalse(session.dirty)   # نفس save() الذي يستعمله الإغلاق
+
+        session.set_dirty(True)
+        coord = CloseCoordinator(mgr, decision_provider=lambda s: CloseDecision.SAVE)
+        self.assertTrue(coord.request_close_work(session.key))
+
+    def test_disabled_save_not_invoked_via_action(self):
+        calls = []
+        a = _session("cd", "1", locked=True, dirty=False)
+        a.set_save_handler(lambda: calls.append(1), can_save=False)
+        a.set_command(CommandId.SAVE, a.save, enabled=False)
+        mgr = WorkspaceManager()
+        mgr.open_work(a)
+        owner = QLabel()
+        cm = CommandManager(mgr, owner)
+        cm.action(CommandId.SAVE).trigger()
+        self.assertEqual(calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from ui2 import theme
 from ui2.shell import metrics
 from ui2.shell._icon_button import IconButton
+from ui2.shell.close_controller import CloseCoordinator
 from ui2.shell.command_bar import CommandBar
 from ui2.shell.command_manager import CommandManager
 from ui2.shell.home import HomeView
@@ -400,6 +401,12 @@ class WorkspaceHost(QWidget):
         self.command_manager = CommandManager(self.workspace_manager, self)
         self.command_bar.set_command_manager(self.command_manager)
 
+        #  ‏P2.5 §7/§18: المسار الوحيد المسموح لإغلاق عملٍ فعلياً من
+        #  الواجهة — كلّ handlers الإغلاق أدناه تستدعي هذا، لا
+        #  ``workspace_manager.close_work/close_others/close_all``
+        #  مباشرةً (تلك تبقى primitives داخلية لِـCloseCoordinator وحده).
+        self.close_coordinator = CloseCoordinator(self.workspace_manager, self)
+
         self.show_home()
 
     # -------------------------------------------------------- شاشات Shell
@@ -422,7 +429,9 @@ class WorkspaceHost(QWidget):
         self.workspace_manager.activate_work(key)
 
     def _on_tab_close_requested(self, key: WorkKey) -> None:
-        self.workspace_manager.close_work(key)
+        #  ‏P2.5 §6/§18: يمرّ دائماً عبر CloseCoordinator — لا bypass
+        #  يغلق dirty Work بصمت.
+        self.close_coordinator.request_close_work(key)
 
     def _on_tab_moved(self, from_index: int, to_index: int) -> None:
         """‏P2 (Drag & Drop): Qt نقل التبويب (وtabData معه) بصرياً بالفعل
@@ -486,10 +495,11 @@ class WorkspaceHost(QWidget):
 
     # -------------------------------------------------- إغلاق جماعيّ (P2.1 §7)
     def _on_close_others_requested(self, keep_key: WorkKey) -> None:
-        self.workspace_manager.close_others(keep_key)
+        #  ‏P2.5 §18: يمرّ عبر CloseCoordinator — لا bypass.
+        self.close_coordinator.request_close_others(keep_key)
 
     def _on_close_all_requested(self) -> None:
-        self.workspace_manager.close_all()
+        self.close_coordinator.request_close_all()
 
     # -------------------------------------------- All Open Works menu (P2.1 §6)
     def _build_all_works_menu(self) -> QMenu:
@@ -509,20 +519,22 @@ class WorkspaceHost(QWidget):
             )
         if works:
             menu.addSeparator()
+            #  ‏P2.5 §18: كلّها عبر CloseCoordinator — لا استدعاء مباشر
+            #  لِـworkspace_manager.close_work/close_others/close_all.
             act_close = menu.addAction("إغلاق العمل النشِط")
             act_close.setEnabled(active_key is not None)
             act_close.triggered.connect(
-                lambda: self.workspace_manager.close_work(active_key)
+                lambda: self.close_coordinator.request_close_work(active_key)
                 if active_key is not None else None
             )
             act_close_others = menu.addAction("إغلاق البقية")
             act_close_others.setEnabled(active_key is not None and len(works) > 1)
             act_close_others.triggered.connect(
-                lambda: self.workspace_manager.close_others(active_key)
+                lambda: self.close_coordinator.request_close_others(active_key)
                 if active_key is not None else None
             )
             act_close_all = menu.addAction("إغلاق الكلّ")
-            act_close_all.triggered.connect(self.workspace_manager.close_all)
+            act_close_all.triggered.connect(self.close_coordinator.request_close_all)
         return menu
 
     def _show_all_works_menu(self) -> None:

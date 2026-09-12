@@ -46,11 +46,19 @@
 فقط بـ :func:`fmt_rate_pct` (يعيد استعمال ``fmt_montant`` — لا مصدر قانونيّ
 ثانٍ). غيابها ⇒ عمودٌ فارغ، لا رقمٌ مخترَع.
 """
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 
 from programme.payroll.calc import fmt_montant
 from ui.hr.constants import PAIE_DEFAULT_CODES
+
+#  نصّ نسبة مئويّة صريح: علامة سالبة اختياريّة + أرقام + فاصل عشريّ
+#  (فاصلة أو نقطة) اختياريّ + أرقام. **لا** يقبل فراغاً ولا حروفاً — أساس
+#  التحقّق الصارم لِـTAUX IEP (مراجعة عن بعد E4.8 §2): خلافاً لِـ`_dec`
+#  المتساهلة (نصٌّ غير صالح → 0)، هذا النمط يميّز «رقمٌ حقيقيّ (قد يكون
+#  صفراً)» عن «نصٌّ فاسد/غير رقميّ» بدل تحويل الثاني صامتاً إلى الأوّل.
+_RATE_TEXT_RX = re.compile(r"^-?\d+([.,]\d+)?$")
 
 #  أنواع Z1 المُنقِصة — تُعرَض اقتطاعاً موجباً (§9).
 BASE_REDUCERS = ("abs_jours", "abs_heures", "retard")
@@ -72,9 +80,11 @@ _FR_LIBELLE = {
 _ZONE_OF = {"Z1": "A", "Z2": "B", "Z3": "C", "Z4": "C"}
 
 #  أنواع صفوفٍ ذكيّة أصيلة تُعرَض دائماً في GAIN (المبلغ من ``amount``).
-_GAIN_KINDS = {"salaire", "iep", "hs", "panier", "transport"}
+#  E.4 §B: hs_50/hs_100 نوعان مستقلّان (كانا "hs" واحداً بمُنتقي).
+_GAIN_KINDS = {"salaire", "iep", "hs_50", "hs_100", "panier", "transport"}
 #  أنواع تُعرَض دائماً في RETENUE (موجبةً — Absence/Retard §9، Avance).
-_RETENUE_KINDS = {"absence", "retard", "avance"}
+#  E.4 §B: abs_jours/abs_heures نوعان مستقلّان (كانا "absence" واحداً بمُنتقي).
+_RETENUE_KINDS = {"abs_jours", "abs_heures", "retard", "avance"}
 
 
 @dataclass
@@ -164,6 +174,24 @@ def fmt_rate_pct(rate) -> str:
     return fmt_montant(_dec(rate) * 100)
 
 
+def parse_rate_pct(text) -> Decimal:
+    """عكس :func:`fmt_rate_pct` تماماً: نصّ نسبة مئويّة كما يكتبه المستخدم
+    (‏"10,00" أو "10") → الكسر الحقيقيّ الذي يصل للمحرّك/يُحفَظ (Decimal
+    ``0.10``). presentation فقط — تصحيح عرض TAUX لِـIEP (طلب المستخدم):
+    القيمة المُرجَعة هي **بالضبط** ما كان سيُكتب مباشرةً قبل هذا التصحيح؛
+    لا مضاعفة لقيمة المحرّك، فقط تحويل عرضٍ ÷100."""
+    return _dec(text) / Decimal(100)
+
+
+def is_valid_rate_text(text) -> bool:
+    """True فقط لنصٍّ يمثّل رقماً صريحاً (علامة سالبة اختياريّة، فاصلة/
+    نقطة عشريّة اختياريّة، أرقام قبلها وبعدها) — لا فراغ، لا حروف. أساس
+    التحقّق الصارم لِـTAUX IEP: يميّز «صفرٌ حقيقيّ مقصود» عن «نصٌّ فاسد
+    غير رقميّ» (مراجعة عن بعد E4.8 §2) بدل تمرير الاثنين معاً عبر `_dec`
+    المتساهلة التي تُرجع صفراً لأيّ إدخالٍ غير صالح."""
+    return bool(_RATE_TEXT_RX.match(str(text or "").strip()))
+
+
 def _fmt_display(raw: str) -> str:
     """نصّ خليّةٍ خام → عرضٌ موحَّد: رقمٌ صالح يُنسَّق بـ ``fmt_montant``؛
     أيّ نصٍّ آخر (خيار Absence/HS، أو غير رقميّ) يمرّ كما هو حرفياً — لا
@@ -208,7 +236,7 @@ def _row_from_snapshot(snap: RowSnapshot, *, reducers_total: Decimal):
         else:
             gain = _fmt_display(snap.gain_input)
     elif col == "retenue":
-        if snap.kind in ("absence", "retard"):
+        if snap.kind in ("abs_jours", "abs_heures", "retard"):
             #  §9: Absence/Retard تُنقِص Z1 داخل المحرّك عمداً (لا يُغيَّر) —
             #  هنا تُعرَض اقتطاعاً **موجباً** دائماً وتُصالَح المجاميع.
             amt = abs(_dec(snap.amount)) if snap.amount is not None else Decimal(0)

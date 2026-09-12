@@ -463,6 +463,11 @@ class LineView:
     code: str = ""
     cotisable: Optional[int] = None
     imposable: Optional[int] = None
+    #  معدّلٌ دقيق اختياريّ للعرض فقط (مراجعة عن بعد E4.8 §4) — hs_50/
+    #  hs_100 حالياً: taux_horaire × coef **بلا تقريب**، مستقلٌّ عن مبلغ
+    #  السطر المقرَّب. ``None`` لبقيّة الأنواع؛ لا يدخل أيّ حساب مالي —
+    #  العرض (Qt/PDF/Word) يُنسِّقه فقط، لا يعيد اشتقاقه.
+    taux: Optional[Decimal] = None
 
 
 @dataclass
@@ -619,9 +624,16 @@ def compute_bulletin(entries: List[Dict], cfg: Dict,
             zone = zone_of(sens=sens, cotisable=bool(cot), imposable=bool(imp))
         montant = m["prime_montant"] if "prime_montant" in m else lt.resolve(
             res, v, m)
+        #  مراجعة عن بعد E4.8 §4: معدّلٌ دقيق للعرض لأنواع hs_50/hs_100 —
+        #  من res.heures_supp_taux (نفس فهرس res.heures_supp_lignes)، لا
+        #  اشتقاقاً من montant المقرَّب أعلاه.
+        taux_exact = (res.heures_supp_taux[m["hs"]]
+                      if "hs" in m and 0 <= m["hs"] < len(res.heures_supp_taux)
+                      else None)
         views.append(LineView(
             key=lt.key, libelle=libelle, zone=zone, sens=sens,
-            montant=montant, code=lt.code, cotisable=cot, imposable=imp))
+            montant=montant, code=lt.code, cotisable=cot, imposable=imp,
+            taux=taux_exact))
     views.sort(key=lambda x: ZONE_ORDER.get(x.zone, 9))
 
     # تحذير غير حاجب: رمز لا صفّ له في كتالوج الزبون → تصنيف افتراضي.

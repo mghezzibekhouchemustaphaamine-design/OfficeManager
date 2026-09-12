@@ -13,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import tempfile
 import unittest
 from datetime import date
+from decimal import Decimal
 
 try:
     from PySide6.QtCore import QPoint
@@ -156,7 +157,8 @@ class BulletinTemplatePin(unittest.TestCase):
 
     def test_paints_without_exception(self):
         self._fill()
-        for k in ("iep", "hs", "absence", "retard", "avance", "autre"):
+        for k in ("iep", "hs_50", "hs_100", "abs_jours", "abs_heures",
+                  "retard", "avance", "autre"):
             self.scr._add_row(k)
         self.scr._recompute()
         self.scr._relayout()
@@ -170,11 +172,11 @@ class BulletinTemplatePin(unittest.TestCase):
         #  منطقتها بترتيب الإضافة. iep/hs/absence/retard/prime ⇒ Zone A
         #  (فوق CNAS)؛ avance/autre ⇒ Zone C (تحت IRG).
         self._add("prime", gain="1")
-        for k in ("autre", "retard", "iep", "absence", "hs", "avance"):
+        for k in ("autre", "retard", "iep", "abs_jours", "hs_50", "avance"):
             self.scr._add_row(k)
         kinds = [r.kind for r in self.scr._visible_body_rows()]
-        self.assertEqual(kinds, ["salaire", "prime", "retard", "iep", "absence",
-                                 "hs", "cnas", "panier", "transport",
+        self.assertEqual(kinds, ["salaire", "prime", "retard", "iep", "abs_jours",
+                                 "hs_50", "cnas", "panier", "transport",
                                  "irg", "autre", "avance"])
 
     def test_geometry_moves_with_row_count(self):
@@ -185,7 +187,7 @@ class BulletinTemplatePin(unittest.TestCase):
         self.assertAlmostEqual(self.scr._net_y_mm(), n0, places=3)
 
     def test_remove_leaves_no_dead_widgets(self):
-        r = self._add("hs", qty="5")
+        r = self._add("hs_50", qty="5")
         keys = [r.cell_key(c) for c in r.widgets]
         self.scr._remove_row(r)
         for k in keys:
@@ -234,18 +236,215 @@ class BulletinTemplatePin(unittest.TestCase):
         self.scr._on_slot_write("id_date_embauche")
         self.assertNotEqual(r.val("taux"), t_old)
 
-    def test_absence_jours_and_heures_mapping(self):
+    def test_iep_rate_display_is_percentage_engine_unchanged(self):
+        """تصحيح عرض TAUX لِـIEP (طلب المستخدم — presentation only، بلا
+        تغيير SPEC_PAIE_DZ): الكسر الداخليّ 0.10 يُعرَض "10,00" على
+        الشاشة (بشريّاً)، لكن ما يصل للمحرّك وما يُحفَظ يبقى الكسر بلا
+        أيّ مضاعفة — نفس GAIN بالضبط مقارنةً بإدخال 0.10 مباشرةً في
+        المحرّك. lignes.compute_bulletin لا يُلمَس."""
+        from programme.payroll import lignes
         self._fill()
-        r = self._add("absence", qty="3")
-        r.set_val("mode", "Absence (jours)")
-        self.assertEqual(r.entry()["type"], "abs_jours")
-        self.scr._recompute()
-        amt_j = r._amount
-        r.set_val("mode", "Absence (heures)")     # نفس السطر
-        self.assertEqual(r.entry()["type"], "abs_heures")
-        self.scr._recompute()
-        self.assertNotEqual(r._amount, amt_j)
+        r = self._add("iep", taux="0.10")
+        #  العرض البشريّ (الشاشة/PDF/Word — display_text تغذّي اللقطة):
+        #  نسبة مئويّة، لا الكسر الخام.
+        self.assertEqual(r.display_text("taux"), "10,00")
+        #  القيمة الحقيقيّة (المحرّك + draft_state/work_data المحفوظان):
+        #  الكسر بلا تغيير — presentation فقط، لا مضاعفة قيمة المحرّك.
+        self.assertEqual(r.val("taux"), "0.10")
+        iep_entry = next(e for e in self.scr._build_entries()
+                          if e["type"] == "iep")
+        self.assertEqual(iep_entry["values"]["taux"], "0.10")
+        #  GAIN: مطابقٌ تماماً لما ينتجه المحرّك مباشرةً بنفس الكسر 0.10 —
+        #  لا فرق بين المسارَين (الشاشة → to_entry → المحرّك) و(مباشرةً).
         self.assertIsNotNone(r._amount)
+        base = self._row("salaire")._amount
+        cfg = self.scr._load_cfg()
+        direct_view = lignes.compute_bulletin(
+            [{"type": "salaire_base", "values": {"montant": str(base)}},
+             {"type": "iep", "values": {"taux": "0.10"}}], cfg)
+        direct_gain = next(lv.montant for lv in direct_view.lignes
+                            if lv.key == "iep")
+        self.assertEqual(r._amount, direct_gain)
+
+    def test_iep_manual_rate_0_15_percentage_display_and_gain(self):
+        """حالة نسبةٍ يدويّة أخرى غير 0.10 (طلب المراجعة §2): المستخدم
+        يكتب نسبةً يدويّةً 15% (Manual Override — `_iep_manual`، لا
+        اقتراح المحرّك). raw/domain 0.15 → عرضٌ بشريٌّ "15,00"؛ ما يصل
+        للمحرّك/يُحفَظ يبقى 0.15 بلا مضاعفة؛ GAIN مطابقٌ رياضياً لحساب
+        ما قبل E.4.7 (نفس صيغة base_iep_val × 0.15 بالضبط، دون أيّ عاملٍ
+        إضافيّ ×100 أو ÷100 يتسلّل للمحرّك)."""
+        from programme.payroll import lignes
+        self._fill()
+        r = self._add("iep")
+        r.set_val("taux", "0.15")                  # Manual Override
+        self.assertTrue(r._iep_manual)
+        self.assertEqual(r.display_text("taux"), "15,00")
+        self.assertEqual(r.val("taux"), "0.15")
+        self.scr._recompute()
+        iep_entry = next(e for e in self.scr._build_entries()
+                          if e["type"] == "iep")
+        self.assertEqual(iep_entry["values"]["taux"], "0.15")
+        self.assertIsNotNone(r._amount)
+        base = self._row("salaire")._amount
+        cfg = self.scr._load_cfg()
+        #  «حساب ما قبل E.4.7»: نفس الصيغة المباشرة base_iep_val × 0.15،
+        #  بلا مرورٍ بأيّ تحويل عرضٍ — يثبت أنّ GAIN غير متأثّرٍ بالتصحيح.
+        direct_view = lignes.compute_bulletin(
+            [{"type": "salaire_base", "values": {"montant": str(base)}},
+             {"type": "iep", "values": {"taux": "0.15"}}], cfg)
+        direct_gain = next(lv.montant for lv in direct_view.lignes
+                            if lv.key == "iep")
+        self.assertEqual(r._amount, direct_gain)
+        self.assertEqual(r._amount, (base * Decimal("0.15")).quantize(
+            Decimal("0.01")))
+
+    # ------- مراجعة عن بعد E4.8 §1/§2: 0% صالحة + دِقّة صارمة للإدخال -------
+    def test_iep_below_minimum_auto_suggestion_is_zero_and_complete(self):
+        """اقتراحٌ آليّ تحت الحدّ الأدنى (anciennete_minimale_annees=1) —
+        0% نتيجةٌ صالحة، لا ناقصة (§1)."""
+        self._fill()
+        #  قبل الفترة (OCTOBRE 2026) بأقلّ من سنة، وقبل تاريخ اليوم
+        #  الفعليّ أيضاً (DateField يرفض تاريخاً مستقبلياً حرفياً).
+        self.scr._widgets["id_date_embauche"].set_iso("2026-08-15")
+        r = self._add("iep")
+        self.assertEqual(r.val("taux"), "0.00")
+        self.assertEqual(r.display_text("taux"), "0,00")
+        state, complete, _ = self.scr._row_status(r)
+        self.assertTrue(state)
+        self.assertTrue(complete)
+
+    def test_iep_manual_zero_accepted(self):
+        self._fill()
+        r = self._add("iep")
+        r.set_val("taux", "0")
+        self.assertTrue(r._iep_manual)
+        _, complete, _ = self.scr._row_status(r)
+        self.assertTrue(complete)
+
+    def test_iep_blank_rate_is_incomplete_not_zero(self):
+        """بلا تاريخ دخولٍ صالح ⇒ لا اقتراح ممكن (§1 «missing rate because
+        no valid suggestion/input remains incomplete») — الخليّة تبقى
+        فارغةً فعلياً (لا يعيدها ``_on_row_edit`` لاقتراحٍ لأنه غير
+        موجود أصلاً)، لا صفراً."""
+        self._fill()
+        self.scr._widgets["id_date_embauche"].set_iso("")
+        r = self._add("iep")
+        self.assertEqual(r.iep_taux_validity(), ("blank", None))
+        _, complete, _ = self.scr._row_status(r)
+        self.assertFalse(complete)
+
+    def test_iep_negative_rate_rejected(self):
+        self._fill()
+        r = self._add("iep")
+        r.set_val("taux", "-5")
+        st, frac = r.iep_taux_validity()
+        self.assertEqual(st, "ok")
+        self.assertLess(frac, 0)
+        _, complete, _ = self.scr._row_status(r)
+        self.assertFalse(complete)
+
+    def test_iep_garbage_text_never_becomes_legitimate_zero(self):
+        """نصٌّ فاسد (مسوّدة قديمة تالفة، أو ``set_val`` مباشر) — لا يُقرأ
+        صفراً حقيقياً صامتاً (§2): ``val()`` يرجع "" لا "0"، والحالة
+        "invalid" لا "ok"، فيُرفَض الإصدار النهائي، والنصّ الفاسد يبقى
+        ظاهراً حرفياً بدل أن يُصحَّح صامتاً إلى "0,00"."""
+        self._fill()
+        r = self._add("iep")
+        r.set_val("taux", "abc")
+        self.assertEqual(r.val("taux"), "")
+        self.assertEqual(r.display_text("taux"), "abc")   # يبقى ظاهراً، لا "0,00"
+        st, frac = r.iep_taux_validity()
+        self.assertEqual(st, "invalid")
+        self.assertIsNone(frac)
+        self.assertTrue(r._iep_manual)       # غير فارغة ⇒ يدويّة (لا تُستبدَل صامتاً)
+        _, complete, _ = self.scr._row_status(r)
+        self.assertFalse(complete)
+
+    def test_iep_rate_input_validator_blocks_letters_interactively(self):
+        """الفاليديتور التفاعليّ يمنع الحروف من الدخول أصلاً — «abc»
+        المكتوبة حرفاً حرفاً لا تصل الخليّة إطلاقاً (§2، لا فراغاً فقط
+        لصقاً/برمجياً كما في الاختبار أعلاه)."""
+        from PySide6.QtGui import QValidator
+        self._fill()
+        r = self._add("iep")
+        w = r.widgets["taux"]
+        for ch in "abc":
+            state, _txt, _pos = w.validator().validate(ch, 0)
+            self.assertEqual(state, QValidator.Invalid)
+
+    def test_iep_rate_7_08_parses_to_exact_raw_fraction(self):
+        self._fill()
+        r = self._add("iep")
+        r.set_val("taux", "0.0708")
+        self.assertEqual(r.display_text("taux"), "7,08")
+        self.assertEqual(r.val("taux"), "0.0708")
+
+    # ------------ مراجعة عن بعد E4.8 §3: AVANCE نوعٌ دلاليٌّ مخصَّص ------------
+    def test_smart_avance_entry_type_is_avance_not_libre(self):
+        self._fill()
+        r = self._add("avance", libelle="AVANCE", montant="5000")
+        self.assertEqual(r.entry()["type"], "avance")
+
+    def test_avance_code_210_edit_does_not_change_semantic_type(self):
+        self._fill()
+        r = self._add("avance", libelle="AVANCE", montant="5000")
+        r.set_val("code", "999")             # تعديلٌ يدويّ للرمز المعروض فقط
+        self.assertEqual(r.entry()["type"], "avance")
+
+    def test_avance_and_free_retenue_zone_c_coexist_without_stealing_amounts(self):
+        """مراجعة E4.8 §3: قبل الإصلاح كانت AVANCE تُرسَل كـ"libre" — نفس
+        توقيع المحرّك (type, zone, sens) لسطرٍ حرٍّ باقتطاعٍ عامّ في
+        Zone C (كلاهما ("libre","Z4","RETENUE") قديماً). فصل النوع
+        يزيل التصادم بنيوياً بدل الاعتماد على تطابق ترتيب الإرسال."""
+        self._fill()
+        av = self._add("avance", libelle="AVANCE", montant="4000")
+        self.scr._add_row("free", segment="C")            # RETENUE حرّة = Zone C
+        free = self._row("free", -1)
+        free.set_val("libelle", "PRÊT MUTUELLE")
+        free.set_val("retenue", "1500")
+        self.scr._recompute()
+        self.assertEqual(av.entry()["type"], "avance")
+        self.assertEqual(free.entry()["type"], "libre")
+        self.assertEqual(av._amount, Decimal("4000.00"))
+        self.assertEqual(free._amount, Decimal("1500.00"))
+        #  سطرٌ حرٌّ ثانٍ بنفس المفتاح ("libre") في نفس المنطقة — يثبت أنّ
+        #  AVANCE (نوعها الآن مستقلّ) لا تتأثّر بتعدّد أسطر "libre" حولها.
+        self.scr._add_row("free", segment="C")
+        free2 = self._row("free", -1)
+        free2.set_val("libelle", "AUTRE RETENUE")
+        free2.set_val("retenue", "600")
+        self.scr._recompute()
+        self.assertEqual(av._amount, Decimal("4000.00"))
+        self.assertEqual(free._amount, Decimal("1500.00"))
+        self.assertEqual(free2._amount, Decimal("600.00"))
+
+    def test_avance_net_identical_to_direct_engine_avance_type(self):
+        from programme.payroll import lignes
+        self._fill()
+        r = self._add("avance", libelle="AVANCE", montant="3000")
+        base = self._row("salaire")._amount
+        cfg = self.scr._load_cfg()
+        direct = lignes.compute_bulletin(
+            [{"type": "salaire_base", "values": {"montant": str(base)}},
+             {"type": "avance", "values": {"montant": "3000"}}], cfg)
+        direct_amt = next(lv.montant for lv in direct.lignes if lv.key == "avance")
+        self.assertEqual(r._amount, direct_amt)
+        self.assertEqual(r._amount, Decimal("3000.00"))
+
+    def test_abs_jours_and_abs_heures_are_distinct_types(self):
+        #  E.4 intentional contract change: "mode" ضمن سطرٍ واحد أُلغي —
+        #  abs_jours/abs_heures صارا نوعين ذكيّين مستقلّين (§B)، لا خياراً
+        #  يُبدَّل على نفس السطر.
+        self._fill()
+        rj = self._add("abs_jours", qty="3")
+        self.assertEqual(rj.entry()["type"], "abs_jours")
+        self.scr._recompute()
+        amt_j = rj._amount
+        rh = self._add("abs_heures", qty="3")
+        self.assertEqual(rh.entry()["type"], "abs_heures")
+        self.scr._recompute()
+        self.assertIsNotNone(rh._amount)
+        self.assertNotEqual(rh._amount, amt_j)
 
     def test_retard_calculated_retenue(self):
         self._fill()
@@ -253,22 +452,21 @@ class BulletinTemplatePin(unittest.TestCase):
         self.assertIsNotNone(r._amount)
         self.assertNotIn("retenue", r.widgets)    # المبلغ ليس widget
 
-    def test_hs_50_and_100(self):
+    def test_hs_50_and_100_distinct_types(self):
+        #  E.4 intentional contract change: "coef" ضمن سطرٍ واحد أُلغي —
+        #  hs_50/hs_100 صارا نوعين ذكيّين مستقلّين (§B)، لا خياراً يُبدَّل.
         self._fill()
-        h50 = self._add("hs", qty="10")
-        h50.set_val("coef", "50%")
+        h50 = self._add("hs_50", qty="10")
         self.scr._recompute()
         a50 = h50._amount
-        h50.set_val("coef", "100%")
+        h100 = self._add("hs_100", qty="10")
         self.scr._recompute()
-        self.assertGreater(h50._amount, a50)
+        self.assertGreater(h100._amount, a50)
 
     def test_two_hs_rows_50_and_100(self):
         self._fill()
-        a = self._add("hs", qty="10")
-        a.set_val("coef", "50%")
-        b = self._add("hs", qty="6")
-        b.set_val("coef", "100%")
+        a = self._add("hs_50", qty="10")
+        b = self._add("hs_100", qty="6")
         self.scr._recompute()
         self.assertIsNotNone(a._amount)
         self.assertIsNotNone(b._amount)
@@ -276,7 +474,7 @@ class BulletinTemplatePin(unittest.TestCase):
 
     def test_calculated_amount_cells_are_not_widgets_or_tabstops(self):
         self._fill()
-        for k in ("iep", "hs", "absence", "retard"):
+        for k in ("iep", "hs_50", "hs_100", "abs_jours", "abs_heures", "retard"):
             r = self._add(k)
             comp_col = mod._ROW_SPECS[k]["computed"]
             self.assertNotIn(comp_col, r.widgets)
@@ -328,7 +526,7 @@ class BulletinTemplatePin(unittest.TestCase):
 
     def test_nav_rebuild_after_add_remove(self):
         n0 = len(self.scr._nav_order)
-        r = self._add("hs", qty="1")
+        r = self._add("hs_50", qty="1")
         self.assertGreater(len(self.scr._nav_order), n0)
         self.scr._remove_row(r)
         self.assertEqual(len(self.scr._nav_order), n0)
@@ -343,16 +541,15 @@ class BulletinTemplatePin(unittest.TestCase):
 
     def test_draft_roundtrip_with_adaptive_rows(self):
         self._fill()
-        self._add("hs", qty="8")
-        self._row("hs", -1).set_val("coef", "100%")
+        self._add("hs_100", qty="8")
         self._add("autre", libelle="Z", montant="1200")
         self._row("autre", -1).set_val("sens", "Gain")
         st = self.scr.draft_state()
         other = BulletinTemplateScreen(conn=None)
         other.apply_draft(st)
         self.assertEqual(other._widgets["id_nom"].text(), "BENALI")
-        h = [r for r in other._rows if r.kind == "hs"]
-        self.assertTrue(h and h[-1].val("coef") == "100%" and h[-1].val("qty") == "8")
+        h = [r for r in other._rows if r.kind == "hs_100"]
+        self.assertTrue(h and h[-1].val("qty") == "8")
         a = [r for r in other._rows if r.kind == "autre"]
         self.assertTrue(a and a[-1].val("sens") == "Gain")
         other.deleteLater()
@@ -382,7 +579,8 @@ class BulletinTemplateZoneModelR1(unittest.TestCase):
 
     # ---------- المناطق ----------
     def test_default_zone_mapping(self):
-        for kind, zone in (("iep", "A"), ("hs", "A"), ("absence", "A"),
+        for kind, zone in (("iep", "A"), ("hs_50", "A"), ("hs_100", "A"),
+                           ("abs_jours", "A"), ("abs_heures", "A"),
                            ("retard", "A"), ("prime", "A"),
                            ("avance", "C"), ("autre", "C")):
             self.scr._add_row(kind)
@@ -404,10 +602,10 @@ class BulletinTemplateZoneModelR1(unittest.TestCase):
 
     def test_zone_a_rows_sit_above_cnas(self):
         self.scr._add_row("iep")
-        self.scr._add_row("hs")
+        self.scr._add_row("hs_50")
         rows = [r.kind for r in self.scr._visible_body_rows()]
         self.assertLess(rows.index("iep"), rows.index("cnas"))
-        self.assertLess(rows.index("hs"), rows.index("cnas"))
+        self.assertLess(rows.index("hs_50"), rows.index("cnas"))
 
     def test_zone_c_rows_sit_below_irg(self):
         self.scr._add_row("avance")
@@ -421,11 +619,13 @@ class BulletinTemplateZoneModelR1(unittest.TestCase):
                                self.scr._total_y_mm() + T.ROW_H)
 
     def test_min_body_slots_hold_net_position(self):
+        #  E.4 §F: Avance صار فريداً (سطرٌ واحد) — الهندسة هنا مستقلّة عن
+        #  دلالة النوع، فنستعمل "autre" (لا يزال يتكرّر) لملء Zone C.
         net0 = self.scr._net_y_mm()
         for _ in range(self.scr.MIN_BODY_SLOTS):           # 5 صفوف Zone C
-            self.scr._add_row("avance")
+            self.scr._add_row("autre")
             self.assertAlmostEqual(self.scr._net_y_mm(), net0)
-        self.scr._add_row("avance")                        # السادس يُنزِل NET
+        self.scr._add_row("autre")                         # السادس يُنزِل NET
         self.assertGreater(self.scr._net_y_mm(), net0)
 
     def test_zone_a_row_always_grows_document(self):
@@ -652,10 +852,17 @@ class BulletinTemplateFreeRowR2(unittest.TestCase):
         self.assertFalse(self.scr._btn_plus.isHidden())
         self.assertTrue(self.scr._btn_minus.isHidden())
 
-    def test_gutter_plus_click_inserts_in_hovered_zone(self):
+    def test_gutter_plus_click_opens_menu_free_option_inserts_in_hovered_zone(self):
+        #  E4.6 intentional contract change: ＋ لم يعد يُدرج سطراً حرّاً
+        #  فوراً — يعرض قائمةً موجَّهة أوّلاً (§1). "سطر حرّ" فيها يحافظ
+        #  على السلوك القديم بالضبط.
         self.scr._gutter_mouse_move(self._canvas_pt(-5.0, 1))
         self.scr._plus_target = ("C", 0)
         self.scr._btn_plus.click()
+        self.assertIsNotNone(self.scr._ajouter_menu)
+        free_act = next(a for a in self.scr._ajouter_menu.actions()
+                        if a.text() == "سطر حرّ")
+        free_act.trigger()
         fr = [r for r in self.scr._rows if r.kind == "free"]
         self.assertTrue(fr and fr[-1].zone == "C")
 
@@ -697,30 +904,54 @@ class BulletinTemplateSmartLibelleR3(unittest.TestCase):
 
     # ---------- الحقل الذكيّ ----------
     def test_free_libelle_is_smart_field_with_zone_suggestions(self):
+        #  E.4 §B/§E: "Absence"/"IEP / Ancienneté" (تسميتان قديمتان لنوعٍ
+        #  مُركَّب) استُبدلتا بتسميات الأنواع المستقلّة الجديدة.
         r = self.scr._insert_free_row("A")
         self.assertIsInstance(r.widgets["libelle"], mod._SmartLibelle)
         sugg = r.widgets["libelle"]._completer.model().stringList()
-        self.assertIn("Absence", sugg)
-        self.assertIn("IEP / Ancienneté", sugg)
+        self.assertIn("ABSENCE (JOURS)", sugg)
+        self.assertIn("ABSENCE (HEURES)", sugg)
+        self.assertIn("IEP / ANCIENNETÉ", sugg)
 
     def test_suggestions_filtered_by_zone(self):
         rc = self.scr._insert_free_row("C")
         sugg = rc.widgets["libelle"]._completer.model().stringList()
-        self.assertIn("Avance / Retenue", sugg)
-        self.assertNotIn("Absence", sugg)
+        self.assertIn("AVANCE / ACOMPTE", sugg)
+        self.assertNotIn("ABSENCE (JOURS)", sugg)
 
-    # ---------- تحويل حرّ → ذكيّ (§14/§16) ----------
+    # ---------- تحويل حرّ → ذكيّ (§14/§16 → E.4 §E) ----------
     def test_free_to_smart_on_exact_match(self):
         r = self.scr._insert_free_row("A")
         seg, order = r.segment, r.order
-        nr = self._commit_libelle(r, "Absence")
-        self.assertEqual(nr.kind, "absence")
+        nr = self._commit_libelle(r, "ABSENCE (JOURS)")
+        self.assertEqual(nr.kind, "abs_jours")
         self.assertEqual(nr.zone, "A")
         self.assertEqual((nr.segment, nr.order), (seg, order))   # نفس الموضع (§18)
 
-    def test_alias_match_converts(self):
+    def test_bare_absence_stays_free_now_ambiguous(self):
+        #  E.4 intentional contract change: "Absence" وحدها كانت تحوّل
+        #  تلقائياً (E.3) حين كان النوع واحداً مُركَّباً. بعد تقسيمه إلى
+        #  abs_jours/abs_heures (§B) صار الاسم المجرَّد غامضاً — أيّهما
+        #  يقصد المستخدم؟ — فيبقى حرّاً حتى يختار توليفةً دقيقة (§E).
         r = self.scr._insert_free_row("A")
-        self.assertEqual(self._commit_libelle(r, "heures supp").kind, "hs")
+        nr = self._commit_libelle(r, "Absence")
+        self.assertEqual(nr.kind, "free")
+
+    def test_bare_heures_supp_stays_free_now_ambiguous(self):
+        #  E.4 intentional contract change: نفس السبب لـHS 50%/100% (§B/§E).
+        r = self.scr._insert_free_row("A")
+        nr = self._commit_libelle(r, "heures supp")
+        self.assertEqual(nr.kind, "free")
+
+    def test_exact_hs50_label_converts(self):
+        r = self.scr._insert_free_row("A")
+        nr = self._commit_libelle(r, "HEURES SUPPLÉMENTAIRES (50 %)")
+        self.assertEqual(nr.kind, "hs_50")
+
+    def test_exact_hs100_label_converts(self):
+        r = self.scr._insert_free_row("A")
+        nr = self._commit_libelle(r, "HEURES SUPPLÉMENTAIRES (100 %)")
+        self.assertEqual(nr.kind, "hs_100")
 
     def test_partial_text_stays_free(self):
         r = self.scr._insert_free_row("A")
@@ -730,38 +961,40 @@ class BulletinTemplateSmartLibelleR3(unittest.TestCase):
     def test_no_silent_relocation_across_zones(self):
         #  نوع Zone A مكتوبٌ في سطر Zone C ⇒ لا تحويل، لا نقل (§19).
         r = self.scr._insert_free_row("C")
-        nr = self._commit_libelle(r, "Absence")
+        nr = self._commit_libelle(r, "ABSENCE (JOURS)")
         self.assertEqual((nr.kind, nr.zone), ("free", "C"))
 
     # ---------- تبديل النوع في المكان (§18) ----------
     def test_smart_type_switch_same_row(self):
         r = self.scr._insert_free_row("A")
-        r2 = self._commit_libelle(r, "Absence")
+        r2 = self._commit_libelle(r, "ABSENCE (JOURS)")
         r2.set_val("qty", "3")
         seg, order = r2.segment, r2.order
-        r3 = self._commit_libelle(r2, "Retard")
+        r3 = self._commit_libelle(r2, "Retard")        # اسمٌ مستعارٌ موثوق (§E)
         self.assertEqual(r3.kind, "retard")
         self.assertEqual((r3.segment, r3.order), (seg, order))
         self.assertEqual(r3.val("qty"), "")           # قيمة غير متوافقة لا تُنقَل
 
     def test_smart_to_free_on_nonmatch(self):
         r = self.scr._insert_free_row("A")
-        r2 = self._commit_libelle(r, "Absence")
+        r2 = self._commit_libelle(r, "ABSENCE (JOURS)")
         r3 = self._commit_libelle(r2, "Indemnité maison")
         self.assertEqual(r3.kind, "free")
         self.assertEqual(r3.zone, "A")
         self.assertEqual(r3.val("libelle"), "Indemnité maison")
 
-    # ---------- CODE auto / manual (§20) ----------
+    # ---------- CODE auto / manual (§20 → E.4 §C) ----------
     def test_code_auto_on_conversion(self):
+        #  E.4 intentional contract change: كان الافتراض الآليّ "IEP"
+        #  (رمزٌ نصّيّ) — صار "110" (§C: عقد CODE الرقميّ الجديد).
         r = self.scr._insert_free_row("A")
-        self.assertEqual(self._commit_libelle(r, "IEP").val("code"), "IEP")
+        self.assertEqual(self._commit_libelle(r, "IEP").val("code"), "110")
 
     def test_code_manual_preserved_across_switch(self):
         r = self.scr._insert_free_row("A")
         r.widgets["code"].setText("Z9")
         r.widgets["code"].textEdited.emit("Z9")        # يعلّم _code_manual
-        r2 = self._commit_libelle(r, "Absence")
+        r2 = self._commit_libelle(r, "ABSENCE (JOURS)")
         self.assertTrue(r2._code_manual)
         self.assertEqual(r2.val("code"), "Z9")
 
@@ -948,8 +1181,8 @@ class BulletinTemplatePhaseE(unittest.TestCase):
 
     # ---------- §2 زوم: لا شيء يخرج من الجدول ----------
     def test_no_widget_escapes_table_at_any_zoom(self):
-        self._conv("A", "HS", qty="10", coef="100%")
-        self._conv("A", "Absence", qty="2", mode="Absence (jours)")
+        self._conv("A", "HEURES SUPPLÉMENTAIRES (100 %)", qty="10")
+        self._conv("A", "ABSENCE (JOURS)", qty="2")
         self._conv("A", "Prime x", gain="6000")
         self._conv("C", "Avance", montant="5000")
         for zoom in (45, 100, 180, 200, 260):
@@ -1075,7 +1308,7 @@ class BulletinTemplatePhaseE(unittest.TestCase):
     # ---------- §12 قفل نظيف ----------
     def test_locked_combo_not_gray(self):
         from PySide6.QtWidgets import QComboBox
-        self.scr._add_row("hs")
+        self.scr._add_row("hs_50")
         self.scr._set_locked(True)
         for w in self.scr._widgets.values():
             if isinstance(w, QComboBox):
@@ -1126,7 +1359,7 @@ class BulletinTemplateE1(unittest.TestCase):
     # ---------- §13 هندسة الوثيقة لا تعتمد الزوم ----------
     def test_document_mm_invariant_across_zoom(self):
         from PySide6.QtGui import QFontMetricsF
-        self._conv("A", "Heures supplémentaires", qty="5", coef="50%")
+        self._conv("A", "HEURES SUPPLÉMENTAIRES (50 %)", qty="5")
         self._conv("C", "Avance", montant="1000")
         self.scr._recompute()
         ref = None
@@ -1137,7 +1370,7 @@ class BulletinTemplateE1(unittest.TestCase):
             rows = self.scr._visible_body_rows()
             i_cnas = [k for k, r in enumerate(rows) if r.kind == "cnas"][0]
             i_irg = [k for k, r in enumerate(rows) if r.kind == "irg"][0]
-            hs = [r for r in self.scr._rows if r.kind == "hs"][0]
+            hs = [r for r in self.scr._rows if r.kind == "hs_50"][0]
             wy = self.scr._widgets[hs.cell_key("qty")].y()
             wy_mm = (wy - v.y0) / v.scale                # px → mm (round-trip)
             wleft = self.scr._widgets[hs.cell_key("qty")].x()
@@ -1191,7 +1424,7 @@ class BulletinTemplateE1(unittest.TestCase):
 
     def test_pdf_row_count_equals_screen_n_body_drawn(self):
         from programme.payroll import lignes
-        self._conv("A", "Heures supplémentaires", qty="8", coef="100%")
+        self._conv("A", "HEURES SUPPLÉMENTAIRES (100 %)", qty="8")
         self._conv("A", "Prime x", gain="3000")
         self._conv("C", "Avance", montant="2000")
         self.scr._recompute()
@@ -1254,11 +1487,11 @@ class BulletinTemplateE2(unittest.TestCase):
         w["mois"].setText("OCTOBRE"); w["annee"].setText("2026")
         [r for r in self.scr._rows if r.kind == "salaire"][0].set_val("gain",
                                                                       "45000")
-        for lib in ("Prime de risque", "Absence"):
+        for lib in ("Prime de risque", "ABSENCE (JOURS)"):
             fr = self.scr._insert_free_row("A")
             fr.widgets["libelle"].setText(lib)
             fr.widgets["libelle"].committed.emit(lib)
-        [r for r in self.scr._rows if r.kind == "absence"][0].set_val(
+        [r for r in self.scr._rows if r.kind == "abs_jours"][0].set_val(
             "qty", "1")
         self.scr._recompute()
         self.app.processEvents()
@@ -1607,26 +1840,102 @@ class BulletinTemplateE3Calc(unittest.TestCase):
 
     # ---------- HS ----------
     def test_hs_50_and_100_amounts(self):
+        #  E.4 §B: hs_50/hs_100 نوعان مستقلّان لا خيارٌ داخل سطرٍ واحد.
         b0 = self.scr._calc_result.net_a_payer
-        r50 = self._add("hs", qty="10", coef="50%")
+        r50 = self._add("hs_50", qty="10")
         n50 = self.scr._calc_result.net_a_payer
         self.assertGreater(n50, b0)
         self.assertIsNotNone(r50._amount)
-        r100 = self._add("hs", qty="10", coef="100%")
+        r100 = self._add("hs_100", qty="10")
         self.assertGreater(self.scr._calc_result.net_a_payer, n50)
         self.assertGreater(r100._amount, r50._amount)  # 100% > 50% لنفس الكمّية
 
-    def test_two_hs_rows_each_own_amount(self):
-        a = self._add("hs", qty="4", coef="50%")
-        b = self._add("hs", qty="9", coef="50%")
-        self.assertNotEqual(a._amount, b._amount)
-        tot = sum(float(lv.montant) for lv in self._lines("hs_50"))
-        self.assertAlmostEqual(float(a._amount) + float(b._amount), tot, 1)
+    def _snap_taux(self, r):
+        """قيمة TAUX كما تصل فعلياً إلى اللقطة (نفس مصدر الشاشة/PDF/Word،
+        _row_snapshots) — hs_50/hs_100 خليّة عرضٍ محسوبة بلا widget، فلا
+        ``display_text`` مباشرةً (مراجعة عن بعد E4.8 §4)."""
+        snap = next(s for s in self.scr._row_snapshots() if s.rid == r.rid)
+        return snap.taux
+
+    def test_hs50_taux_display_matches_exact_domain_rate_for_fractional_hours(self):
+        """مراجعة عن بعد E4.8 §4: TAUX المعروض = المعدّل الساعيّ الدقيق
+        (‏taux_horaire × 1.5، بلا تقريبٍ وسيط) منسَّقاً لخانتين — لا مبلغ
+        السطر المقرَّب ÷ الساعات (يختلف فعلياً لساعاتٍ كسريّة صغيرة —
+        0.10/0.33 هنا تثبتان الفرق صراحةً)."""
+        for qty in ("0.10", "0.33", "1.17", "7.88"):
+            with self.subTest(qty=qty):
+                r = self._add("hs_50", qty=qty)
+                res = self.scr._bulletin_view.result
+                exact_rate = res.taux_horaire * Decimal("1.5")
+                expected = calc.fmt_montant(exact_rate)
+                self.assertEqual(self._snap_taux(r), expected)
+                old_buggy = calc.fmt_montant(r._amount / Decimal(qty))
+                if qty in ("0.10", "0.33"):
+                    self.assertNotEqual(expected, old_buggy, qty)
+                self.scr._remove_row(r)
+                self.scr._recompute()
+
+    def test_hs100_taux_display_matches_exact_domain_rate(self):
+        r = self._add("hs_100", qty="0.33")
+        res = self.scr._bulletin_view.result
+        expected = calc.fmt_montant(res.taux_horaire * Decimal("2.0"))
+        self.assertEqual(self._snap_taux(r), expected)
+
+    # ---------- Panier/Transport TAUX × سياسة التنسيب (E4.8 §5) ----------
+    def test_panier_taux_matches_actual_prorata_factor_across_policies(self):
+        """مراجعة عن بعد E4.8 §5: TAUX Panier = ساعاتٌ معادِلة للعامل
+        الفعليّ المُستهلَك في GAIN، أياً كانت السياسة — لا
+        ``heures_presence`` دائماً (يختلف فعلياً في AUCUN/PRORATA_JOURS
+        حيث العامل الحقيقيّ ليس نسبة الساعات)."""
+        cfg = self.scr._load_cfg()
+        heures_mois = Decimal(str(cfg["heures_mois"]))
+        panier_row = next(r for r in self.scr._rows if r.kind == "panier")
+        panier_row.set_val("gain", "2500")
+
+        def _clear_absences():
+            for r in list(self.scr._rows):
+                if r.kind in ("abs_jours", "abs_heures"):
+                    self.scr._remove_row(r)
+
+        scenarios = (
+            ("AUCUN", lambda: None),
+            ("PRORATA_HEURES", lambda: self._add("abs_heures", qty="10")),
+            ("PRORATA_JOURS", lambda: self._add("abs_jours", qty="3")),
+            ("PRORATA_MIXTE", lambda: self._add("abs_jours", qty="1")),
+        )
+        for policy, setup in scenarios:
+            with self.subTest(policy=policy):
+                _clear_absences()
+                setup()
+                self.scr._prorata_policy = policy
+                self.scr._recompute()
+                res = self.scr._bulletin_view.result
+                expected = calc.fmt_montant(res.panier_transport_heures_equiv)
+                self.assertEqual(self._snap_taux(panier_row), expected)
+                #  يطابق فعلياً عامل GAIN الحقيقيّ — لا رقماً معروضاً موازياً
+                #  بلا صلة بالمبلغ الفعليّ.
+                facteur = res.panier_transport_heures_equiv / heures_mois
+                self.assertEqual(res.panier, calc.da(Decimal("2500") * facteur))
+        _clear_absences()
+        self.scr._prorata_policy = "PRORATA_MIXTE"
+        self.scr._recompute()
+
+    def test_duplicate_hs50_blocked(self):
+        #  E.4 intentional contract change: كان بالإمكان تكرار "hs" (كان
+        #  نوعاً واحداً بمُنتقي) — الاختبار القديم test_two_hs_rows_each_
+        #  own_amount افترض تكرار hs_50 بعينه؛ hs_50/hs_100 صارا فريدين
+        #  كلٌّ على حدة (§F) فيُحجَب التكرار الآن. حماية «كلّ سطرٍ مبلغه
+        #  هو» رغم تشارك المفتاح تبقى مُختبَرةً في BulletinTemplateE3Review
+        #  (مستقلّةٌ عن مسألة التفرّد هنا).
+        self._add("hs_50", qty="4")
+        blocked = self.scr._add_row("hs_50")
+        self.assertIsNone(blocked)
+        self.assertEqual(len([r for r in self.scr._rows if r.kind == "hs_50"]), 1)
 
     # ---------- Absence / Retard: اقتطاع موجب + وعاء ينخفض ----------
     def test_absence_jours_positive_retenue_and_bases(self):
         c0, i0, n0 = self._base()
-        r = self._add("absence", qty="3", mode="Absence (jours)")
+        r = self._add("abs_jours", qty="3")
         c1, i1, n1 = self._base()
         self.assertGreater(r._amount, 0)               # مبلغٌ موجب
         self.assertLess(c1, c0)                        # وعاء CNAS ينخفض
@@ -1638,26 +1947,29 @@ class BulletinTemplateE3Calc(unittest.TestCase):
         self.assertFalse(pr.retenue.startswith("-"))
 
     def test_absence_heures_and_retard_same_shape(self):
-        for kind, cells in (("absence", {"qty": "5",
-                                         "mode": "Absence (heures)"}),
+        for kind, cells in (("abs_heures", {"qty": "5"}),
                             ("retard", {"qty": "4"})):
             n0 = self.scr._calc_result.net_a_payer
             r = self._add(kind, **cells)
             self.assertGreater(r._amount, 0)
             self.assertLess(self.scr._calc_result.net_a_payer, n0)
 
-    def test_repeated_absence_retard_sum_matches_engine(self):
-        self._add("absence", qty="2", mode="Absence (jours)")
-        self._add("absence", qty="1", mode="Absence (jours)")
-        self._add("retard", qty="3")
-        self._add("retard", qty="2")
-        for key, amounts in (
-                ("abs_jours", [r._amount for r in self.scr._rows
-                               if r.kind == "absence"]),
-                ("retard", [r._amount for r in self.scr._rows
-                            if r.kind == "retard"])):
+    def test_distinct_absence_retard_types_each_match_engine(self):
+        #  E.4 intentional contract change: abs_jours/abs_heures/retard
+        #  صارت فريدةً كلٌّ على حدة (§F) — الاختبار القديم كان يكرّر
+        #  absence/retard مرّتين على التوالي؛ الآن نتحقّق من ثلاثة أنواعٍ
+        #  متمايزة معاً، كلٌّ يطابق سطره الحقيقيّ في المحرّك.
+        aj = self._add("abs_jours", qty="2")
+        ah = self._add("abs_heures", qty="5")
+        rt = self._add("retard", qty="3")
+        for row, key in ((aj, "abs_jours"), (ah, "abs_heures"), (rt, "retard")):
             eng = sum(float(lv.montant) for lv in self._lines(key))
-            self.assertAlmostEqual(sum(float(a) for a in amounts), eng, 1)
+            self.assertAlmostEqual(float(row._amount), eng, 1, key)
+
+    def test_duplicate_abs_jours_blocked(self):
+        self._add("abs_jours", qty="2")
+        blocked = self.scr._add_row("abs_jours")
+        self.assertIsNone(blocked)
 
     # ---------- Avance ----------
     def test_avance_reduces_net_once_no_base_change(self):
@@ -1766,13 +2078,17 @@ class BulletinTemplateE3UX(unittest.TestCase):
 
     # ---------- §19 إكمال LIBELLÉ ----------
     def test_right_arrow_completes_current_suggestion(self):
+        #  E.4 intentional contract change: "Heures s" كانت تُكمِل نوعاً
+        #  واحداً مُركَّباً — بعد التقسيم (§B) صار "HEURES SUPPLÉMENTAIRES
+        #  (50 %)"/"(100 %)" اقتراحين مختلفين؛ نستعمل بادئةً أدقّ تُميّز
+        #  أحدهما لا محلّ لبسٍ فيه.
         r = self.scr._insert_free_row("A")
         w = r.widgets["libelle"]
-        w.setText("Heures s")
-        w._completer.setCompletionPrefix("Heures s")
+        w.setText("HEURES SUPPLÉMENTAIRES (50")
+        w._completer.setCompletionPrefix("HEURES SUPPLÉMENTAIRES (50")
         ok = w._accept_current_completion()
         self.assertTrue(ok)
-        self.assertEqual(w.text(), "Heures supplémentaires")
+        self.assertEqual(w.text(), "HEURES SUPPLÉMENTAIRES (50 %)")
 
     def test_enter_keeps_typed_text_not_highlighted(self):
         from PySide6.QtCore import Qt as _Qt
@@ -1794,34 +2110,25 @@ class BulletinTemplateE3UX(unittest.TestCase):
         w._on_text_edited("H")
         self.assertTrue(w._completer.popup().isHidden())
 
-    # ---------- §21 مُنتقيات خفيفة ----------
-    def test_hs_absence_use_inline_choice_not_combobox(self):
-        from PySide6.QtWidgets import QComboBox
-        r = self.scr._add_row("hs")
-        self.assertIsInstance(r.widgets["coef"], mod._InlineChoice)
-        self.assertNotIsInstance(r.widgets["coef"], QComboBox)
-        a = self.scr._add_row("absence")
-        self.assertIsInstance(a.widgets["mode"], mod._InlineChoice)
-
-    def test_inline_choice_pick_updates_and_recomputes(self):
-        r = self.scr._add_row("hs")
-        r.set_val("qty", "10")
-        self.scr._recompute()
-        r.widgets["coef"]._pick("100%")
-        self.assertEqual(r.val("coef"), "100%")
-
-    def test_inline_choice_yellow_not_gray(self):
-        r = self.scr._add_row("hs")
-        self.scr._style_field(r.cell_key("coef"))
-        ss = r.widgets["coef"].styleSheet()
-        self.assertIn("background:" + theme.FIELD_EMPTY, ss)
-
-    def test_inline_choice_locked_blocks_menu(self):
-        r = self.scr._add_row("hs")
-        self.scr._set_locked(True)
-        self.assertFalse(r.widgets["coef"]._arrow.isEnabled())
-        r.widgets["coef"]._popup()                    # لا ينفجر، لا قائمة
-        self.assertTrue(r.widgets["coef"].isReadOnly())
+    # ---------- §21 (E.3) → E.4 §B/§D: المُنتقي الخفيف أُلغي لصالح تقسيم النوع ----------
+    #  E.4 intentional contract change: كانت hs/absence نوعاً واحداً بمُنتقي
+    #  ``_InlineChoice`` (coef/mode) داخل السطر — أربعة اختباراتٍ هنا
+    #  (test_hs_absence_use_inline_choice_not_combobox،
+    #  test_inline_choice_pick_updates_and_recomputes،
+    #  test_inline_choice_yellow_not_gray،
+    #  test_inline_choice_locked_blocks_menu) كانت تثبت ذلك المُنتقي
+    #  مباشرةً. E.4 §B/§D يحذف هذا المُنتقي تماماً: كلّ توليفة صارت نوعاً
+    #  ذكيّاً مستقلّاً (hs_50/hs_100/abs_jours/abs_heures) بلا أيّ حقل
+    #  coef/mode إطلاقاً — TAUX عمود عرضٍ محسوبٍ حقيقيّ بدلاً منه (مُختبَرٌ
+    #  في BulletinTemplateE4). الاختبار التالي يثبت الغياب الإيجابيّ لهذا
+    #  الحقل بدل وجوده. الصنف ``_InlineChoice`` نفسه يبقى — بنيةٌ عامّة
+    #  صالحة، فقط بلا مستعملٍ حيّ حالياً بعد إلغاء coef/mode.
+    def test_hs_and_absence_variants_have_no_coef_mode_selector(self):
+        for kind in ("hs_50", "hs_100", "abs_jours", "abs_heures"):
+            r = self.scr._add_row(kind)
+            self.assertNotIn("coef", r.widgets, kind)
+            self.assertNotIn("mode", r.widgets, kind)
+            self.assertIsInstance(r.widgets["libelle"], mod._SmartLibelle, kind)
 
     # ---------- §14 RETENUE حرّة مخفيّة في Zone A/B ----------
     def test_free_retenue_hidden_zone_a_b(self):
@@ -1847,7 +2154,7 @@ class BulletinTemplateE3UX(unittest.TestCase):
         p1.set_val("libelle", "PRIME A"); p1.set_val("gain", "3000")
         p2 = self.scr._insert_row_at("free", "B2", 0)
         p2.set_val("libelle", "IND B2"); p2.set_val("gain", "2000")
-        self.scr._insert_row_at("absence", "A", 1)      # عرضيّ ⇒ يُحذَف
+        self.scr._insert_row_at("abs_jours", "A", 1)     # عرضيّ ⇒ يُحذَف
         self.scr._add_row("iep")
         self.scr._recompute()
         self.scr._on_save()
@@ -1856,7 +2163,7 @@ class BulletinTemplateE3UX(unittest.TestCase):
                 if r.kind == "free"}
         self.assertIn(("PRIME A", "A"), segs)
         self.assertIn(("IND B2", "B2"), segs)          # الموضع محفوظ
-        self.assertEqual([r.kind for r in self.scr._rows].count("absence"), 0)
+        self.assertEqual([r.kind for r in self.scr._rows].count("abs_jours"), 0)
         self.assertEqual([r.kind for r in self.scr._rows].count("iep"), 1)
 
 
@@ -1991,12 +2298,12 @@ class BulletinTemplateValidation(unittest.TestCase):
 
     def test_incomplete_absence(self):
         self._fill_final()
-        self._add("absence", qty="0")
+        self._add("abs_jours", qty="0")
         self.assertTrue(any(p.kind == "row" for p in self._v().incomplete_rows))
 
     def test_incomplete_hs(self):
         self._fill_final()
-        self._add("hs", qty="0")
+        self._add("hs_50", qty="0")
         self.assertFalse(self._v().ready_for_final)
 
     def test_incomplete_retard(self):
@@ -2019,6 +2326,81 @@ class BulletinTemplateValidation(unittest.TestCase):
         self._add("avance", libelle="AVANCE", montant="")   # بلا مبلغ
         self.assertFalse(self._v().ready_for_final)
 
+    # ------- مراجعة عن بعد E4.8 §1: 0% IEP لا يمنع الإصدار النهائي -------
+    def test_iep_zero_percent_final_ready(self):
+        self._fill_final()
+        self.scr._widgets["id_date_embauche"].set_iso("2026-08-15")
+        self._add("iep")                     # اقتراحٌ آليّ تحت الحدّ الأدنى ⇒ 0%
+        v = self._v()
+        self.assertTrue(v.ready_for_final, v.summary_lines())
+
+    def test_iep_manual_zero_final_ready(self):
+        self._fill_final()
+        r = self._add("iep")
+        r.set_val("taux", "0")
+        self.scr._recompute()
+        v = self._v()
+        self.assertTrue(v.ready_for_final, v.summary_lines())
+
+    # ------- مراجعة عن بعد E4.8 §6: حضورٌ مستحيل يمنع الإصدار فقط -------
+    #  الفترة OCTOBRE 2026 (params_2026.json): jours_mois=30 ·
+    #  heures_mois=173.33 (‏``_fill_final`` تضبط mois/annee هذين).
+    def test_attendance_days_exactly_at_capacity_allowed(self):
+        self._fill_final()
+        self._add("abs_jours", qty="30")
+        v = self._v()
+        self.assertTrue(v.ready_for_final, v.summary_lines())
+
+    def test_attendance_days_over_capacity_blocks_final(self):
+        self._fill_final()
+        self._add("abs_jours", qty="31")
+        self.assertFalse(self._v().ready_for_final)
+
+    def test_attendance_hours_exactly_at_capacity_allowed(self):
+        self._fill_final()
+        self._add("abs_heures", qty="173.33")
+        v = self._v()
+        self.assertTrue(v.ready_for_final, v.summary_lines())
+
+    def test_attendance_hours_over_capacity_blocks_final(self):
+        self._fill_final()
+        self._add("abs_heures", qty="174")
+        self.assertFalse(self._v().ready_for_final)
+
+    def test_attendance_retard_over_capacity_blocks_final(self):
+        self._fill_final()
+        self._add("retard", qty="174")
+        self.assertFalse(self._v().ready_for_final)
+
+    def test_attendance_mixed_day_hour_exactly_100_percent_allowed(self):
+        self._fill_final()
+        self._add("abs_jours", qty="15")           # 15/30 = 0.5
+        self._add("abs_heures", qty="86.665")       # 86.665/173.33 ≈ 0.5
+        v = self._v()
+        self.assertTrue(v.ready_for_final, v.summary_lines())
+
+    def test_attendance_mixed_day_hour_over_100_percent_blocks_final(self):
+        self._fill_final()
+        self._add("abs_jours", qty="20")            # 20/30 ≈ 0.667
+        self._add("abs_heures", qty="90")           # + 90/173.33 ≈ 0.519 ⇒ >1
+        self.assertFalse(self._v().ready_for_final)
+
+    def test_attendance_absence_plus_retard_reducers_over_100_percent_blocks_final(self):
+        self._fill_final()
+        self._add("abs_jours", qty="20")
+        self._add("retard", qty="90")
+        self.assertFalse(self._v().ready_for_final)
+
+    def test_incomplete_work_can_still_be_saved_with_impossible_attendance(self):
+        """‏§4: الحفظ لا يستشير هذا التحقّق إطلاقاً — حضورٌ مستحيل يمنع
+        الإصدار النهائي فقط، لا الحفظ."""
+        self._fill_final()
+        self._add("abs_jours", qty="99")
+        self.assertFalse(self._v().ready_for_final)
+        self.scr.flush_draft()
+        path = self.scr._draft_path()
+        self.assertTrue(path and os.path.exists(path))
+
     def test_incomplete_autre(self):
         self._fill_final()
         self._add("autre", montant="1000")         # بلا libellé
@@ -2026,7 +2408,7 @@ class BulletinTemplateValidation(unittest.TestCase):
 
     def test_complete_adaptive_rows_are_ready(self):
         self._fill_final()
-        self._add("hs", qty="10")
+        self._add("hs_50", qty="10")
         self._add("retard", qty="2")
         self._add("avance", libelle="AVANCE", montant="10000")
         self.scr._recompute()
@@ -2098,8 +2480,7 @@ class BulletinTemplateValidation(unittest.TestCase):
     def test_dynamic_rows_restore_keeps_validation_state(self):
         self._fill_final()
         self._set("prime", libelle="PRIME X", gain="")     # ناقصة
-        self._add("hs", qty="8")
-        self._row("hs", -1).set_val("coef", "100%")
+        self._add("hs_100", qty="8")
         self.scr._recompute()
         st = self.scr.draft_state()
         self.assertTrue(st["incomplete"])
@@ -2109,8 +2490,8 @@ class BulletinTemplateValidation(unittest.TestCase):
         self.assertTrue(other._restored_incomplete)
         v = other.validate()
         self.assertTrue(v.incomplete_rows)
-        h = [r for r in other._rows if r.kind == "hs"]
-        self.assertTrue(h and h[-1].val("coef") == "100%")
+        h = [r for r in other._rows if r.kind == "hs_100"]
+        self.assertTrue(h and h[-1].val("qty") == "8")
         other.deleteLater()
 
     def test_clear_resets_warnings(self):
@@ -2193,17 +2574,16 @@ class BulletinTemplateWorkC1(unittest.TestCase):
 
     def test_reopen_incomplete_restores_and_warns(self):
         self._fill_min()
-        self.scr._add_row("hs")
-        self._row("hs", -1).set_val("qty", "8")
-        self._row("hs", -1).set_val("coef", "100%")
+        self.scr._add_row("hs_100")
+        self._row("hs_100", -1).set_val("qty", "8")
         self.scr._recompute()
         self.scr._on_save()
         other = self._reopen()
         self.assertEqual(other._widgets["id_nom"].text(), "BENALI")
         self.assertEqual(other._work_state, "incomplete")
         self.assertTrue(other._warnings_active)       # ⚠️ عند إعادة الفتح (§5)
-        h = [r for r in other._rows if r.kind == "hs"]
-        self.assertTrue(h and h[-1].val("qty") == "8" and h[-1].val("coef") == "100%")
+        h = [r for r in other._rows if r.kind == "hs_100"]
+        self.assertTrue(h and h[-1].val("qty") == "8")
         other.deleteLater()
 
     def test_classifications_persist(self):
@@ -2325,26 +2705,23 @@ class RendererFromViewC2(unittest.TestCase):
 
     # ---- الاختبارات ----
     def test_all_dynamic_rubriques_rendered(self):
-        self._full(iep={}, hs={"qty": "10", "coef": "100%"},
-                   absence={"qty": "2", "mode": "Absence (jours)"},
+        self._full(iep={}, hs_100={"qty": "10"}, abs_jours={"qty": "2"},
                    retard={"qty": "3"},
                    avance={"libelle": "AVANCE", "montant": "10000"},
                    autre={"sens": "Gain", "libelle": "BONUS", "montant": "1500"})
         libs = " ".join(r["libelle"] for r in self._rows())
         #  E.3-Review §1/§2: LIBELLÉ المعروض هو نصّ الشاشة الحرفيّ (WYSIWYG)
-        #  — لا تسميةٌ فرنسيّة كنسيّة مُستبدَلة (كانت التسمية القديمة عبر
-        #  مسار BulletinView وحده تكتب "IND. EXPÉRIENCE PROF." رغم أنّ
-        #  الشاشة تعرض "IEP / Ancienneté" فعلياً).
+        #  — لا تسميةٌ فرنسيّة كنسيّة مُستبدَلة. E.4 §C: التسميات الافتراضيّة
+        #  الجديدة بأحرفٍ كبيرة بالكامل (كانت "IEP / Ancienneté" مثلاً).
         for token in ("SALAIRE DE BASE", "PRIME DE RENDEMENT", "PANIER",
                       "TRANSPORT", "RETENUE SÉCU", "RETENUE IRG", "AVANCE",
-                      "BONUS", "Ancienneté", "Heures supplémentaires",
-                      "Absence", "Retard"):
+                      "BONUS", "ANCIENNETÉ", "HEURES SUPPLÉMENTAIRES",
+                      "ABSENCE (JOURS)", "RETARD"):
             self.assertIn(token, libs, token)
 
     def test_absence_retard_shown_as_positive_retenue(self):
         #  E.3 §9: المُنقِصات تُعرَض اقتطاعاً **موجباً** في RETENUE — لا −GAIN.
-        self._full(absence={"qty": "2", "mode": "Absence (jours)"},
-                   retard={"qty": "3"})
+        self._full(abs_jours={"qty": "2"}, retard={"qty": "3"})
         for r in self._rows():
             if r["code"] in ("4000", "4010", "4020"):
                 self.assertEqual(r["gain"].strip(), "", r)
@@ -2353,8 +2730,7 @@ class RendererFromViewC2(unittest.TestCase):
 
     def test_columns_balance_to_displayed_net(self):
         #  E.3 §10/§29: بعد المصالحة  Σ(GAIN معروض) − Σ(RETENUE معروض) == NET.
-        self._full(iep={}, hs={"qty": "10", "coef": "50%"},
-                   absence={"qty": "1", "mode": "Absence (jours)"},
+        self._full(iep={}, hs_50={"qty": "10"}, abs_jours={"qty": "1"},
                    retard={"qty": "2"},
                    avance={"libelle": "AV", "montant": "5000"})
         import ui.hr.paie.presentation as PZ
@@ -2408,8 +2784,7 @@ class RendererFromViewC2(unittest.TestCase):
         self.assertEqual(self.scr._widgets["id_situation_familiale"].text(), "")
 
     def test_docx_pdf_build_from_view(self):
-        self._full(absence={"qty": "2", "mode": "Absence (jours)"},
-                   hs={"qty": "6", "coef": "100%"})
+        self._full(abs_jours={"qty": "2"}, hs_100={"qty": "6"})
         tpl = T.get_renderer("simple")
         for ext, builder in ((".docx", tpl.build_docx), (".pdf", tpl.build_pdf)):
             p = os.path.join(self._tmp, "b" + ext)
@@ -2546,8 +2921,8 @@ class FinalizeLockC3(unittest.TestCase):
 
     def test_lock_covers_all_inputs_zoom_still_works(self):
         self._fill_final()
-        self.scr._add_row("hs")
-        self._row("hs", -1).set_val("qty", "6")
+        self.scr._add_row("hs_50")
+        self._row("hs_50", -1).set_val("qty", "6")
         self.scr._recompute()
         self.scr._on_finalize()
         # كلّ مدخلات الترويسة والصفوف للقراءة فقط
@@ -2819,9 +3194,8 @@ class SmartNextD(unittest.TestCase):
         self._sr(s, "prime").set_val("soumis", "Net (ni CNAS ni IRG)")
         if extras:
             for kind, cells in (("iep", {}),
-                                ("hs", {"qty": "10", "coef": "100%"}),
-                                ("absence", {"qty": "2",
-                                             "mode": "Absence (jours)"}),
+                                ("hs_100", {"qty": "10"}),
+                                ("abs_jours", {"qty": "2"}),
                                 ("retard", {"qty": "3"}),
                                 ("avance", {"libelle": "AV", "montant": "9000"}),
                                 ("autre", {"sens": "Gain", "libelle": "B",
@@ -2904,10 +3278,11 @@ class SmartNextD(unittest.TestCase):
         self._fill()
         self.scr.create_next_period_work()
         kinds = [r.kind for r in self.scr._rows]
-        for gone in ("absence", "retard", "hs", "avance", "autre"):
+        for gone in ("abs_jours", "abs_heures", "retard", "hs_50", "hs_100",
+                    "avance", "autre"):
             self.assertNotIn(gone, kinds, gone)
         # لا widgets ميتة لصفوف محذوفة
-        self.assertFalse(any(k.startswith("r") and "absence" in k
+        self.assertFalse(any(k.startswith("r") and "abs_jours" in k
                              for k in self.scr._widgets))
         self.assertEqual(len(self.scr._nav_order),
                          len([k for k in self.scr._nav_order]))
@@ -3040,7 +3415,8 @@ class SmartNextD(unittest.TestCase):
         for keep in ("salaire", "prime", "iep", "panier", "transport"):
             self.assertIn(keep, kinds, keep)
         # drop
-        for gone in ("absence", "retard", "hs", "avance", "autre"):
+        for gone in ("abs_jours", "abs_heures", "retard", "hs_50", "hs_100",
+                    "avance", "autre"):
             self.assertNotIn(gone, kinds, gone)
         # recompute + independence + no artifacts
         self.assertTrue(self.scr._computed)
@@ -3163,24 +3539,30 @@ class BulletinTemplateE3Review(unittest.TestCase):
         self.assertIsNotNone(pr)
         self.assertGreater(_money(pr.gain), 0)
 
-    def test_hs_qty_and_coef_preserved(self):
-        r = self.scr._add_row("hs")
+    def test_hs50_code_qty_and_actual_rate_preserved(self):
+        #  E.4 intentional contract change: TAUX لم يعد يعرض "50%" نصّاً
+        #  (كان مُنتقياً داخل سطر "hs" مُركَّب) — hs_50 صار نوعاً مستقلاً
+        #  فيعرض المعدَّل الساعيّ المُعوَّض الفعليّ (§D) بدلاً منه.
+        r = self.scr._add_row("hs_50")
         r.set_val("code", "SUP")
-        r.set_val("qty", "10"); r.set_val("coef", "50%")
+        r.set_val("qty", "10")
         self.scr._recompute()
         pr = self._presented_row(code="SUP")
         self.assertIsNotNone(pr)
-        self.assertEqual(pr.taux, "50%")
+        self.assertGreater(_money(pr.taux), 0)          # معدَّلٌ حقيقيّ لا "50%"
         self.assertGreater(_money(pr.gain), 0)
 
-    def test_absence_qty_mode_and_positive_retenue_preserved(self):
-        r = self.scr._add_row("absence")
+    def test_abs_jours_code_qty_and_actual_rate_preserved(self):
+        #  E.4 intentional contract change: TAUX لم يعد يعرض "Absence
+        #  (jours)" نصّاً (كان مُنتقياً داخل سطر "absence" مُركَّب) —
+        #  abs_jours صار نوعاً مستقلاً فيعرض taux_journalier الفعليّ (§D).
+        r = self.scr._add_row("abs_jours")
         r.set_val("code", "ABS01")
-        r.set_val("qty", "2"); r.set_val("mode", "Absence (jours)")
+        r.set_val("qty", "2")
         self.scr._recompute()
         pr = self._presented_row(code="ABS01")
         self.assertIsNotNone(pr)
-        self.assertEqual(pr.taux, "Absence (jours)")
+        self.assertGreater(_money(pr.taux), 0)
         self.assertTrue(pr.retenue and not pr.gain)
         self.assertFalse(pr.retenue.startswith("-"))
 
@@ -3283,8 +3665,8 @@ class BulletinTemplateE3Review(unittest.TestCase):
     # ---------- §10: صيغة المجاميع المعروضة (بلا تغيير) ----------
     def test_display_totals_formula_unchanged(self):
         self._conv("A", "PRIME", gain="4000")
-        r = self.scr._add_row("absence")
-        r.set_val("qty", "2"); r.set_val("mode", "Absence (jours)")
+        r = self.scr._add_row("abs_jours")
+        r.set_val("qty", "2")
         self.scr._recompute()
         pres = self.scr._presented
         self.assertAlmostEqual(
@@ -3367,6 +3749,802 @@ class BulletinTemplateE3Review(unittest.TestCase):
             self.assertIsNotNone(pr, code)
             self.assertEqual(_money(pr.gain), val, code)
             self.assertEqual(pr.retenue, "", code)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateE4(unittest.TestCase):
+    """Phase E.4 — PRORATA_MIXTE (تنسيب سلة/نقل يجمع الأيام والساعات) +
+    خلايا عرضٍ محسوبة إضافيّة (BASE/TAUX الفعليّان) + عقد CODE الرقميّ
+    للأنواع الذكيّة. نطاقٌ مقصودٌ (انظر التقرير): لا إعادة تسمية kind
+    لـ hs/absence (تبقى ``hs``/``absence`` بمُنتقياتهما الحيّة كما في
+    E.3 — محميّة صراحةً)؛ TAUX الحيّ محجوزٌ لهما، والفرق الجديد يقتصر على
+    ما لا يتصادم مع تلك المُنتقيات (IEP/Retard/Panier/Transport)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_e4_")
+        _isolate_db(self._tmp)
+        mod.confirm = lambda *_a, **_k: True
+        import ui2.alerts as _al
+        self._al, self._al_warn = _al, _al.warn
+        _al.warn = lambda *_a, **_k: None
+        self.scr = BulletinTemplateScreen(conn=None)
+        w = self.scr._widgets
+        w["mois"].setText("JUIN"); w["annee"].setText("2026")
+        w["id_date_embauche"].set_iso("2016-06-14")
+        self._sr = [r for r in self.scr._rows if r.kind == "salaire"][0]
+        self._sr.set_val("gain", "27472.53"); self._sr.set_val("nbase", "26")
+        self._pan = [r for r in self.scr._rows if r.kind == "panier"][0]
+        self._tra = [r for r in self.scr._rows if r.kind == "transport"][0]
+        self._pan.set_val("gain", "2500")           # = BASE (نفس الخليّة، §8.7)
+        self._tra.set_val("gain", "2500")
+        self.scr._recompute()
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        self._al.warn = self._al_warn
+        os.environ.pop(paths._DATA_DIR_ENV_OVERRIDE, None)
+
+    # ---------- §3/§4: PRORATA_MIXTE افتراضيّ لعملٍ جديد ----------
+    def test_new_work_defaults_to_prorata_mixte(self):
+        self.assertEqual(self.scr._prorata_policy, "PRORATA_MIXTE")
+
+    def test_legacy_load_without_policy_keeps_prorata_heures(self):
+        self.scr.apply_draft({"header": {}, "rows": []})   # بلا prorata_policy
+        self.assertEqual(self.scr._prorata_policy, "PRORATA_HEURES")
+
+    def test_draft_roundtrip_preserves_explicit_policy(self):
+        st = self.scr.draft_state()
+        self.assertEqual(st["prorata_policy"], "PRORATA_MIXTE")
+        other = BulletinTemplateScreen(conn=None)
+        other.apply_draft(st)
+        self.assertEqual(other._prorata_policy, "PRORATA_MIXTE")
+        other.deleteLater()
+
+    # ---------- §20: الحالة الذهبية الحقيقيّة عبر الشاشة الكاملة ----------
+    def test_real_slip_panier_taux_and_gain_via_screen(self):
+        #  E.4 §F: abs_heures صار فريداً (سطرٌ واحد) — المستخدم يُدخل
+        #  المجموع الشهريّ (72 = 64 غير مبرَّر + 8 مبرَّر) في سطرٍ واحد،
+        #  بدل سطرين منفصلين كما في E.3 (نفس مبدأ Avance §8.11).
+        a = self.scr._add_row("abs_heures")
+        a.set_val("qty", "72")
+        r = self.scr._add_row("retard")
+        r.set_val("qty", "11.38")
+        self.scr._recompute()
+        pr = self._presented_row(code=mod._C["panier"])
+        self.assertIsNotNone(pr)
+        self.assertEqual(pr.taux, "101,33")
+        self.assertEqual(_money(pr.gain), 1461.52)
+
+    def _presented_row(self, code=None):
+        for pr in self.scr._presented.rows:
+            if pr.code == code:
+                return pr
+        return None
+
+    # ---------- §8.6: IEP BASE = مبلغ سطر الأجر القاعديّ الفعليّ ----------
+    def test_iep_base_shows_actual_salaire_amount(self):
+        r = self.scr._add_row("iep")
+        r.set_val("taux", "0.10")
+        self.scr._recompute()
+        extra = mod._row_display_extra(r, self.scr._bulletin_view)
+        self.assertEqual(extra["nbase"], Decimal("27472.53"))
+
+    def test_iep_row_paints_without_swallowed_exception(self):
+        #  انحدارٌ حقيقيّ اكتُشف أثناء QA البصريّ اليدويّ لهذه المراجعة:
+        #  ``computed_extra=("base",)`` (اسم عمودٍ خاطئ — الصحيح "nbase")
+        #  كان يُسقِط KeyError داخل ``_paint_form``، تُبتلَع صامتاً في
+        #  ``paintEvent`` (except عامّ + logger.warning فقط) — فيفشل رسم
+        #  الاستمارة **كاملةً** (لا TOTAL/NET حتى) كلّما وُجد سطر IEP، بلا
+        #  أن يفشل أيّ اختبار (canvas.render لا يُعيد الاستثناء). يتحقّق
+        #  هذا الاختبار من غياب أيّ سجلّ فشل رسمٍ عبر مراقبة logger مباشرةً.
+        import logging
+        r = self.scr._add_row("iep")
+        r.set_val("taux", "0.10")
+        self.scr._recompute()
+        self.scr._relayout()
+        from PySide6.QtGui import QImage
+        img = QImage(1200, 1800, QImage.Format_ARGB32)
+        self.scr._canvas.resize(1200, 1800)
+        log_records = []
+        handler = logging.Handler()
+        handler.emit = lambda rec: log_records.append(rec)
+        paie_logger = logging.getLogger("ui2.hr.paie.bulletin_template")
+        paie_logger.addHandler(handler)
+        try:
+            self.scr._canvas.render(img)
+        finally:
+            paie_logger.removeHandler(handler)
+        failures = [rec for rec in log_records if "رسم الاستمارة فشل" in
+                   rec.getMessage()]
+        self.assertEqual(failures, [])
+
+    # ---------- §8.3: Retard TAUX = taux_horaire الفعليّ ----------
+    def test_retard_taux_shows_actual_hourly_rate(self):
+        r = self.scr._add_row("retard")
+        r.set_val("qty", "5")
+        self.scr._recompute()
+        extra = mod._row_display_extra(r, self.scr._bulletin_view)
+        self.assertEqual(extra["taux"], self.scr._bulletin_view.result.taux_horaire)
+
+    # ---------- §8.7/§8.8: Panier/Transport BASE يبقى ثابتاً رغم الغياب ----------
+    def test_panier_base_unchanged_gain_reduced_by_absence(self):
+        base0 = self._pan.val("gain")
+        a = self.scr._add_row("abs_heures")
+        a.set_val("qty", "72")
+        self.scr._recompute()
+        self.assertEqual(self._pan.val("gain"), base0)      # BASE لم يتغيّر
+        self.assertLess(self.scr._bulletin_view.result.panier, Decimal("2500"))
+
+    def test_panier_gain_returns_to_base_when_attendance_full(self):
+        a = self.scr._add_row("abs_heures")
+        a.set_val("qty", "72")
+        self.scr._recompute()
+        self.scr._remove_row(a)
+        self.scr._recompute()
+        self.assertEqual(self.scr._bulletin_view.result.panier, Decimal("2500.00"))
+
+    # ---------- §6: عقد CODE الرقميّ ----------
+    def test_code_validator_rejects_letters_for_smart_kinds(self):
+        r = self.scr._add_row("iep")
+        w = r.widgets["code"]
+        v = w.validator()
+        self.assertIsNotNone(v)
+        state, _, _ = v.validate("A1", 2)
+        from PySide6.QtGui import QValidator
+        self.assertNotEqual(state, QValidator.Acceptable)
+        state2, _, _ = v.validate("110", 3)
+        self.assertEqual(state2, QValidator.Acceptable)
+
+    def test_code_validator_absent_for_free_rows(self):
+        r = self.scr._insert_free_row("A")
+        self.assertIsNone(r.widgets["code"].validator())
+
+    def test_legacy_long_manual_code_not_truncated(self):
+        #  E.4 §6: setText برمجيّاً (استعادة/تحويل) لا يمسّه المُدقِّق ولا
+        #  حدّ طول — رمزٌ قديم أطول من 3 خانات يبقى كما هو بالضبط.
+        r = self.scr._add_row("abs_jours")
+        r.set_val("code", "ABS01")
+        self.assertEqual(r.val("code"), "ABS01")
+
+    # ---------- §14: اكتمال CODE الرقميّ عند الإصدار فقط ----------
+    def test_partial_numeric_code_flagged_invalid(self):
+        r = self.scr._add_row("iep")
+        r.set_val("code", "11")           # رقميّ لكن غير مكتمل
+        r.set_val("taux", "0.05")
+        self.scr._recompute()
+        v = self.scr._validation
+        self.assertTrue(any(p.key == r.cell_key("code") for p in v.problems))
+
+    def test_legacy_text_code_not_flagged(self):
+        r = self.scr._add_row("iep")
+        r.set_val("code", "IEP")          # نصّيّ قديم — معفًى
+        r.set_val("taux", "0.05")
+        self.scr._recompute()
+        v = self.scr._validation
+        self.assertFalse(any(p.key == r.cell_key("code") for p in v.problems))
+
+    def test_complete_numeric_code_not_flagged(self):
+        r = self.scr._add_row("iep")
+        r.set_val("code", "110")
+        r.set_val("taux", "0.05")
+        self.scr._recompute()
+        v = self.scr._validation
+        self.assertFalse(any(p.key == r.cell_key("code") for p in v.problems))
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateE4Migration(unittest.TestCase):
+    """E.4 §G — هجرة صفوفٍ محفوظة قبل E.4: hs+coef → hs_50/hs_100 ·
+    absence+mode → abs_jours/abs_heures (لا تحويل إلى retard إطلاقاً) ·
+    الحفاظ على segment/order/libelle/qty/رمزٍ يدويّ/iep_manual/review."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_e4mig_")
+        _isolate_db(self._tmp)
+        mod.confirm = lambda *_a, **_k: True
+        self.scr = BulletinTemplateScreen(conn=None)
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        os.environ.pop(paths._DATA_DIR_ENV_OVERRIDE, None)
+
+    def _row(self, kind):
+        rs = [r for r in self.scr._rows if r.kind == kind]
+        return rs[0] if rs else None
+
+    # ---------- hs+coef → hs_50/hs_100 ----------
+    def test_legacy_hs_coef50_migrates_to_hs50(self):
+        legacy = {"header": {}, "rows": [
+            {"kind": "hs", "segment": "A", "order": 0,
+             "cells": {"code": "HS", "libelle": "Heures supplémentaires",
+                      "qty": "12", "coef": "50%"},
+             "code_manual": False}]}
+        self.scr.apply_draft(legacy)
+        r = self._row("hs_50")
+        self.assertIsNotNone(r)
+        self.assertIsNone(self._row("hs"))
+        self.assertEqual(r.val("qty"), "12")
+        self.assertEqual(r.segment, "A")
+
+    def test_legacy_hs_coef100_migrates_to_hs100(self):
+        legacy = {"header": {}, "rows": [
+            {"kind": "hs", "segment": "A", "order": 0,
+             "cells": {"code": "HS", "qty": "8", "coef": "100%"},
+             "code_manual": False}]}
+        self.scr.apply_draft(legacy)
+        r = self._row("hs_100")
+        self.assertIsNotNone(r)
+        self.assertEqual(r.val("qty"), "8")
+
+    # ---------- absence+mode → abs_jours/abs_heures (لا Retard أبداً) ----------
+    def test_legacy_absence_jours_migrates_to_abs_jours(self):
+        legacy = {"header": {}, "rows": [
+            {"kind": "absence", "segment": "A", "order": 0,
+             "cells": {"code": "ABS", "qty": "3", "mode": "Absence (jours)"},
+             "code_manual": False}]}
+        self.scr.apply_draft(legacy)
+        r = self._row("abs_jours")
+        self.assertIsNotNone(r)
+        self.assertIsNone(self._row("absence"))
+        self.assertEqual(r.val("qty"), "3")
+
+    def test_legacy_absence_heures_migrates_to_abs_heures_never_retard(self):
+        legacy = {"header": {}, "rows": [
+            {"kind": "absence", "segment": "A", "order": 0,
+             "cells": {"code": "ABS", "qty": "5", "mode": "Absence (heures)"},
+             "code_manual": False}]}
+        self.scr.apply_draft(legacy)
+        r = self._row("abs_heures")
+        self.assertIsNotNone(r)
+        self.assertIsNone(self._row("retard"))          # §G: ممنوعٌ صراحةً
+        self.assertEqual(r.val("qty"), "5")
+
+    # ---------- CODE: آليّ يتبنّى الجديد؛ يدويّ يبقى حرفياً ----------
+    def test_legacy_auto_code_adopts_e4_default(self):
+        legacy = {"header": {}, "rows": [
+            {"kind": "hs", "segment": "A", "order": 0,
+             "cells": {"code": "HS", "qty": "1", "coef": "50%"},
+             "code_manual": False}]}
+        self.scr.apply_draft(legacy)
+        self.assertEqual(self._row("hs_50").val("code"), "120")
+
+    def test_legacy_manual_code_preserved_verbatim_even_old_letters(self):
+        legacy = {"header": {}, "rows": [
+            {"kind": "absence", "segment": "A", "order": 0,
+             "cells": {"code": "ABS-SPECIAL", "qty": "2",
+                      "mode": "Absence (jours)"},
+             "code_manual": True}]}
+        self.scr.apply_draft(legacy)
+        r = self._row("abs_jours")
+        self.assertEqual(r.val("code"), "ABS-SPECIAL")   # لا تعديل، لا قصّ
+        self.assertTrue(r._code_manual)
+
+    def test_legacy_manual_4digit_code_preserved(self):
+        legacy = {"header": {}, "rows": [
+            {"kind": "iep", "segment": "A", "order": 0,
+             "cells": {"code": "9999", "taux": "0.05"},
+             "code_manual": True}]}
+        self.scr.apply_draft(legacy)
+        r = self._row("iep")
+        self.assertEqual(r.val("code"), "9999")
+
+    def test_legacy_iep_auto_code_adopts_e4_default(self):
+        legacy = {"header": {}, "rows": [
+            {"kind": "iep", "segment": "A", "order": 0,
+             "cells": {"code": "IEP", "taux": "0.05"},
+             "code_manual": False}]}
+        self.scr.apply_draft(legacy)
+        self.assertEqual(self._row("iep").val("code"), "110")
+
+    # ---------- الحفاظ على الحالة الكاملة ----------
+    def test_legacy_migration_preserves_segment_and_relative_order(self):
+        #  hs_100 مُلزَمٌ بـZone A (§7) — segment=A صالحة. الترتيب النسبيّ
+        #  بين صفّين في نفس الشريحة يُحفَظ (يُعاد تسويته 0،1 — ‏
+        #  ``_reindex_segments`` — لا القيمة الخام نفسها).
+        legacy = {"header": {}, "rows": [
+            {"kind": "iep", "segment": "A", "order": 0,
+             "cells": {"code": "IEP", "taux": "0.05"}, "code_manual": False},
+            {"kind": "hs", "segment": "A", "order": 1,
+             "cells": {"code": "HS", "qty": "7", "coef": "100%"},
+             "code_manual": False}]}
+        self.scr.apply_draft(legacy)
+        r = self._row("hs_100")
+        self.assertIsNotNone(r)
+        self.assertEqual(r.segment, "A")
+        self.assertGreater(r.order, self._row("iep").order)
+
+    def test_legacy_hs_in_wrong_segment_migrates_then_gets_demoted(self):
+        #  يثبت أنّ الهجرة (hs→hs_100) وحارس المنطقة (E.3-Review §7) يتركّبان
+        #  بشكلٍ صحيح: تُهاجَر الكينونة أوّلاً، ثمّ يُكتشَف عدم توافق
+        #  segment=B2 مع Zone A المُلزَمة لـhs_100، فتُنزَّل إلى حرّ+مراجعة
+        #  (لا فقدان بيانات — qty يظهر في LIBELLÉ).
+        legacy = {"header": {}, "rows": [
+            {"kind": "hs", "segment": "B2", "order": 0,
+             "cells": {"code": "HS", "qty": "7", "coef": "100%"},
+             "code_manual": False}]}
+        self.scr.apply_draft(legacy)
+        self.assertIsNone(self._row("hs_100"))
+        demoted = [r for r in self.scr._rows if r._review == "segment_mismatch"]
+        self.assertEqual(len(demoted), 1)
+        self.assertIn("7", demoted[0].val("libelle"))
+
+    def test_legacy_unknown_kind_still_rejected(self):
+        legacy = {"header": {}, "rows": [
+            {"kind": "bogus_old_kind", "cells": {}}]}
+        # لا استثناء — يُتجاهَل السطر كما كان قبل E.4 تماماً
+        self.scr.apply_draft(legacy)
+        self.assertFalse(any(r.role == "optional" for r in self.scr._rows))
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateE4Invariants(unittest.TestCase):
+    """E.4 §I/§L — الحساب يُعاد بناؤه من الصفر من المدخلات الخام الحاليّة
+    دائماً: idempotence، استقلاليّة الترتيب، تناظر إضافة/حذف، وتطابق
+    شاشة↔PDF/DOCX لكلّ الخلايا المحسوبة الجديدة."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_e4inv_")
+        _isolate_db(self._tmp)
+        mod.confirm = lambda *_a, **_k: True
+        import ui2.alerts as _al
+        self._al, self._al_warn = _al, _al.warn
+        _al.warn = lambda *_a, **_k: None
+        self.scr = BulletinTemplateScreen(conn=None)
+        w = self.scr._widgets
+        w["mois"].setText("JUIN"); w["annee"].setText("2026")
+        w["id_date_embauche"].set_iso("2016-06-14")
+        [r for r in self.scr._rows if r.kind == "salaire"][0].set_val(
+            "gain", "45000")
+        [r for r in self.scr._rows if r.kind == "panier"][0].set_val(
+            "gain", "3000")
+        [r for r in self.scr._rows if r.kind == "transport"][0].set_val(
+            "gain", "2500")
+        self.scr._recompute()
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        self._al.warn = self._al_warn
+        os.environ.pop(paths._DATA_DIR_ENV_OVERRIDE, None)
+
+    def _fingerprint(self):
+        r = self.scr._calc_result
+        v = self.scr._bulletin_view
+        return (str(r.base_cnas), str(r.retenue_cnas), str(r.base_irg),
+               str(r.retenue_irg), str(r.total_gain), str(r.total_retenue),
+               str(v.e))
+
+    # ---------- I.17: إعادة حساب متكرّرة بلا تغيير مُدخل ----------
+    def test_repeated_recompute_idempotent(self):
+        r = self.scr._add_row("abs_jours")
+        r.set_val("qty", "2")
+        self.scr._recompute()
+        fp1 = self._fingerprint()
+        for _ in range(20):
+            self.scr._recompute()
+        self.assertEqual(self._fingerprint(), fp1)
+
+    # ---------- I.1-I.2: ترتيب الإدخال لا يغيّر الناتج النهائيّ ----------
+    def test_order_independence_panier_then_absence_vs_reverse(self):
+        base = mod.BulletinTemplateScreen(conn=None)
+        w = base._widgets
+        w["mois"].setText("JUIN"); w["annee"].setText("2026")
+        [r for r in base._rows if r.kind == "salaire"][0].set_val("gain", "45000")
+        r1 = base._add_row("abs_heures"); r1.set_val("qty", "10")
+        [r for r in base._rows if r.kind == "panier"][0].set_val("gain", "3000")
+        base._recompute()
+        fp_a = (str(base._bulletin_view.e), str(base._bulletin_view.result.panier))
+
+        other = mod.BulletinTemplateScreen(conn=None)
+        w2 = other._widgets
+        w2["mois"].setText("JUIN"); w2["annee"].setText("2026")
+        [r for r in other._rows if r.kind == "salaire"][0].set_val("gain", "45000")
+        [r for r in other._rows if r.kind == "panier"][0].set_val("gain", "3000")
+        r2 = other._add_row("abs_heures"); r2.set_val("qty", "10")
+        other._recompute()
+        fp_b = (str(other._bulletin_view.e), str(other._bulletin_view.result.panier))
+
+        self.assertEqual(fp_a, fp_b)
+        base.deleteLater(); other.deleteLater()
+
+    # ---------- I.5/I.6: إضافة ثم حذف تعيد الحالة بالضبط ----------
+    def test_add_then_delete_returns_to_original_state(self):
+        fp0 = self._fingerprint()
+        r = self.scr._add_row("abs_jours")
+        r.set_val("qty", "5")
+        self.scr._recompute()
+        self.assertNotEqual(self._fingerprint(), fp0)
+        self.scr._remove_row(r)
+        self.scr._recompute()
+        self.assertEqual(self._fingerprint(), fp0)
+
+    # ---------- I.7: تعديلٌ متكرّر لنفس القيمة يعطي نفس النتيجة ----------
+    def test_edit_value_back_and_forth_symmetry(self):
+        r = self.scr._add_row("abs_heures")
+        r.set_val("qty", "8")
+        self.scr._recompute()
+        fp_8 = self._fingerprint()
+        r.set_val("qty", "4")
+        self.scr._recompute()
+        self.assertNotEqual(self._fingerprint(), fp_8)
+        r.set_val("qty", "8")
+        self.scr._recompute()
+        self.assertEqual(self._fingerprint(), fp_8)
+
+    # ---------- I.9/I.10: حذف بترتيب مختلف يعطي نفس الحالة النهائيّة ----------
+    def test_delete_in_different_order_same_final_state(self):
+        a = self.scr._add_row("abs_jours"); a.set_val("qty", "1")
+        b = self.scr._add_row("retard"); b.set_val("qty", "2")
+        c = self.scr._add_row("hs_50"); c.set_val("qty", "3")
+        self.scr._recompute()
+        self.scr._remove_row(b)
+        self.scr._remove_row(a)
+        self.scr._remove_row(c)
+        self.scr._recompute()
+        fp_1 = self._fingerprint()
+
+        a2 = self.scr._add_row("abs_jours"); a2.set_val("qty", "1")
+        b2 = self.scr._add_row("retard"); b2.set_val("qty", "2")
+        c2 = self.scr._add_row("hs_50"); c2.set_val("qty", "3")
+        self.scr._recompute()
+        self.scr._remove_row(c2)
+        self.scr._remove_row(b2)
+        self.scr._remove_row(a2)
+        self.scr._recompute()
+        fp_2 = self._fingerprint()
+        self.assertEqual(fp_1, fp_2)
+
+    # ---------- I.12/I.13: تغيير الأجر بعد كلّ الصفوف يحدِّث كلّ التابع ----------
+    def test_change_salary_after_all_rows_updates_everything(self):
+        a = self.scr._add_row("hs_50"); a.set_val("qty", "10")
+        iep = self.scr._add_row("iep"); iep.set_val("taux", "0.05")
+        self.scr._recompute()
+        net0 = self.scr._bulletin_view.e
+        cnas0 = self.scr._bulletin_view.b
+        [r for r in self.scr._rows if r.kind == "salaire"][0].set_val(
+            "gain", "60000")
+        self.scr._recompute()
+        self.assertNotEqual(self.scr._bulletin_view.e, net0)
+        self.assertNotEqual(self.scr._bulletin_view.b, cnas0)
+        self.assertGreater(a._amount, 0)
+        self.assertGreater(iep._amount, 0)
+
+    # ---------- Save/Open: نفس الحالة بالضبط ----------
+    def test_save_reopen_gives_identical_fingerprint(self):
+        r = self.scr._add_row("abs_jours"); r.set_val("qty", "3")
+        self.scr._widgets["emp_raison_sociale"].setText("SARL X")
+        self.scr._widgets["emp_adresse"].setText("ADR")
+        self.scr._widgets["emp_cnas"].setText("16 412 078 56")
+        self.scr._widgets["id_nom"].setText("BENALI")
+        self.scr._widgets["id_prenom"].setText("K")
+        self.scr._widgets["id_lieu_naissance"].setText("ALGER")
+        self.scr._widgets["id_fonction"].setText("C")
+        self.scr._widgets["id_date_naissance"].set_iso("1990-05-10")
+        self.scr._recompute()
+        fp0 = self._fingerprint()
+        self.scr._on_save()
+        other = BulletinTemplateScreen(conn=None)
+        other.load_work(database.get_hr_document(self.scr._work_id))
+        r_cnas, r_ret, i_base, i_ret, tg, tr, net = fp0
+        oc = other._calc_result
+        ov = other._bulletin_view
+        self.assertEqual(str(oc.base_cnas), r_cnas)
+        self.assertEqual(str(oc.retenue_cnas), r_ret)
+        self.assertEqual(str(ov.e), net)
+        other.deleteLater()
+
+    # ---------- Screen ↔ Presented (PDF/DOCX) تطابق لكلّ الخلايا الجديدة ----------
+    def test_screen_and_presented_parity_for_all_e4_computed_cells(self):
+        aj = self.scr._add_row("abs_jours"); aj.set_val("code", "AJ1")
+        aj.set_val("qty", "2")
+        ah = self.scr._add_row("abs_heures"); ah.set_val("code", "AH1")
+        ah.set_val("qty", "5")
+        rt = self.scr._add_row("retard"); rt.set_val("code", "RT1")
+        rt.set_val("qty", "3")
+        h5 = self.scr._add_row("hs_50"); h5.set_val("code", "H51")
+        h5.set_val("qty", "10")
+        h1 = self.scr._add_row("hs_100"); h1.set_val("code", "H11")
+        h1.set_val("qty", "4")
+        iep = self.scr._add_row("iep"); iep.set_val("code", "IE1")
+        iep.set_val("taux", "0.05")
+        av = self.scr._add_row("avance"); av.set_val("code", "AV1")
+        av.set_val("montant", "1000")
+        self.scr._recompute()
+        pres = self.scr._presented
+        by_code = {p.code: p for p in pres.rows}
+        #  E.4 §8: TAUX محسوبٌ للأنواع الأربعة؛ IEP استثناءٌ — TAUX عندها
+        #  مدخلٌ يدويّ (النسبة)، والمحسوب هو BASE (§8.6) — خطأٌ سابقٌ هنا
+        #  (فحص .taux لِـIEP أيضاً) أخفى عطلاً حقيقياً (مفتاح عمودٍ خاطئ
+        #  "base" بدل "nbase" كان يُسقِط رسم الاستمارة صامتاً كلّما وُجد
+        #  IEP — اكتُشف أثناء QA البصريّ اليدويّ لهذه المراجعة، وأُصلح).
+        for code in ("AJ1", "AH1", "RT1", "H51", "H11"):
+            self.assertIn(code, by_code, code)
+            self.assertTrue(by_code[code].taux, code)
+        self.assertIn("IE1", by_code)
+        self.assertTrue(by_code["IE1"].nbase, "IEP BASE يجب أن يكون محسوباً")
+        self.assertEqual(_money(by_code["IE1"].nbase), 45000.0)
+        self.assertIn("AV1", by_code)
+        self.assertTrue(by_code["AV1"].retenue)
+        pan = [p for p in pres.rows if p.code == mod._C["panier"]][0]
+        self.assertTrue(pan.taux)
+        self.assertTrue(pan.gain)
+
+    def test_actual_pdf_and_docx_contain_same_e4_values_as_screen(self):
+        #  E.4 §L: لا يكفي إثبات لقطة العرض في الذاكرة — نتحقّق من ملفّ
+        #  PDF/DOCX فعليّ مُولَّد، أنّ نفس القيَم المحسوبة (لا صيغة موازية
+        #  في أيّ مُصيِّر) تظهر فيه حرفياً.
+        for k, v in {"emp_raison_sociale": "SARL X", "emp_adresse": "ADR",
+                    "emp_cnas": "16 412 078 56", "id_nom": "BENALI",
+                    "id_prenom": "K", "id_lieu_naissance": "ALGER",
+                    "id_fonction": "C"}.items():
+            self.scr._widgets[k].setText(v)
+        self.scr._widgets["id_date_naissance"].set_iso("1990-05-10")
+        aj = self.scr._add_row("abs_jours")
+        aj.set_val("code", "AJ9"); aj.set_val("qty", "2")
+        self.scr._recompute()
+        pres_ret = self.scr._presented.rows
+        aj_pr = [p for p in pres_ret if p.code == "AJ9"][0]
+        rows = self.scr._row_snapshots()
+        cnas_taux = (self.scr._cfg or {}).get("cnas", {}).get("taux_salarie")
+        tmp_docx = os.path.join(self._tmp, "e4_parity.docx")
+        tmp_pdf = os.path.join(self._tmp, "e4_parity.pdf")
+        tpl = T.get_renderer(self.scr._template_key)
+        try:
+            tpl.build_docx(tmp_docx, self.scr._calc_input, self.scr._calc_result,
+                           self.scr._employer_data(), self.scr._employee_data(),
+                           view=self.scr._bulletin_view, row_snapshots=rows,
+                           cnas_taux=cnas_taux)
+        except Exception as exc:                             # noqa: BLE001
+            if "غير مثبّتة" in str(exc):
+                self.skipTest(str(exc))
+            raise
+        tpl.build_pdf(tmp_pdf, self.scr._calc_input, self.scr._calc_result,
+                      self.scr._employer_data(), self.scr._employee_data(),
+                      view=self.scr._bulletin_view, row_snapshots=rows,
+                      cnas_taux=cnas_taux)
+        # PDF
+        try:
+            import pymupdf
+        except Exception:                                     # noqa: BLE001
+            self.skipTest("pymupdf غير متوفّر")
+        d = pymupdf.open(tmp_pdf)
+        pdf_text = d[0].get_text()
+        d.close()
+        self.assertIn("AJ9", pdf_text)
+        self.assertIn(aj_pr.taux, pdf_text)
+        self.assertIn(aj_pr.retenue, pdf_text)
+        # DOCX
+        from docx import Document
+        doc = Document(tmp_docx)
+        docx_text = "\n".join(c.text for t in doc.tables for r in t.rows
+                              for c in r.cells)
+        self.assertIn("AJ9", docx_text)
+        self.assertIn(aj_pr.taux, docx_text)
+        self.assertIn(aj_pr.retenue, docx_text)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class BulletinTemplateE46AjouterMenu(unittest.TestCase):
+    """E4.6 §1-§4 — قائمة ＋ الموجَّهة: سبعة أنواعٍ ذكيّة + Prime/Autre +
+    سطر حرّ. لا ``exec()``/``popup()`` في أيّ اختبار هنا — الفعل الحقيقيّ
+    الوحيد المُستعمَل هو ``QAction.trigger()`` على القائمة المُعادة من
+    ``_build_ajouter_menu`` (نفس الاتّصال الذي يستعمله نقرٌ حقيقيّ)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_e46_")
+        _isolate_db(self._tmp)
+        mod.confirm = lambda *_a, **_k: True
+        import ui2.alerts as _al
+        self._al, self._al_warn = _al, _al.warn
+        _al.warn = lambda *_a, **_k: None
+        self.scr = BulletinTemplateScreen(conn=None)
+        w = self.scr._widgets
+        w["mois"].setText("JUIN"); w["annee"].setText("2026")
+        w["id_date_embauche"].set_iso("2016-06-14")
+        [r for r in self.scr._rows if r.kind == "salaire"][0].set_val(
+            "gain", "45000")
+        self.scr._recompute()
+
+    def tearDown(self):
+        self.scr.deleteLater()
+        self._al.warn = self._al_warn
+        os.environ.pop(paths._DATA_DIR_ENV_OVERRIDE, None)
+
+    def _trigger(self, label, target=("A", 0)):
+        menu = self.scr._build_ajouter_menu(target)
+        act = next(a for a in menu.actions() if a.text() == label)
+        act.trigger()
+        return menu, act
+
+    # ---------- §1: القائمة تحوي السبعة + Prime/Autre + سطر حرّ ----------
+    def test_menu_contains_all_seven_smart_labels(self):
+        menu = self.scr._build_ajouter_menu(("A", 0))
+        labels = [a.text() for a in menu.actions()]
+        for expected in ("IEP / ANCIENNETÉ",
+                        "HEURES SUPPLÉMENTAIRES (50 %)",
+                        "HEURES SUPPLÉMENTAIRES (100 %)",
+                        "ABSENCE (JOURS)", "ABSENCE (HEURES)",
+                        "RETARD (HEURES)", "AVANCE / ACOMPTE"):
+            self.assertIn(expected, labels, expected)
+
+    def test_menu_keeps_prime_autre_and_free(self):
+        menu = self.scr._build_ajouter_menu(("A", 0))
+        labels = [a.text() for a in menu.actions()]
+        self.assertIn("Prime / Indemnité", labels)
+        self.assertIn("Autre", labels)
+        self.assertIn("سطر حرّ", labels)
+
+    def test_menu_has_no_retenue_libre_item(self):
+        menu = self.scr._build_ajouter_menu(("C", 0))
+        labels = [a.text() for a in menu.actions()]
+        self.assertFalse(any("RETENUE LIBRE" in l.upper() for l in labels))
+
+    # ---------- كلّ اختيارٍ يُنشئ النوع الدلاليّ الصحيح + CODE/LIBELLÉ ----------
+    def test_each_smart_label_creates_correct_kind_code_libelle(self):
+        cases = (
+            ("IEP / ANCIENNETÉ", "iep", "110", "IEP / ANCIENNETÉ"),
+            ("HEURES SUPPLÉMENTAIRES (50 %)", "hs_50", "120",
+             "HEURES SUPPLÉMENTAIRES (50 %)"),
+            ("HEURES SUPPLÉMENTAIRES (100 %)", "hs_100", "121",
+             "HEURES SUPPLÉMENTAIRES (100 %)"),
+            ("ABSENCE (JOURS)", "abs_jours", "130", "ABSENCE (JOURS)"),
+            ("ABSENCE (HEURES)", "abs_heures", "131", "ABSENCE (HEURES)"),
+            ("RETARD (HEURES)", "retard", "140", "RETARD (HEURES)"),
+            ("AVANCE / ACOMPTE", "avance", "210", "AVANCE / ACOMPTE"),
+        )
+        for label, kind, code, libelle in cases:
+            scr = BulletinTemplateScreen(conn=None)
+            scr._widgets["mois"].setText("JUIN")
+            scr._widgets["annee"].setText("2026")
+            [r for r in scr._rows if r.kind == "salaire"][0].set_val(
+                "gain", "45000")
+            scr._recompute()
+            target = ("C", 0) if kind == "avance" else ("A", 0)
+            menu = scr._build_ajouter_menu(target)
+            act = next(a for a in menu.actions() if a.text() == label)
+            act.trigger()
+            r = [x for x in scr._rows if x.kind == kind]
+            self.assertTrue(r, label)
+            self.assertEqual(r[0].val("code"), code, label)
+            self.assertEqual(r[0].val("libelle"), libelle, label)
+            scr.deleteLater()
+
+    # ---------- التركيز على أوّل خليّة إدخالٍ فعليّة ----------
+    def test_focus_target_after_menu_insertion(self):
+        cases = (("ABSENCE (JOURS)", "abs_jours", "qty"),
+                ("HEURES SUPPLÉMENTAIRES (50 %)", "hs_50", "qty"),
+                ("RETARD (HEURES)", "retard", "qty"),
+                ("IEP / ANCIENNETÉ", "iep", "taux"))
+        for label, kind, cell in cases:
+            _menu, _act = self._trigger(label)
+            r = [x for x in self.scr._rows if x.kind == kind][-1]
+            self.assertIs(self.scr.focusWidget(), r.widgets[cell], label)
+
+    def test_avance_focus_is_retenue_cell(self):
+        _menu, _act = self._trigger("AVANCE / ACOMPTE", target=("C", 0))
+        r = [x for x in self.scr._rows if x.kind == "avance"][-1]
+        self.assertIs(self.scr.focusWidget(), r.widgets["montant"])
+
+    # ---------- التفرّد ----------
+    def test_duplicate_unique_selection_prevented(self):
+        self._trigger("IEP / ANCIENNETÉ")
+        n0 = len([r for r in self.scr._rows if r.kind == "iep"])
+        menu2 = self.scr._build_ajouter_menu(("A", 0))
+        act2 = next(a for a in menu2.actions() if a.text() == "IEP / ANCIENNETÉ")
+        self.assertFalse(act2.isEnabled())
+        act2.trigger()                     # حتى لو أُطلِق قسراً — لا يُنشئ
+        n1 = len([r for r in self.scr._rows if r.kind == "iep"])
+        self.assertEqual(n0, n1)
+
+    def test_hs50_and_hs100_coexist_via_menu(self):
+        self._trigger("HEURES SUPPLÉMENTAIRES (50 %)")
+        self._trigger("HEURES SUPPLÉMENTAIRES (100 %)")
+        self.assertEqual(len([r for r in self.scr._rows if r.kind == "hs_50"]), 1)
+        self.assertEqual(len([r for r in self.scr._rows if r.kind == "hs_100"]), 1)
+
+    def test_abs_jours_and_abs_heures_coexist_via_menu(self):
+        self._trigger("ABSENCE (JOURS)")
+        self._trigger("ABSENCE (HEURES)")
+        self.assertEqual(len([r for r in self.scr._rows if r.kind == "abs_jours"]), 1)
+        self.assertEqual(len([r for r in self.scr._rows if r.kind == "abs_heures"]), 1)
+
+    # ---------- Prime/Autre تبقيان تعملان ----------
+    def test_prime_and_autre_still_work_via_menu(self):
+        self._trigger("Prime / Indemnité")
+        self._trigger("Autre")
+        self.assertTrue(any(r.kind == "prime" for r in self.scr._rows))
+        self.assertTrue(any(r.kind == "autre" for r in self.scr._rows))
+
+    # ---------- §3: احترام/تصحيح شريحة النقر ----------
+    def test_smart_type_in_compatible_segment_respects_click(self):
+        _menu, _act = self._trigger("RETARD (HEURES)", target=("A", 0))
+        r = [x for x in self.scr._rows if x.kind == "retard"][-1]
+        self.assertEqual(r.segment, "A")
+
+    def test_smart_type_in_incompatible_segment_is_corrected_not_rejected(self):
+        #  النقر في Zone C على نوعٍ مُلزَمٍ بـZone A لا يُرفَض — يُصحَّح.
+        _menu, _act = self._trigger("IEP / ANCIENNETÉ", target=("C", 0))
+        r = [x for x in self.scr._rows if x.kind == "iep"][-1]
+        self.assertEqual(r.segment, "A")
+        self.assertEqual(r.zone, "A")
+
+    # ---------- بلا تغييرٍ ماليّ لمجرّد فتح/إلغاء القائمة ----------
+    def test_opening_and_discarding_menu_changes_nothing_financially(self):
+        net0 = self.scr._bulletin_view.e
+        menu = self.scr._build_ajouter_menu(("A", 0))
+        del menu                            # "إلغاء" — لا اختيار، لا تشغيل
+        self.scr._recompute()
+        self.assertEqual(self.scr._bulletin_view.e, net0)
+
+    # ---------- تكافؤ القائمة مع تحويل SmartLibelle ----------
+    def test_menu_created_row_matches_smart_libelle_converted_row(self):
+        via_menu = BulletinTemplateScreen(conn=None)
+        via_menu._widgets["mois"].setText("JUIN")
+        via_menu._widgets["annee"].setText("2026")
+        [r for r in via_menu._rows if r.kind == "salaire"][0].set_val(
+            "gain", "45000")
+        via_menu._recompute()
+        menu = via_menu._build_ajouter_menu(("A", 0))
+        act = next(a for a in menu.actions() if a.text() == "ABSENCE (JOURS)")
+        act.trigger()
+        r1 = [r for r in via_menu._rows if r.kind == "abs_jours"][0]
+        r1.set_val("qty", "3")
+        via_menu._recompute()
+
+        via_alias = BulletinTemplateScreen(conn=None)
+        via_alias._widgets["mois"].setText("JUIN")
+        via_alias._widgets["annee"].setText("2026")
+        [r for r in via_alias._rows if r.kind == "salaire"][0].set_val(
+            "gain", "45000")
+        via_alias._recompute()
+        fr = via_alias._insert_free_row("A")
+        fr.widgets["libelle"].setText("ABSENCE (JOURS)")
+        fr.widgets["libelle"].committed.emit("ABSENCE (JOURS)")
+        r2 = [r for r in via_alias._rows if r.kind == "abs_jours"][0]
+        r2.set_val("qty", "3")
+        via_alias._recompute()
+
+        self.assertEqual(r1.kind, r2.kind)
+        self.assertEqual(r1.val("qty"), r2.val("qty"))
+        self.assertEqual(via_menu._bulletin_view.e, via_alias._bulletin_view.e)
+        via_menu.deleteLater(); via_alias.deleteLater()
+
+    # ---------- توافق E.3 — الوضع اليدويّ/الحرّ محفوظ ----------
+    def test_gutter_still_supports_manual_free_placement(self):
+        self.scr._gutter_mouse_move(self._canvas_pt(-5.0, 1))
+        self.scr._plus_target = ("B2", 0)
+        self.scr._btn_plus.click()
+        self.assertIsNotNone(self.scr._ajouter_menu)
+        free_act = next(a for a in self.scr._ajouter_menu.actions()
+                        if a.text() == "سطر حرّ")
+        free_act.trigger()
+        fr = [r for r in self.scr._rows if r.kind == "free"]
+        self.assertTrue(fr and fr[-1].segment == "B2")
+
+    def _canvas_pt(self, mm_x, row_boundary):
+        from PySide6.QtCore import QPoint
+        v = self.scr._view()
+        return QPoint(int(v.x(mm_x)),
+                      int(v.y(T.BODY_TOP + row_boundary * T.ROW_H)))
 
 
 if __name__ == "__main__":

@@ -19,9 +19,14 @@ import logging
 import os
 import re
 from datetime import date
+from decimal import Decimal
 
-from PySide6.QtCore import QEvent, QPoint, QStringListModel, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPalette
+from PySide6.QtCore import (
+    QEvent, QPoint, QRegularExpression, QStringListModel, Qt, QTimer, Signal,
+)
+from PySide6.QtGui import (
+    QColor, QFont, QFontMetricsF, QPainter, QPalette, QRegularExpressionValidator,
+)
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QCompleter, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QMenu, QPushButton, QRadioButton, QScrollArea,
@@ -126,7 +131,8 @@ _ZONES = (_ZONE_A, _ZONE_B, _ZONE_C)
 #  ينقله لاحقاً عبر إعادة الإضافة/الحذف — R2). Absence/Retard/HS/IEP تؤثّر
 #  قبل CNAS/IRG ⇒ Zone A (§21-§24). Prime الافتراضي «CNAS + IRG» ⇒ Zone A
 #  (§25). Avance/Autre تحفّظاً ⇒ Zone C.
-_DEFAULT_ZONE = {"iep": _ZONE_A, "hs": _ZONE_A, "absence": _ZONE_A,
+_DEFAULT_ZONE = {"iep": _ZONE_A, "hs_50": _ZONE_A, "hs_100": _ZONE_A,
+                 "abs_jours": _ZONE_A, "abs_heures": _ZONE_A,
                  "retard": _ZONE_A, "prime": _ZONE_A, "free": _ZONE_A,
                  "avance": _ZONE_C, "autre": _ZONE_C}
 
@@ -150,15 +156,18 @@ _SEGMENT_BELOW_ANCHOR = {"salaire": "A", "cnas": "B1", "panier": "B2",
 _ANCHOR_RANK = {"salaire": 0, "cnas": 20, "panier": 40, "transport": 60,
                 "irg": 80}
 #  الشريحة الافتراضية عند ``_add_row(kind)`` بلا موضع صريح.
-_DEFAULT_SEGMENT = {"iep": "A", "hs": "A", "absence": "A", "retard": "A",
+_DEFAULT_SEGMENT = {"iep": "A", "hs_50": "A", "hs_100": "A",
+                    "abs_jours": "A", "abs_heures": "A", "retard": "A",
                     "prime": "A", "free": "A", "avance": "C", "autre": "C"}
 
 
 def _legacy_zone(kind, cells):
     """منطقة سطرٍ من Work/Draft قديم لا يحمل ``segment``/``zone`` صريحاً
-    (§5/§39): تُشتقّ من نوعه وتصنيفه القديم مرّة واحدة عند الاستعادة."""
+    (§5/§39): تُشتقّ من نوعه وتصنيفه القديم مرّة واحدة عند الاستعادة.
+    ‏``kind`` هنا **بعد** هجرة E.4 (‏:func:`_migrate_e4_row`) — الأسماء
+    الجديدة فقط."""
     cells = cells or {}
-    if kind in ("iep", "hs", "absence", "retard"):
+    if kind in ("iep", "hs_50", "hs_100", "abs_jours", "abs_heures", "retard"):
         return _ZONE_A
     if kind == "prime":
         cot, imp = _soumis_class(cells.get("soumis") or _SOUMIS_CHOICES[0])
@@ -173,6 +182,33 @@ def _legacy_segment(kind, cells):
     """‏``segment`` لسطرٍ قديم بلا حقل ``segment`` (§5): Zone A → A ·
     Zone B → **B3** (قبل IRG) · Zone C → C."""
     return {_ZONE_A: "A", _ZONE_B: "B3", _ZONE_C: "C"}[_legacy_zone(kind, cells)]
+
+
+def _migrate_e4_row(kind, cells, code_manual):
+    """يهاجر صفّاً محفوظاً قبل E.4 إلى بنية E.4 (§G):
+    ``hs`` + ``coef`` → ``hs_50``/``hs_100``؛ ``absence`` + ``mode`` →
+    ``abs_jours``/``abs_heures`` (غياب الساعات لا يتحوّل أبداً إلى
+    Retard). يُبقي كلّ قيمةٍ أخرى (segment/order/libelle/qty/…) كما هي
+    بالضبط — لا فقدان بيانات. CODE وحده يتغيّر، وبشرطٍ واحد: لم يُعدِّله
+    المستخدم يدوياً (‏``code_manual`` زائفة) — عندها يتبنّى افتراض E.4
+    الرقميّ الجديد؛ رمزٌ يدويّ (حتى لو ABS/HS/IEP قديماً أو 4 أرقام)
+    يبقى **حرفياً** إلى أن يُعدِّله المستخدم بنفسه.
+
+    ``kind`` غير معروفٍ إطلاقاً (لا "hs"/"absence" ولا اسمٌ حاليّ صالح)
+    يُعاد كما هو — يُرفَض لاحقاً بفحص ``_ROW_SPECS`` العاديّ."""
+    cells = dict(cells or {})
+    new_kind = kind
+    if kind == "hs":
+        coef = str(cells.pop("coef", ""))
+        new_kind = "hs_50" if coef.startswith("50") else "hs_100"
+    elif kind == "absence":
+        mode = str(cells.pop("mode", "")).lower()
+        new_kind = "abs_jours" if "jours" in mode else "abs_heures"
+    if new_kind not in _ROW_SPECS:
+        return kind, cells
+    if not code_manual:
+        cells["code"] = _ROW_SPECS[new_kind]["code"]
+    return new_kind, cells
 
 #  Smart Next (Phase D): ما يُنقَل إلى الشهر التالي. الباقي (absence /
 #  retard / hs / avance / autre) يُحذَف بالكامل — عرضيّ/شهريّ لا يتكرّر.
@@ -225,28 +261,51 @@ def _free_entry(r):
         "cotisable": cot, "imposable": imp}}
 
 
-# ======================= التحويل الذكيّ (UX Redesign R3) =======================
+# ======================= التحويل الذكيّ (UX Redesign R3 → E.4 §B/§C/§E) =======================
 #  LIBELLÉ المطابق لاسم نوع محرّك معروف يحوّل السطر الحرّ إليه (§14)،
 #  وبالعكس. المطابقة **محافِظة** (§16): تطابق كامل بعد التطبيع أو اسمٌ
 #  بديل موثوق — لا تخمين. لكلّ نوع منطقته المسموحة (§13/§19) و``code``
 #  افتراضيّ (§20). Prime ليست نوعاً ذكياً — سطرٌ حرّ في منطقته (§25).
+#
+#  E.4 §B/§C/§E: HS و Absence لم يعودا نوعاً مُركَّباً بمُنتقي (50%/100% ·
+#  jours/heures) — كلّ توليفة نوعٌ ذكيّ **مستقلّ** بمنطقته وCODE وLIBELLÉ
+#  الخاصّين (§C)، فيصير TAUX عمود عرضٍ محسوبٍ حقيقيّ (§D) بلا تصادمٍ مع
+#  أيّ مُنتقٍ حيّ. الأسماء المستعارة **دقيقة لا غامضة** (§E): "Absence"/
+#  "Heures supplémentaires" المجرَّدتان أُزيلتا من هنا عمداً — نصٌّ كهذا
+#  يبقى حرّاً حتى يختار المستخدم توليفةً دقيقة (LIBELLÉ الكامل، أو الاسم
+#  المستعار الموثوق القصير المتبقّي لكلّ نوع كما في §E).
 _SMART_TYPES = {
-    "iep": {"zone": _ZONE_A, "code": "IEP", "label": "IEP / Ancienneté",
-            "names": ("iep", "ancienneté", "anciennete", "ind. expérience prof.",
-                      "indemnité d'expérience", "منحة الأقدمية", "الأقدمية")},
-    "hs": {"zone": _ZONE_A, "code": "HS", "label": "Heures supplémentaires",
-           "names": ("hs", "heures supplémentaires", "heures supp", "heures sup",
-                     "h.s.", "ساعات إضافية", "ساعات اضافية")},
-    "absence": {"zone": _ZONE_A, "code": "ABS", "label": "Absence",
-                "names": ("absence", "absences", "abs", "غياب")},
-    "retard": {"zone": _ZONE_A, "code": "RET", "label": "Retard",
-               "names": ("retard", "retards", "تأخّر", "تاخر")},
-    "avance": {"zone": _ZONE_C, "code": "AV", "label": "Avance / Retenue",
-               "names": ("avance", "avance sur salaire", "acompte",
-                         "retenue sur salaire", "تسبيق", "سلفة")},
+    "iep": {"zone": _ZONE_A, "code": "110", "label": "IEP / ANCIENNETÉ",
+            "names": ("iep", "iep / ancienneté", "ancienneté", "anciennete",
+                      "ind. expérience prof.", "indemnité d'expérience",
+                      "منحة الأقدمية", "الأقدمية")},
+    "hs_50": {"zone": _ZONE_A, "code": "120",
+             "label": "HEURES SUPPLÉMENTAIRES (50 %)",
+             "names": ("heures supplémentaires (50 %)", "heures supplémentaires 50%",
+                       "hs50", "hs 50", "hs 50%", "h.s. 50%",
+                       "ساعات إضافية 50%")},
+    "hs_100": {"zone": _ZONE_A, "code": "121",
+              "label": "HEURES SUPPLÉMENTAIRES (100 %)",
+              "names": ("heures supplémentaires (100 %)", "heures supplémentaires 100%",
+                        "hs100", "hs 100", "hs 100%", "h.s. 100%",
+                        "ساعات إضافية 100%")},
+    "abs_jours": {"zone": _ZONE_A, "code": "130", "label": "ABSENCE (JOURS)",
+                 "names": ("absence (jours)", "absence jours", "abs jours",
+                           "غياب أيام")},
+    "abs_heures": {"zone": _ZONE_A, "code": "131", "label": "ABSENCE (HEURES)",
+                  "names": ("absence (heures)", "absence heures", "abs heures",
+                            "غياب ساعات")},
+    "retard": {"zone": _ZONE_A, "code": "140", "label": "RETARD (HEURES)",
+               "names": ("retard", "retard (heures)", "retards", "تأخّر", "تاخر")},
+    "avance": {"zone": _ZONE_C, "code": "210", "label": "AVANCE / ACOMPTE",
+               "names": ("avance", "avance / acompte", "avance sur salaire",
+                         "acompte", "retenue sur salaire", "تسبيق", "سلفة")},
 }
-#  أنواع فريدة (§24/§38): لا تُضاف مرّتين، وتُخفى من اقتراحات الأسطر الأخرى.
-_SMART_UNIQUE = {"iep"}
+#  أنواعٌ فريدة (E.4 §F: كلّها الآن — كان IEP فقط): لا تُضاف مرّتين، وتُخفى
+#  من اقتراحات الأسطر الأخرى. hs_50/hs_100 نوعان مستقلّان فيتعايشان؛
+#  كذلك abs_jours/abs_heures.
+_SMART_UNIQUE = {"iep", "hs_50", "hs_100", "abs_jours", "abs_heures",
+                 "retard", "avance"}
 
 
 def _norm_libelle(s) -> str:
@@ -449,6 +508,61 @@ class _InlineChoice(QLineEdit):
         self.setTextMargins(0, 0, s, 0)
 
 
+#  رقمٌ صريحٌ فقط أثناء الكتابة التفاعليّة (علامة سالبة + أرقام + فاصل
+#  عشريّ اختياريّ) — يمنع الحروف من الدخول أصلاً (مراجعة عن بعد E4.8 §2).
+#  حالاتٌ وسيطة مسموحة ("-"، "1,"، "") تُرفَض لاحقاً في التحقّق الصارم
+#  (``PZ.is_valid_rate_text``) لا هنا — الفاليديتور يمنع الحروف فقط.
+_RATE_INPUT_RX = QRegularExpression(r"^-?\d*[.,]?\d*$")
+
+
+class _RateEdit(QLineEdit):
+    """خليّة TAUX لسطر IEP — **تصحيح عرض** (طلب المستخدم، لا SPEC_PAIE_DZ):
+    النصّ المعروض/المكتوب نسبةٌ مئويّة (0,10 داخليّاً ⇒ "10,00" على
+    الشاشة)؛ ``value()``/``set_value()`` وحدهما يتعاملان مع الكسر الحقيقيّ
+    (نفس ما يصل للمحرّك ويُحفَظ في المسوّدة/العمل — عبر ``_Row.val``/
+    ``set_val``؛ ``text()``/``setText()`` تبقيان النسبة المئويّة الخام
+    كما يراها المستخدم، تُستهلَك في ``_row_snapshots`` لتطابق
+    الشاشة/PDF/Word حرفياً).
+
+    التنسيق/الفكّ يعيدان استعمال ``PZ.fmt_rate_pct``/``PZ.parse_rate_pct``
+    (نفس زوج نسبة CNAS — لا مصدر قانونيّ ثانٍ). presentation فقط: **لا**
+    مضاعفة لقيمة المحرّك — الكسر المرسَل له هو نفسه المكتوب أصلاً، فقط
+    مقسومٌ ÷100 عند القراءة (عكس ×100 عند الكتابة).
+
+    **دِقّة صارمة (مراجعة عن بعد E4.8 §1/§2):** صفرٌ ليس فراغاً — ``0``
+    نسبةٌ صالحة تماماً (اقتراح آليّ تحت الحدّ الأدنى، أو إدخالٌ يدويّ
+    مقصود). لكن نصّاً غير رقميّ **لا** يجوز أن يتحوّل صامتاً إلى صفرٍ
+    حقيقيّ — لا في القراءة التفاعليّة (فاليديتور يمنع الحروف أصلاً) ولا
+    في استرجاع نصٍّ محفوظٍ فاسد (مسوّدة قديمة تالفة): ``value()`` يُرجع
+    ``""`` (لا "0") لنصٍّ غير صالح، و``set_value`` يعرض النصّ الفاسد
+    حرفياً بدل تصحيحه صامتاً إلى "0,00" — فيلتقطه التحقّق الصارم
+    (‏``_Row.iep_taux_validity``) بدل أن يختفي كصفرٍ مخترَع."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setValidator(QRegularExpressionValidator(_RATE_INPUT_RX, self))
+
+    def raw_text(self) -> str:
+        return self.text().strip()
+
+    def value(self) -> str:
+        t = self.raw_text()
+        if not t or not PZ.is_valid_rate_text(t):
+            return ""                     # فراغ أو فاسد — لا صفرٌ مخترَع
+        return str(PZ.parse_rate_pct(t))
+
+    def set_value(self, raw) -> None:
+        raw = str(raw or "").strip()
+        if not raw:
+            self.setText("")
+        elif not PZ.is_valid_rate_text(raw):
+            #  نصٌّ محفوظٌ فاسد — يُعرَض كما هو حرفياً، لا يُصحَّح صامتاً
+            #  (التحقّق الصارم يحجبه لاحقاً بدل أن يختفي كصفرٍ سليم).
+            self.setText(raw)
+        else:
+            self.setText(PZ.fmt_rate_pct(raw))
+
+
 def _prime_entry(r):
     #  E.3-Review §8: الموضع (الشريحة/المنطقة) يحسم التصنيف الجبائيّ —
     #  «soumis» القديمة تبقى معروضةً ومحفوظةً للتوافق البصريّ فقط، ولم
@@ -461,10 +575,14 @@ def _prime_entry(r):
 
 
 def _avance_entry(r):
-    return {"type": "libre", "values": {
-        "libelle": r.val("libelle") or "AVANCE / RETENUE",
-        "montant": r.val("montant"), "est_retenue": _YES,
-        "cotisable": _NO, "imposable": _NO}}
+    #  مراجعة عن بعد E4.8 §3: النوع الدلاليّ الحقيقيّ ``avance`` (لا
+    #  ``libre`` عامّ) — ``lignes.LINE_TYPES["avance"]`` مخصَّصٌ لهذا
+    #  بالضبط (RETENUE ثابتة، Zone C دائماً، بلا CNAS/IRG — نفس الأثر
+    #  الماليّ حرفياً على NET، مُتحقَّقٌ بالاختبار). CODE/LIBELLÉ المعروضان
+    #  (210 / AVANCE / ACOMPTE أو ما كتبه المستخدم) يبقيان قيَم الشاشة
+    #  فقط — لا علاقة لهما بمفتاح النوع المرسَل هنا؛ تعديل CODE يدوياً لا
+    #  يغيّر الدلالة (نفس مبدأ §20 لبقيّة الأنواع الذكيّة).
+    return {"type": "avance", "values": {"montant": r.val("montant")}}
 
 
 def _autre_entry(r):
@@ -522,18 +640,61 @@ def _line_engine_signature(lv):
     return (lv.key, lv.zone, lv.sens)
 
 
-def _abs_type(r):
-    return "abs_jours" if "jours" in r.val("mode").lower() else "abs_heures"
+#  ---- خلايا عرضٍ إضافيّة للقراءة فقط (E.4 §8/§12) --------------------
+def _row_display_extra(row, view):
+    """قيَم عرضٍ إضافيّة للقراءة فقط — {عمود: Decimal|None} — من
+    ``BulletinView.result`` (‏``SequenceResult``) الفعليّ مباشرةً، بلا أيّ
+    صيغة موازية في Qt (§8/§12). ``{}`` إن تعذّر (لا حساب بعد).
 
+    ``retard``: TAUX = ``taux_horaire`` (عمود TAUX خالٍ من أيّ widget لهذا
+    النوع — آمنٌ للإضافة). ``iep``: BASE = مبلغ سطر الأجر القاعديّ الفعليّ
+    (نفس القاعدة المُستعمَلة فعلياً — SAL_BASE_BRUT، هذه الشاشة لا تمرّر
+    اتفاقية base_iep مغايرة). ``panier``/``transport``: TAUX = ساعاتٌ
+    معادِلة لعامل التنسيب الفعليّ (‏``res.panier_transport_heures_equiv``
+    — مراجعة عن بعد E4.8 §5: ``heures_presence`` وحده لا يطابق العامل
+    الفعليّ في PRORATA_JOURS/AUCUN، فاستُبدل بحقلٍ يعكس السياسة الفعليّة
+    أياً كانت — AUCUN/PRORATA_HEURES/PRORATA_JOURS/PRORATA_MIXTE معاً).
 
-def _abs_entry(r):
-    t = _abs_type(r)
-    return {"type": t, "values": {
-        ("jours" if t == "abs_jours" else "heures"): r.val("qty")}}
-
-
-def _hs_type(r):
-    return "hs_50" if r.val("coef").startswith("50") else "hs_100"
+    ‏E.4 §B/§D: ``abs_jours``/``abs_heures``/``hs_50``/``hs_100`` نوعٌ
+    مستقلّ لكلٍّ منها الآن — لا مُنتقٍ حيّ يشغل TAUX بعد اليوم، فتُضاف
+    قيَمها هنا أيضاً (كانت مُستبعَدة في E4.2 حصراً بسبب تصادمٍ مع
+    ``_InlineChoice`` القديم؛ التصادم زال بزوال المُنتقي نفسه)."""
+    if view is None or getattr(view, "result", None) is None:
+        return {}
+    res = view.result
+    if row.kind == "abs_jours":
+        return {"taux": res.taux_journalier}
+    if row.kind in ("abs_heures", "retard"):
+        return {"taux": res.taux_horaire}
+    if row.kind in ("hs_50", "hs_100"):
+        #  مراجعة عن بعد E4.8 §4: المعدَّل الساعيّ المُعوَّض **الدقيق**
+        #  (taux_horaire × coef، بلا تقريب) — من ``LineView.taux`` الفعليّ
+        #  (مطابَقٌ بتوقيع E.3-Review-2 في ``_assign_computed_amounts`` ⇒
+        #  ``row._taux_exact``)، **لا** ``row._amount ÷ الساعات`` (كان
+        #  يُخفي فرقاً حقيقياً لساعاتٍ كسريّة صغيرة بسبب تقريب المبلغ
+        #  لخانتين قبل القسمة — §مراجعة). لا معاملاً ثابتاً (1.5/2.0)
+        #  يُعاد اختراعه موازياً هنا (§D) — المحرّك وحده مصدر الرقم.
+        taux = getattr(row, "_taux_exact", None)
+        if taux is None:
+            return {}
+        return {"taux": taux}
+    if row.kind == "iep":
+        #  اسم العمود الفعليّ "nbase" (N/BASE) — لا عمود باسم "base" في
+        #  layout_spec/COLS؛ استعمال "base" هنا كان يُسقِط استثناءً صامتاً
+        #  (يُبتلَع في paintEvent) يُفشِل رسم الاستمارة كاملةً كلّما وُجد
+        #  سطر IEP — أُصلح إلى مفتاح العمود الحقيقيّ.
+        sr = row.screen._salaire_row()
+        base = sr._amount if sr is not None and sr._amount is not None else None
+        return {} if base is None else {"nbase": base}
+    if row.kind in ("panier", "transport"):
+        #  مراجعة عن بعد E4.8 §5: ``res.heures_presence`` لا يطابق دائماً
+        #  العامل الفعليّ لتنسيب السلة/النقل (PRORATA_JOURS/AUCUN يستعملان
+        #  عاملاً مختلفاً تماماً بينما heures_presence يبقى حساباً ساعياً
+        #  موازياً) — المصدر الوحيد الآن ``res.panier_transport_heures_equiv``
+        #  (محسوبٌ في calc.py من نفس ``facteur`` المُستعمَل فعلياً للمبلغ،
+        #  أياً كانت السياسة). لا اشتقاق موازٍ هنا.
+        return {"taux": res.panier_transport_heures_equiv}
+    return {}
 
 
 #  spec خلية: (name, col, kind, opts, default). col نصّ عمود أو callable.
@@ -552,13 +713,19 @@ _ROW_SPECS = {
         to_entry=lambda r: {"type": "salaire_base",
                             "values": {"montant": r.val("gain")}}),
     #  ---- الأنواع الذكيّة (R3): LIBELLÉ ذكيّ + CODE قابل للتحرير (§12/§20).
-    #  jours/heures و50/100 خياراتٌ **داخل** السطر في عمود TAUX (§21/§23).
+    #  E.4 §B/§C/§D: كلّ توليفةٍ كانت خياراً داخل سطرٍ مُركَّب (jours/heures
+    #  · 50%/100%) صارت نوعاً ذكيّاً **مستقلاً** بذاته — CODE/LIBELLÉ
+    #  افتراضيّان خاصّان به (§C)، وTAUX عمود عرضٍ محسوبٍ حقيقيّ (§D) بلا
+    #  أيّ مُنتقٍ يشغل مكانه بعد اليوم.
     "iep": dict(
-        role="optional", code="IEP", lib="IND. EXPÉRIENCE PROF.",
-        primary="taux", computed="gain", lignes_key="iep",
-        cells=(_cs("code", "code", "text", default="IEP"),
-               _cs("libelle", "libelle", "smart", default="IEP / Ancienneté"),
-               _cs("taux", "taux", "amount")),
+        role="optional", code="110", lib="IEP / ANCIENNETÉ",
+        primary="taux", computed="gain", computed_extra=("nbase",),
+        cells=(_cs("code", "code", "text", default="110"),
+               _cs("libelle", "libelle", "smart", default="IEP / ANCIENNETÉ"),
+               #  "rate": عرضٌ كنسبة مئويّة (10,00) — الكسر الحقيقيّ
+               #  (0.10) يبقى ما يصل للمحرّك/يُحفَظ (تصحيح عرض IEP، لا
+               #  تغيير SPEC_PAIE_DZ — راجع _RateEdit).
+               _cs("taux", "taux", "rate")),
         to_entry=lambda r: {"type": "iep", "values": {"taux": r.val("taux")}}),
     "prime": dict(
         role="optional", code="", lib="", primary="gain",
@@ -566,49 +733,70 @@ _ROW_SPECS = {
                _cs("soumis", "taux", "choice", _SOUMIS_CHOICES, _SOUMIS_CHOICES[0]),
                _cs("gain", "gain", "amount")),
         to_entry=_prime_entry),
-    "hs": dict(
-        role="optional", code="HS", lib="HEURES SUPPLÉMENTAIRES",
-        primary="qty", computed="gain", lignes_key=_hs_type,
-        cells=(_cs("code", "code", "text", default="HS"),
+    "hs_50": dict(
+        role="optional", code="120", lib="HEURES SUPPLÉMENTAIRES (50 %)",
+        primary="qty", computed="gain", computed_extra=("taux",),
+        cells=(_cs("code", "code", "text", default="120"),
                _cs("libelle", "libelle", "smart",
-                   default="Heures supplémentaires"),
-               _cs("qty", "nbase", "amount"),
-               _cs("coef", "taux", "choice", ("50%", "100%"), "50%")),
-        to_entry=lambda r: {"type": _hs_type(r),
-                            "values": {"heures": r.val("qty")}}),
+                   default="HEURES SUPPLÉMENTAIRES (50 %)"),
+               _cs("qty", "nbase", "amount")),
+        to_entry=lambda r: {"type": "hs_50", "values": {"heures": r.val("qty")}}),
+    "hs_100": dict(
+        role="optional", code="121", lib="HEURES SUPPLÉMENTAIRES (100 %)",
+        primary="qty", computed="gain", computed_extra=("taux",),
+        cells=(_cs("code", "code", "text", default="121"),
+               _cs("libelle", "libelle", "smart",
+                   default="HEURES SUPPLÉMENTAIRES (100 %)"),
+               _cs("qty", "nbase", "amount")),
+        to_entry=lambda r: {"type": "hs_100", "values": {"heures": r.val("qty")}}),
     #  Absence/Retard = Z1: تُنقِص وعاء [A] و``total_gains`` في المحرّك (لا
     #  يُغيَّر — §30). العرضُ (E.3 §9) **اقتطاعٌ موجب في عمود RETENUE**؛
     #  المجاميع تُصالَح في :mod:`ui.hr.paie.presentation`.
-    "absence": dict(
-        role="optional", code="ABS", lib="", primary="qty",
-        computed="retenue", lignes_key=_abs_type,
-        cells=(_cs("code", "code", "text", default="ABS"),
-               _cs("libelle", "libelle", "smart", default="Absence"),
-               _cs("qty", "nbase", "amount"),
-               _cs("mode", "taux", "choice",
-                   ("Absence (jours)", "Absence (heures)"), "Absence (jours)")),
-        to_entry=_abs_entry),
+    "abs_jours": dict(
+        role="optional", code="130", lib="ABSENCE (JOURS)", primary="qty",
+        computed="retenue", computed_extra=("taux",),
+        cells=(_cs("code", "code", "text", default="130"),
+               _cs("libelle", "libelle", "smart", default="ABSENCE (JOURS)"),
+               _cs("qty", "nbase", "amount")),
+        to_entry=lambda r: {"type": "abs_jours",
+                            "values": {"jours": r.val("qty")}}),
+    "abs_heures": dict(
+        role="optional", code="131", lib="ABSENCE (HEURES)", primary="qty",
+        computed="retenue", computed_extra=("taux",),
+        cells=(_cs("code", "code", "text", default="131"),
+               _cs("libelle", "libelle", "smart", default="ABSENCE (HEURES)"),
+               _cs("qty", "nbase", "amount")),
+        to_entry=lambda r: {"type": "abs_heures",
+                            "values": {"heures": r.val("qty")}}),
     "retard": dict(
-        role="optional", code="RET", lib="RETARD", primary="qty",
-        computed="retenue", lignes_key="retard",
-        cells=(_cs("code", "code", "text", default="RET"),
-               _cs("libelle", "libelle", "smart", default="Retard"),
+        role="optional", code="140", lib="RETARD (HEURES)", primary="qty",
+        computed="retenue", computed_extra=("taux",),
+        cells=(_cs("code", "code", "text", default="140"),
+               _cs("libelle", "libelle", "smart", default="RETARD (HEURES)"),
                _cs("qty", "nbase", "amount")),
         to_entry=lambda r: {"type": "retard", "values": {"heures": r.val("qty")}}),
+    #  Panier/Transport (E.4 §8.7/§8.8): BASE (الاستحقاق الشهريّ الكامل)
+    #  هي الخليّة الوحيدة المُحرَّرة — تبقى مُسمّاةً ``gain`` (توافقٌ خلفيّ
+    #  مع كلّ استدعاء ``set_val("gain", …)`` القائم) لكنها تُعرَض تحت عمود
+    #  N/BASE لا GAIN. TAUX (الحضور الفعليّ) وGAIN (المبلغ المنسَّب من
+    #  المحرّك، ``res.panier``/``res.transport`` عبر التوقيع §E.3-Review-2)
+    #  عمودان للقراءة فقط — لا تخمين حسابيّ في Qt.
     "panier": dict(
         role="basic", code=_C["panier"], lib="PANIER", primary="",
-        cells=(_cs("gain", "gain", "amount"),),
+        computed="gain", computed_extra=("taux",),
+        cells=(_cs("gain", "nbase", "amount"),),
         to_entry=lambda r: {"type": "panier",
                             "values": {"montant_mensuel": r.val("gain")}}),
     "transport": dict(
         role="basic", code=_C["transport"], lib="(R+) TRANSPORT", primary="",
-        cells=(_cs("gain", "gain", "amount"),),
+        computed="gain", computed_extra=("taux",),
+        cells=(_cs("gain", "nbase", "amount"),),
         to_entry=lambda r: {"type": "transport",
                             "values": {"montant_mensuel": r.val("gain")}}),
     "avance": dict(
-        role="optional", code="AV", lib="", primary="montant",
-        cells=(_cs("code", "code", "text", default="AV"),
-               _cs("libelle", "libelle", "smart", default="Avance / Retenue"),
+        role="optional", code="210", lib="AVANCE / ACOMPTE", primary="montant",
+        cells=(_cs("code", "code", "text", default="210"),
+               _cs("libelle", "libelle", "smart", default="AVANCE / ACOMPTE"),
                _cs("montant", "retenue", "amount")),
         to_entry=_avance_entry),
     "autre": dict(
@@ -637,14 +825,21 @@ _ROW_SPECS = {
                 cells=(), primary=""),
 }
 
-#  قائمة «+ Ajouter» — منتَج مبسَّط فوق الـ domain (لا تعرض أنواع
-#  ``lignes.LINE_TYPES`` التقنية؛ jours/heures و50/100 خيارات **داخل** السطر).
-_AJOUTER_MENU = (("IEP / Ancienneté", "iep"),
+#  قائمة «＋ إضافة» الموجَّهة — منتَج مبسَّط فوق الـ domain (لا تعرض
+#  أنواع ``lignes.LINE_TYPES`` التقنية). E.4 §B/§C: سبعة أنواعٍ ذكيّة
+#  موجَّهة، كلٌّ مستقلّ بذاته (لا مُنتقي 50/100 ولا jours/heures داخل
+#  السطر). E4.6 §1: هذا هو مصدر القائمة **الحيّة** الفعليّة التي يعرضها
+#  زرّ ＋ (‏``_build_ajouter_menu``) — بالإضافة إلى اللاصقة الذكيّة
+#  القائمة داخل سطرٍ حرٍّ موجود (‏``_smart_match``/`_on_libelle_
+#  committed``)، التي تبقى متاحةً بلا تغيير.
+_AJOUTER_MENU = (("IEP / ANCIENNETÉ", "iep"),
                  ("Prime / Indemnité", "prime"),
-                 ("Heures supplémentaires", "hs"),
-                 ("Absence", "absence"),
-                 ("Retard", "retard"),
-                 ("Avance / Retenue", "avance"),
+                 ("HEURES SUPPLÉMENTAIRES (50 %)", "hs_50"),
+                 ("HEURES SUPPLÉMENTAIRES (100 %)", "hs_100"),
+                 ("ABSENCE (JOURS)", "abs_jours"),
+                 ("ABSENCE (HEURES)", "abs_heures"),
+                 ("RETARD (HEURES)", "retard"),
+                 ("AVANCE / ACOMPTE", "avance"),
                  ("Autre", "autre"))
 
 _MAX_BODY_ROWS = 18          # حدّ عمليّ (لا pagination) — §31
@@ -653,6 +848,15 @@ _MAX_BODY_ROWS = 18          # حدّ عمليّ (لا pagination) — §31
 #  ``QComboBox`` — Absence(jours/heures) و HS(50%/100%). prime/autre تبقى
 #  ComboBox (أنواعٌ قديمة غير مُتاحة للإضافة).
 _INLINE_CHOICE_CELLS = {"coef", "mode"}
+
+#  E.4 §6: أنواعٌ ذكيّة رسميّتها CODE **رقميّة** (لا تُلمَس رموز الأنظمة/
+#  الأساسيّة — salaire/CNAS/panier/transport/IRG). الكتابة التفاعليّة
+#  تُقيَّد لأرقامٍ فقط (بحدّ 3 خانات، صفرٌ بادئٌ مسموح) عبر مُدقِّق Qt —
+#  لا يمسّ ``setText`` البرمجيّ (توافقٌ خلفيّ كامل مع رموز نصّية قديمة
+#  محفوظة مثل "IEP"/"HS"/"ABS" — تبقى كما هي حتى يُعدِّلها المستخدم).
+_NUMERIC_CODE_KINDS = {"iep", "hs_50", "hs_100", "abs_jours", "abs_heures",
+                       "retard", "avance"}
+_CODE3_RX = QRegularExpression(r"^\d{0,3}$")
 
 _COL_ALIGN = {"code": Qt.AlignHCenter, "libelle": Qt.AlignLeft,
               "nbase": Qt.AlignRight, "taux": Qt.AlignRight,
@@ -691,6 +895,7 @@ class _Row:
         self._cellspec = {c["name"]: c for c in spec["cells"]}
         self.widgets = {}
         self._amount = None                       # المبلغ المحسوب (إن وُجد)
+        self._taux_exact = None    # معدّلٌ دقيق اختياريّ (hs_50/hs_100 — E4.8 §4)
         self._iep_manual = False
         self._code_manual = False                 # §20: CODE عُدِّل يدوياً؟
         for c in spec["cells"]:
@@ -711,7 +916,11 @@ class _Row:
                 w.committed.connect(
                     lambda _t=None, rr=self: screen._on_libelle_committed(rr))
             else:
-                w = QLineEdit(screen._canvas)
+                #  "rate" (TAUX IEP، تصحيح عرض): نفس QLineEdit بالضبط لكن
+                #  بصفّ فرعيّ يترجم كسرٌ↔نسبة مئويّة (§_RateEdit) — بلا
+                #  تكرار لبقيّة سلك الإشارات أدناه.
+                w = (_RateEdit if c["kind"] == "rate" else QLineEdit)(
+                    screen._canvas)
                 w.setFrame(False)
                 col = self.column(name)
                 w.setAlignment(_COL_ALIGN.get(col, Qt.AlignLeft) | Qt.AlignVCenter)
@@ -720,6 +929,13 @@ class _Row:
                 if name == "code":
                     w.textEdited.connect(
                         lambda _t=None, rr=self: setattr(rr, "_code_manual", True))
+                    if kind in _NUMERIC_CODE_KINDS:
+                        #  E.4 §6: كتابةٌ رقميّة فقط (≤3 خانات) لأنواعٍ ذكيّة
+                        #  معيَّنة — المُدقِّق يقيِّد **الكتابة التفاعليّة**
+                        #  فقط؛ لا ``setMaxLength`` عمداً (يقصّ أيّ نصٍّ عبر
+                        #  ``setText`` أيضاً، بما فيها رموزٌ يدويّة قديمة
+                        #  أطول محفوظة — §6 «never truncate old manual CODE»).
+                        w.setValidator(QRegularExpressionValidator(_CODE3_RX, w))
             w.setLayoutDirection(Qt.LeftToRight)
             w.installEventFilter(screen)
             self.widgets[name] = w
@@ -756,6 +972,25 @@ class _Row:
         return {n for n, c in self._cellspec.items() if c["kind"] == "choice"}
 
     def val(self, cell: str) -> str:
+        """قيمة الخليّة **الحقيقيّة** — ما يصل للمحرّك (``to_entry``)
+        ويُحفَظ في المسوّدة/العمل (``draft_state``). لخلايا ``_RateEdit``
+        (TAUX IEP): الكسر (0.10)، لا النسبة المئويّة المعروضة — تصحيح
+        العرض لا يغيّر ما يراه المحرّك أو ما يُحفَظ (§ توافق خلفيّ مع
+        عملٍ محفوظ قبل هذا التصحيح: كان يُخزَّن الكسر أصلاً)."""
+        w = self.widgets.get(cell)
+        if w is None:
+            return ""
+        if isinstance(w, QComboBox):
+            return w.currentText().strip()
+        if isinstance(w, _RateEdit):
+            return w.value()
+        return w.text().strip()
+
+    def display_text(self, cell: str) -> str:
+        """نصّ الخليّة **كما يظهر فعلياً على الشاشة** — يغذّي لقطة الصفوف
+        (‏``_row_snapshots``) فتطابق الشاشة PDF/Word حرفياً، حتى لخلايا
+        ذات تمثيلٍ مزدوج مثل TAUX IEP (نسبة مئويّة على الشاشة، كسر في
+        ``val()``). لغير ``_RateEdit`` مطابقةٌ لـ``val()`` تماماً."""
         w = self.widgets.get(cell)
         if w is None:
             return ""
@@ -769,8 +1004,27 @@ class _Row:
             return
         if hasattr(w, "setCurrentText"):          # QComboBox / _InlineChoice
             w.setCurrentText(str(value or ""))
+        elif isinstance(w, _RateEdit):
+            w.set_value(value)                    # كسرٌ → نسبة مئويّة معروضة
         else:
             w.setText(str(value or ""))
+
+    def iep_taux_validity(self):
+        """‏(state, fraction) لخليّة TAUX لسطر IEP فقط (مراجعة عن بعد
+        E4.8 §1/§2). ``state``: ``"blank"`` (فراغٌ حقيقيّ — ناقص، لا
+        صفر)، ``"invalid"`` (نصٌّ محفوظ/مكتوب غير رقميّ — لا يُقرأ صفراً
+        صامتاً)، أو ``"ok"`` (رقمٌ صريح، ``fraction`` = Decimal الكسر —
+        قد يكون صفراً أو سالباً؛ السلبيّة تُرفَض في `_row_status` لا هنا،
+        فهذه دالةٌ نصّيّة صِرفة)."""
+        w = self.widgets.get("taux")
+        if not isinstance(w, _RateEdit):
+            return "blank", None
+        raw = w.raw_text()
+        if not raw:
+            return "blank", None
+        if not PZ.is_valid_rate_text(raw):
+            return "invalid", None
+        return "ok", PZ.parse_rate_pct(raw)
 
     def is_empty(self) -> bool:
         pk = _ROW_SPECS[self.kind].get("primary")
@@ -1019,12 +1273,22 @@ class _SheetCanvas(QWidget):
                 cell("nbase", i, fmt_montant(res.base_irg), "e", cc)
                 cell("retenue", i, fmt_montant(res.retenue_irg), "e", cc)
             else:
-                # المبلغ المحسوب (IEP/HS في GAIN · Absence/Retard **موجباً**
-                # في RETENUE، §9) — خليّةٌ للقراءة تُرسَم من BulletinView.
+                # المبلغ المحسوب (IEP/HS/Panier/Transport في GAIN ·
+                # Absence/Retard **موجباً** في RETENUE، §9) — خليّةٌ للقراءة
+                # تُرسَم من BulletinView.
                 spec = _ROW_SPECS[row.kind]
                 col = spec.get("computed")
                 if col and computed and row._amount is not None:
                     cell(col, i, fmt_montant(abs(row._amount)), "e", cc)
+                #  خلايا عرضٍ إضافيّة للقراءة فقط (E.4 §8/§12: BASE/TAUX
+                #  الفعليّان — IEP/Retard/Panier/Transport) — من نفس
+                #  ``BulletinView.result``، بلا صيغة موازية هنا.
+                if computed and spec.get("computed_extra"):
+                    extra = _row_display_extra(row, sc._bulletin_view)
+                    for excol in spec["computed_extra"]:
+                        exval = extra.get(excol)
+                        if exval is not None:
+                            cell(excol, i, fmt_montant(exval), "e", cc)
 
         # ---- TOTAL / NET À PAYER: بنيتهما تُرسَم **دائماً** (§3/§30) ----
         #  القيَم وحدها تبقى فارغة إذا تعذّر الحساب — «غير محسوبة» ≠ «صفر».
@@ -1091,7 +1355,7 @@ class BulletinTemplateScreen(Screen):
     DOC_LABEL = "Bulletin de paie"
     OUTPUT_DIRNAME = "Bulletins de paie"
     DRAFT_NAME = "paie_template"
-    DRAFT_VERSION = 6          # E.3: نموذج الشريحة+الترتيب (الموضع البصريّ)
+    DRAFT_VERSION = 7          # E.4: prorata_policy مُخزَّنةٌ صراحةً في draft_state
 
     #  أدنى عدد أسطر مرسومة تحت IRG (منطقة Zone C + فراغ) قبل TOTAL/NET —
     #  يُبقي أسفل الوثيقة ثابتاً بصرياً مهما قلّت الأسطر (§4). المساحة
@@ -1161,6 +1425,11 @@ class BulletinTemplateScreen(Screen):
         self._bulletin_view = None                      # lignes.BulletinView (المحرّك)
         self._presented = None                          # PZ.Presented (طبقة العرض)
         self._cnas_taux_str = ""            # نسبة CNAS معروضة (من params_paie)
+        #  E.4 §3/§4: سياسة تنسيب السلة/النقل لهذا العمل تحديداً — عملٌ
+        #  **جديد** يبدأ على PRORATA_MIXTE (المنتَج الافتراضيّ الجديد لهذه
+        #  الشاشة)؛ عملٌ قديمٌ مُستعاد (بلا الحقل الجديد) يُبقي سلوكه
+        #  القديم — ``apply_draft`` يُعيد ضبطها صراحةً.
+        self._prorata_policy = "PRORATA_MIXTE"
         self._computed = False                 # نتيجة حقيقية مقابل «غير محسوبة»
 
         self.build_ui()
@@ -1469,10 +1738,9 @@ class BulletinTemplateScreen(Screen):
         self._btn_plus = QToolButton(self._canvas)
         self._btn_plus.setText("＋")
         self._btn_plus.setCursor(Qt.PointingHandCursor)
-        self._btn_plus.setToolTip("إدراج سطر هنا")
-        self._btn_plus.clicked.connect(
-            lambda: self._plus_target is not None
-            and self._insert_row_at("free", *self._plus_target))
+        self._btn_plus.setToolTip("إضافة سطر — موجَّه أو حرّ")
+        self._ajouter_menu = None           # E4.6 §1: يبقى حيّاً أثناء العرض
+        self._btn_plus.clicked.connect(self._on_plus_clicked)
         self._btn_minus = QToolButton(self._canvas)
         self._btn_minus.setText("－")
         self._btn_minus.setCursor(Qt.PointingHandCursor)
@@ -1501,6 +1769,80 @@ class BulletinTemplateScreen(Screen):
                   getattr(self, "_btn_minus", None)):
             if b is not None:
                 b.hide()
+
+    # ============= قائمة «＋ إضافة» الموجَّهة (E4.6 §1) =============
+    #  المستخدم العاديّ لا يحتاج معرفة/كتابة تسميات ذكيّة دقيقة — النقر
+    #  على ＋ يعرض قائمةً باختياراتٍ صريحة: سبعة أنواعٍ ذكيّة موجَّهة
+    #  (كودها/تسميتها الافتراضيّان الجديدان يُضبَطان مباشرةً، §C)، ثم
+    #  Prime/Autre العامّتان، ثم سطرٌ حرّ (الافتراضيّ القديم، محفوظ). لا
+    #  "RETENUE LIBRE" ذكيّة. اكتمال LIBELLÉ الذكيّ داخل سطرٍ حرٍّ قائم
+    #  (§14 E.3) يبقى متاحاً بلا تغيير — القائمة مسارٌ إضافيّ، لا بديل.
+    def _build_ajouter_menu(self, target):
+        """يبني ``QMenu`` حقيقيّاً لموضع ＋ ``target`` (segment, index).
+        مُعرَّضٌ صراحةً (لا داخل ``_on_plus_clicked`` فقط) كي تختبره
+        الاختبارات مباشرةً بـ ``action.trigger()`` — بلا ``exec()``/
+        ``popup()`` أبداً من كودٍ اختباريّ (§E4.6 قد يُعلِّق في Qt
+        الخلفيّ offscreen)."""
+        menu = QMenu(self)
+        for label, kind in _AJOUTER_MENU:
+            act = menu.addAction(label)
+            if kind in _SMART_TYPES and not self._can_add_smart(kind):
+                #  E4.6 §2: تفرّدٌ موجود مسبقاً ⇒ العنصر معطَّلٌ لا مخفيّ
+                #  (يبقى مرئياً — يوضح للمستخدم أنّ النوع موجودٌ أصلاً).
+                act.setEnabled(False)
+                act.setToolTip(f"«{label}» موجودة مسبقاً — سطرٌ واحد فقط.")
+            act.triggered.connect(
+                lambda _checked=False, k=kind: self._on_ajouter_menu_pick(k, target))
+        menu.addSeparator()
+        free_act = menu.addAction("سطر حرّ")
+        free_act.triggered.connect(
+            lambda _checked=False: self._insert_row_at("free", *target))
+        return menu
+
+    def _on_plus_clicked(self):
+        if self._plus_target is None:
+            return
+        menu = self._build_ajouter_menu(self._plus_target)
+        self._ajouter_menu = menu
+        menu.popup(self._btn_plus.mapToGlobal(self._btn_plus.rect().bottomLeft()))
+
+    def _on_ajouter_menu_pick(self, kind, target):
+        """اختيارٌ من قائمة ＋ (E4.6 §1/§3): يُنشئ الصفّ الدلاليّ مباشرةً
+        (لا مساراً وهمياً عبر كتابة نصّ) — CODE/LIBELLÉ الافتراضيّان
+        الجديدان من ``_ROW_SPECS`` نفسها، التركيز على أوّل خليّةٍ فعليّة،
+        المسار الكامل عبر ``_insert_row_at`` (نفس التحقّق/إعادة الحساب)."""
+        if kind in _SMART_TYPES:
+            self._insert_smart_from_gutter(kind, target)
+        else:
+            #  Prime/Autre — عامّتان، لا قفل منطقة؛ تُدرَجان في نفس موضع
+            #  النقر بالضبط (سلوك السطر الحرّ القديم نفسه).
+            seg, index = target
+            self._insert_row_at(kind, seg, index)
+
+    def _insert_smart_from_gutter(self, kind, target):
+        """يُدرج نوعاً ذكيّاً من القائمة الموجَّهة، محترماً شريحة النقر
+        الدقيقة إن وافقت منطقة النوع المُلزَمة (E4.6 §3)؛ وإلا يُصحَّح
+        تلقائياً إلى الشريحة الافتراضية الصحيحة لذلك النوع — لا رفضٌ
+        صامت لطلب المستخدم، ولا خرقٌ للقاعدة الماليّة (E.3-Review §7)."""
+        seg, index = target
+        if seg not in _SEGMENTS or _SEGMENT_ZONE.get(seg) != _SMART_TYPES[kind]["zone"]:
+            seg = _DEFAULT_SEGMENT.get(kind, seg)
+            index = len(self._segment_rows(seg))
+        if not self._can_add_smart(kind):
+            self.status.setText(
+                f"«{_SMART_TYPES[kind]['label']}» موجودة مسبقاً — سطرٌ واحد فقط.")
+            return None
+        r = self._insert_row_at(kind, seg, index)
+        if r is None:
+            return None
+        #  التركيز على أوّل خليّة إدخالٍ فعليّة — لا CODE (يحمل الافتراض
+        #  الجاهز) ولا LIBELLÉ الذكيّ (مملوءٌ مسبقاً بمعنى)؛ نفس منطق
+        #  ``_convert_row`` (§18 E.3) — اتّساقٌ واحد للتركيز بعد الإنشاء.
+        first_edit = next((c["name"] for c in _ROW_SPECS[kind]["cells"]
+                           if c["kind"] != "smart" and c["name"] != "code"), None)
+        if first_edit:
+            self._widgets[r.cell_key(first_edit)].setFocus()
+        return r
 
     def _gutter_mouse_move(self, canvas_pos):
         """يُستدعى من ``eventFilter`` عند حركة الفأرة فوق اللوحة (§E.5):
@@ -1754,6 +2096,10 @@ class BulletinTemplateScreen(Screen):
                       "review": r._review}
                      for r in self._rows],
             "incomplete": bool(v is not None and v.is_incomplete),
+            #  E.4 §4: سياسة تنسيب صريحة — تُحفَظ ليبقى العمل قابلاً لإعادة
+            #  فتحه/طباعته بنفس النتيجة المالية بالضبط (§4: «Archived/final
+            #  historical documents must remain re-openable/reprintable»).
+            "prorata_policy": self._prorata_policy,
         }
 
     def apply_draft(self, data):
@@ -1763,6 +2109,11 @@ class BulletinTemplateScreen(Screen):
         # محفوظ رسمياً كـ«غير مكتمل» = Phase C عبر ``show_required_warnings``.
         self._restored_incomplete = bool(data.get("incomplete"))
         self._cfg = None          # الفترة قد تختلف ⇒ أعِد تحميل params
+        #  E.4 §4: عملٌ قديم بلا الحقل الجديد (DRAFT_VERSION/WORK_VERSION
+        #  أقدم) ⇒ يبقى على السلوك القديم (PRORATA_HEURES) — لا يُعاد
+        #  تفسيره صامتاً كـMIXTE. عملٌ يحمل الحقل صراحةً (جديد أو أُعيد
+        #  حفظه بعد E.4) ⇒ يُحترَم كما هو.
+        self._prorata_policy = data.get("prorata_policy") or "PRORATA_HEURES"
         self._suspend = set(self._widgets)
         try:
             for k, v in data.get("header", {}).items():
@@ -1782,9 +2133,16 @@ class BulletinTemplateScreen(Screen):
             legacy_order = {}
             for spec in data.get("rows", []):
                 kind = spec.get("kind")
+                cells = spec.get("cells") or {}
+                code_manual = bool(spec.get("code_manual"))
+                #  E.4 §G: هجرة hs+coef → hs_50/hs_100، absence+mode →
+                #  abs_jours/abs_heures — **قبل** التحقّق من ``_ROW_SPECS``
+                #  (الاسمان القديمان لم يعودا مفتاحين صالحين). تحافظ على
+                #  كلّ قيمةٍ أخرى بالضبط؛ رمزٌ آليّ قديم (code_manual=False)
+                #  وحده يتبنّى افتراض E.4 الجديد — رمزٌ يدويّ يبقى حرفياً.
+                kind, cells = _migrate_e4_row(kind, cells, code_manual)
                 if kind not in _ROW_SPECS:
                     continue
-                cells = spec.get("cells") or {}
                 #  §5/§39: عملٌ قديم بلا ``segment`` ⇒ تُشتقّ من ``zone``
                 #  القديم (A→A · B→B3 · C→C) وترتيب الملفّ، مرّةً في الذاكرة
                 #  ثمّ تُحفَظ صريحةً عند الحفظ التالي.
@@ -1804,7 +2162,7 @@ class BulletinTemplateScreen(Screen):
                 for c, val in cells.items():
                     r.set_val(c, val)
                 r._iep_manual = bool(spec.get("iep_manual"))
-                r._code_manual = bool(spec.get("code_manual"))
+                r._code_manual = code_manual
                 r._review = spec.get("review") or ""
             for kind in self._FIXED_KINDS:
                 if not any(r.kind == kind for r in self._rows):
@@ -2294,14 +2652,19 @@ class BulletinTemplateScreen(Screen):
         if k == "prime":
             return started, _num(r.val("gain")) > 0, "Prime / تعويض"
         if k == "iep":
-            return started, _num(r.val("taux")) > 0, "نسبة الأقدمية (IEP)"
-        if k == "hs":
-            ok = _num(r.val("qty")) > 0 and r.val("coef") in ("50%", "100%")
-            return started, ok, "ساعات العمل الإضافيّ"
-        if k == "absence":
-            ok = (_num(r.val("qty")) > 0
-                  and r.val("mode") in ("Absence (jours)", "Absence (heures)"))
-            return started, ok, "كمّية الغياب"
+            #  مراجعة عن بعد E4.8 §1: 0% نتيجةٌ صالحة (اقتراح آليّ تحت
+            #  الحدّ الأدنى، أو إدخالٌ يدويّ مقصود) — لا نطلب `> 0`.
+            #  ناقصٌ فقط إن كانت الخليّة فارغة حقاً أو نصّها غير رقميّ
+            #  (لا نقرأها صفراً صامتاً)؛ السالب يبقى غير صالح.
+            state, frac = r.iep_taux_validity()
+            complete = state == "ok" and frac is not None and frac >= 0
+            return started, complete, "نسبة الأقدمية (IEP)"
+        if k in ("hs_50", "hs_100"):
+            #  E.4 §B/§D: النوع نفسه يحمل 50%/100% الآن — لا حقل coef.
+            return started, _num(r.val("qty")) > 0, "ساعات العمل الإضافيّ"
+        if k in ("abs_jours", "abs_heures"):
+            #  E.4 §B/§D: النوع نفسه يحمل jours/heures الآن — لا حقل mode.
+            return started, _num(r.val("qty")) > 0, "كمّية الغياب"
         if k == "retard":
             return started, _num(r.val("qty")) > 0, "ساعات التأخّر"
         if k == "avance":
@@ -2395,7 +2758,7 @@ class BulletinTemplateScreen(Screen):
     #  حالتان مرئيّتان فقط: ⚠️ Incomplete · 🔒 Final. Auto-draft آليّة
     #  استرداد داخلية لا حالة مستند.
 
-    WORK_VERSION = 3          # E.3: segment + order لكلّ صفّ
+    WORK_VERSION = 4          # E.4: prorata_policy مُخزَّنة
 
     def work_data(self) -> dict:
         """Work Data كاملة — مصدر إعادة بناء الشاشة (لا DOCX/PDF). تلفّ
@@ -2619,14 +2982,27 @@ class BulletinTemplateScreen(Screen):
         فينتج ترتيب/محتوى واحدٌ للشاشة وPDF وWord معاً (§11/§15)."""
         out = []
         for r in self._visible_body_rows():
-            cols = {r.column(name): r.val(name) for name in r.widgets}
+            #  ``display_text`` لا ``val``: يجب أن تطابق اللقطة (PDF/Word)
+            #  الشاشة حرفياً — بما فيها TAUX IEP المعروض نسبةً مئويّة
+            #  بينما ``val()`` يبقى الكسر الحقيقيّ (تصحيح عرض IEP).
+            cols = {r.column(name): r.display_text(name) for name in r.widgets}
+            #  E.4 §8/§12: خلايا عرضٍ إضافيّة مرسومة (لا widget لها —
+            #  IEP.BASE/Retard.TAUX/Panier،Transport.TAUX) تدخل اللقطة
+            #  أيضاً، فيراها PDF/Word لا الشاشة فقط.
+            extra = _row_display_extra(r, self._bulletin_view)
+            nbase = cols.get("nbase", "")
+            taux = cols.get("taux", "")
+            if "nbase" in extra and not nbase:
+                nbase = fmt_montant(extra["nbase"])
+            if "taux" in extra and not taux:
+                taux = fmt_montant(extra["taux"])
             out.append(PZ.RowSnapshot(
                 rid=r.rid, kind=r.kind, role=r.role,
                 segment=r.segment or "", order=r.order or 0.0,
                 zone=(r.zone if r.role == "optional" else ""),
                 code=cols.get("code", r.code),
                 libelle=cols.get("libelle", r.libelle),
-                nbase=cols.get("nbase", ""), taux=cols.get("taux", ""),
+                nbase=nbase, taux=taux,
                 gain_input=cols.get("gain", ""),
                 retenue_input=cols.get("retenue", ""),
                 amount=r._amount, review=r._review))
@@ -2673,8 +3049,12 @@ class BulletinTemplateScreen(Screen):
         for r in self._rows:
             if r.kind == "iep" and key == r.cell_key("taux"):
                 # تعديل يدويّ للنسبة → Manual Override؛ تفريغها → العودة
-                # للاقتراح (لفتة خفيفة، بلا زرّ إضافيّ).
-                r._iep_manual = bool(r.val("taux"))
+                # للاقتراح (لفتة خفيفة، بلا زرّ إضافيّ). مراجعة عن بعد
+                # E4.8 §1/§2: الاعتماد على الخليّة **فارغة أم لا**
+                # (‏``iep_taux_validity``) لا ``val()`` — نصٌّ فاسد يُعتبَر
+                # يدوياً أيضاً (يبقى ظاهراً، لا يُستبدَل صامتاً باقتراحٍ
+                # جديد يخفي الفساد)؛ فراغٌ حقيقيّ وحده يعيد للاقتراح.
+                r._iep_manual = r.iep_taux_validity()[0] != "blank"
             if r.kind == "free" and key in (r.cell_key("gain"),
                                             r.cell_key("retenue")):
                 self._enforce_free_gain_retenue(r, key)
@@ -2728,7 +3108,9 @@ class BulletinTemplateScreen(Screen):
             return
         k = row.cell_key("taux")
         self._suspend.add(k)
-        row.widgets["taux"].setText(format(sug.taux, "f"))
+        #  sug.taux كسرٌ حقيقيّ (0.05 = 5%) — set_val يعرضه نسبةً مئويّة
+        #  (تصحيح عرض IEP)، لا setText مباشرةً (كان يكتب الكسر خامّاً).
+        row.set_val("taux", format(sug.taux, "f"))
         self._suspend.discard(k)
         row._iep_manual = False
 
@@ -2753,6 +3135,7 @@ class BulletinTemplateScreen(Screen):
         used = {}
         for r in self._visible_body_rows():
             r._amount = None
+            r._taux_exact = None
             if r.role == "system":
                 continue
             sig = _row_engine_signature(r)
@@ -2762,6 +3145,7 @@ class BulletinTemplateScreen(Screen):
             n = used.get(sig, 0)
             if n < len(lst):
                 r._amount = lst[n].montant
+                r._taux_exact = lst[n].taux
                 used[sig] = n + 1
 
     def _sync_row_styles(self):
@@ -2871,10 +3255,14 @@ class BulletinTemplateScreen(Screen):
                 self._apply_iep_suggestion(r)
         try:
             cfg = self._load_cfg()
-            #  مصدر الحساب الوحيد: lignes.compute_bulletin (بلا Convention/
-            #  Catalogue). _calc_input / _calc_result للمُصيِّر يُشتقّان منه.
+            #  مصدر الحساب الوحيد: lignes.compute_bulletin. لا Catalogue.
+            #  Convention محدودةٌ عمداً لمفتاحٍ واحد فقط (E.4 §3/§4):
+            #  ``prorata_panier_transport`` — سياسة تنسيب السلة/النقل
+            #  المُختارة لهذا العمل تحديداً (``self._prorata_policy``،
+            #  مُحفَّظة/مُستعادة صريحةً — لا كتالوج، لا اتفاقية شركة).
             self._bulletin_view = lignes.compute_bulletin(
-                self._build_entries(), cfg)
+                self._build_entries(), cfg,
+                convention={"prorata_panier_transport": self._prorata_policy})
             self._calc_input = self._build_input()
             self._calc_result = self._view_to_paieresult(self._bulletin_view)
             self._computed = self._is_computable()

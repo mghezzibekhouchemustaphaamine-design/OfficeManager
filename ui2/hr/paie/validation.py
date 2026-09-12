@@ -19,6 +19,7 @@
 """
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal, InvalidOperation
 
 from programme.payroll.config_loader import PayrollConfigError, load_params
 from ui.hr.constants import MOIS_FR
@@ -98,6 +99,74 @@ class ValidationResult:
 
     def summary_lines(self):
         return [p.label for p in self.problems]
+
+
+def _dec(value) -> Decimal:
+    s = str(value or "").strip().replace(" ", "").replace(",", ".")
+    if not s:
+        return Decimal("0")
+    try:
+        return Decimal(s)
+    except InvalidOperation:
+        return Decimal("0")
+
+
+#  مراجعة عن بعد E4.8 §6: حضورٌ مستحيل يمنع **الإصدار النهائي فقط** —
+#  الحفظ يبقى مسموحاً دائماً (§4، ``_on_save`` لا يستشير هذا التحقّق
+#  أصلاً). لا تغيير على أيّ صيغة حسابٍ في calc.py/lignes.py، ولا حدّاً
+#  قانونياً جديداً للساعات الإضافيّة (تبقى قاعدتها الحالية: موجبة فقط).
+def _attendance_problems(screen, cfg) -> list:
+    jours_mois = _dec(cfg.get("jours_mois"))
+    heures_mois = _dec(cfg.get("heures_mois"))
+
+    def _row(kind):
+        return next((r for r in screen._rows if r.kind == kind), None)
+
+    abs_jours_row = _row("abs_jours")
+    abs_heures_row = _row("abs_heures")
+    retard_row = _row("retard")
+
+    abs_jours = _dec(abs_jours_row.val("qty")) if abs_jours_row else Decimal("0")
+    abs_heures = _dec(abs_heures_row.val("qty")) if abs_heures_row else Decimal("0")
+    retard = _dec(retard_row.val("qty")) if retard_row else Decimal("0")
+
+    problems = []
+    if abs_jours_row is not None and abs_jours > 0:
+        if jours_mois <= 0 or abs_jours > jours_mois:
+            problems.append(Problem(
+                screen._row_problem_key(abs_jours_row),
+                f"غياب الأيام ({abs_jours}) يتجاوز أيام الشهر الفعليّة "
+                f"({jours_mois}) — قيمةٌ مستحيلة.", "payroll"))
+    if abs_heures_row is not None and abs_heures > 0:
+        if heures_mois <= 0 or abs_heures > heures_mois:
+            problems.append(Problem(
+                screen._row_problem_key(abs_heures_row),
+                f"غياب الساعات ({abs_heures}) يتجاوز ساعات الشهر الفعليّة "
+                f"({heures_mois}) — قيمةٌ مستحيلة.", "payroll"))
+    if retard_row is not None and retard > 0:
+        if heures_mois <= 0 or retard > heures_mois:
+            problems.append(Problem(
+                screen._row_problem_key(retard_row),
+                f"ساعات التأخّر ({retard}) تتجاوز ساعات الشهر الفعليّة "
+                f"({heures_mois}) — قيمةٌ مستحيلة.", "payroll"))
+
+    #  الحالة المُجمَّعة: كسر غياب الأيام/الساعات معاً (§6 «attendance
+    #  absence fraction») يجب ألا يتجاوز 1 — منفصلٌ عن سقف كلّ خليّةٍ
+    #  بمفردها أعلاه (قد يكون كلٌّ منهما ضمن سقفه الخاصّ لكن مجموعهما
+    #  يتجاوز شهراً كاملاً).
+    if jours_mois > 0 and heures_mois > 0:
+        absence_fraction = (abs_jours / jours_mois) + (abs_heures / heures_mois)
+        if absence_fraction > 1:
+            problems.append(Problem(
+                "", "مجموع نسبة غياب الأيام والساعات معاً يتجاوز 100% من "
+                "الشهر — قيمةٌ مستحيلة.", "payroll"))
+        total_reducers = ((abs_jours / jours_mois)
+                          + ((abs_heures + retard) / heures_mois))
+        if total_reducers > 1:
+            problems.append(Problem(
+                "", "مجموع مُنقِصات وقت الأجر (غياب + تأخّر) معاً يتجاوز "
+                "100% من الشهر — قيمةٌ مستحيلة.", "payroll"))
+    return problems
 
 
 def _month_known(text: str) -> bool:
@@ -195,6 +264,17 @@ def validate_screen(screen) -> ValidationResult:
                 r.cell_key("montant"),
                 "اقتطاع «Autre» في منطقة CNAS/IRG غير مدعوم (§8/§13) — "
                 "استعمل Absence/Retard، أو انقله لأسفل IRG.", "invalid"))
+        #  E.4 §6/§14: CODE رقميّ جزئيّ (١ أو ٢ خانة) غير مكتمل عند
+        #  الإصدار النهائيّ — رمزٌ قديمٌ نصّيّ (غير رقميّ، مثل "ABS") مُعفًى
+        #  دائماً (§6 «treat it as legacy until user explicitly edits it»).
+        if r.kind in ("iep", "hs_50", "hs_100", "abs_jours", "abs_heures",
+                     "retard", "avance"):
+            code = r.val("code").strip()
+            if code and code.isdigit() and len(code) != 3:
+                res.invalid_fields.append(Problem(
+                    r.cell_key("code"),
+                    f"رمز «{code}» رقميّ غير مكتمل — يجب أن يكون 3 أرقام "
+                    "بالضبط (§6)، أو استعمل رمزاً نصّياً.", "invalid"))
         started, complete, label = screen._row_status(r)
         if started and not complete:
             res.incomplete_rows.append(Problem(
@@ -202,6 +282,7 @@ def validate_screen(screen) -> ValidationResult:
                 f"سطر «{label}» ناقص — أكمِل بياناته أو احذف السطر.", "row"))
 
     # -------- C) معاملات الأجور للفترة (§12) --------
+    cfg = None
     if (screen._field_present("mois") and screen._field_present("annee")
             and "mois" not in _invalid_keys and "annee" not in _invalid_keys):
         try:
@@ -211,12 +292,18 @@ def validate_screen(screen) -> ValidationResult:
             d = None
         if d is not None:
             try:
-                load_params(d)
+                cfg = load_params(d)
             except PayrollConfigError:
                 res.payroll_errors.append(Problem(
                     "mois",
                     "لا يوجد ملف معاملات أجور للفترة المحدَّدة "
                     "(‏params_paie).", "payroll"))
+
+    # -------- D) حضورٌ مستحيل يمنع الإصدار النهائي فقط (مراجعة عن بعد
+    # E4.8 §6) — يحتاج cfg الفترة الفعليّة (jours_mois/heures_mois)،
+    # فيُشترَط توفّره من الخطوة أعلاه.
+    if cfg is not None:
+        res.payroll_errors.extend(_attendance_problems(screen, cfg))
 
     # -------- C) تعذّر الحساب النهائي --------
     if getattr(screen, "_bulletin_view", None) is None:

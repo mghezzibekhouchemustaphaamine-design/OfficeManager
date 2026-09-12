@@ -47,7 +47,12 @@ class ServiceCard(QFrame):
         self.setCursor(Qt.PointingHandCursor)
         self.setFrameShape(QFrame.NoFrame)
         self.setMinimumSize(180, 110)
-        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        #  ‏P0.3 §5: كانت Fixed — تُثبِّت الارتفاع على sizeHint الأصليّ
+        #  بلا اعتبار طول الوصف الفعليّ بعد إعادة اللفّ، فتُقصّ الأسطر
+        #  الزائدة عند تضييق Workspace (أعمدة أكثر ⇒ بطاقة أضيق ⇒ وصفٌ
+        #  أطول سطوراً). Minimum تسمح بنموّ الارتفاع فعلياً (QLabel
+        #  الملفوف يدعم heightForWidth) بلا تمدّدٍ زائدٍ حين لا حاجة له.
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(*(theme.SPACE["md"],) * 4)

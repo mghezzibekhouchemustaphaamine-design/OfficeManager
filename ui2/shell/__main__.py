@@ -1,6 +1,7 @@
 """تشغيل Shell وحده للتجربة — لا يستبدل ``main.py`` الرسمي.
 
-    python -m ui2.shell
+    python -m ui2.shell                 # وضعٌ عاديّ — بلا Demo Tabs
+    python -m ui2.shell --demo-tabs     # + تبويبات أعمالٍ تجريبية (P0.3 §6)
 """
 import sys
 
@@ -15,6 +16,10 @@ def main() -> int:
     theme.apply_theme(app)
 
     win = OfficeMainWindow()
+    #  ‏P0.3 §6: Demo Tabs معزولةٌ خلف علمٍ صريح — لا تظهر تلقائياً في
+    #  الوضع العاديّ (تحقّقٌ بصريّ فقط، ليست جزءاً من مسار المنتج).
+    if "--demo-tabs" in sys.argv[1:]:
+        win.enable_demo_tabs()
     win.show()
 
     return app.exec()

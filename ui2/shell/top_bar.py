@@ -19,8 +19,13 @@ from ui2.shell._icon_button import IconButton
 HEIGHT = 52
 #  عرض Brand Zone الافتراضي — يطابق عرض Explorer الابتدائي في
 #  main_window.py (splitter.setSizes([220, ...])). يُزامَن لاحقاً مع
-#  سحب الفاصل عبر set_brand_width().
+#  سحب الفاصل عبر set_brand_width()، بحدٍّ أقصى (P0.3 §2): Explorer
+#  قابلٌ للتوسّع حتى 460px (main_window.EXPLORER_MAX_WIDTH)، لكن Brand
+#  Zone لا تكبر معه بلا حدود — تتجمّد عند MAX_BRAND_WIDTH فلا تتحوّل
+#  رأس "OfficeManager" إلى مساحة فارغة ضخمة.
+MIN_BRAND_WIDTH = 180
 DEFAULT_BRAND_WIDTH = 220
+MAX_BRAND_WIDTH = 320
 
 
 class TopBar(QWidget):
@@ -110,6 +115,10 @@ class TopBar(QWidget):
 
     def set_brand_width(self, width: int) -> None:
         """مزامنة عرض Brand Zone مع عرض Explorer الفعليّ (سحب الفاصل) —
-        بصريّ فقط، لا يُغيَّر افتراضياً إلا عند طلب main_window صراحةً."""
-        if width > 0:
-            self._brand_zone.setFixedWidth(width)
+        بصريّ فقط، مُحدَّدةً بـ[MIN_BRAND_WIDTH, MAX_BRAND_WIDTH]
+        (P0.3 §2: ``brand_width = clamp(explorer_width, min, max)``) —
+        لا تتبع Explorer حرفياً بلا حدود."""
+        if width <= 0:
+            return
+        clamped = max(MIN_BRAND_WIDTH, min(MAX_BRAND_WIDTH, width))
+        self._brand_zone.setFixedWidth(clamped)

@@ -1,11 +1,15 @@
-"""WorkStatusBar — شريط حالة العمل أسفل Workspace فقط (Prototype، P0.2).
+"""WorkStatusBar — شريط الحالة الوحيد أسفل Workspace (Prototype، P0.2/P0.3).
 
-**بصريّ بحت الآن**: صفحات (‹ 1/1 ›)، أزرار عرضٍ (Fit Page/Fit Width)،
-وتحكّم تكبير (−/slider/+/100%/ملء الشاشة). لا شيء هنا يربط بأيّ خدمة أو
-مستند حقيقيّ — التنقّل بين الصفحات معطَّلٌ عمداً (لا Work حقيقي بعد)،
-وFit Page/Fit Width/Zoom/Full Screen بلا أثرٍ فعليّ على أي محتوى؛ شريط
-التكبير يحدّث تسميته الخاصّة فقط لإثبات الشكل. التنفيذ الحقيقيّ
-(صفحات/زوم/ملء شاشة فعليّ) خارج نطاق هذه المرحلة.
+**بصريّ بحت الآن**: رسالة حالة + صفحات (‹ 1/1 ›)، أزرار عرضٍ (Fit Page/
+Fit Width)، وتحكّم تكبير (−/slider/+/100%/ملء الشاشة). لا شيء هنا يربط
+بأيّ خدمة أو مستند حقيقيّ — التنقّل بين الصفحات معطَّلٌ عمداً (لا Work
+حقيقي بعد)، وFit Page/Fit Width/Zoom/Full Screen بلا أثرٍ فعليّ على أي
+محتوى؛ شريط التكبير يحدّث تسميته الخاصّة فقط لإثبات الشكل. التنفيذ
+الحقيقيّ (صفحات/زوم/ملء شاشة فعليّ) خارج نطاق هذه المرحلة.
+
+**الشريط الوحيد (P0.3 §4)**: ``QMainWindow.statusBar()`` الأصليّة لا
+تُستعمَل في Shell الجديد إطلاقاً — رسائل الحالة ("جاهز"، "خدمة: CD")
+تصل هنا عبر :meth:`set_message` بدل شريطٍ ثانٍ منفصل.
 
 مكانه ثابتٌ أسفل ``WorkspaceHost`` فقط (لا يمتدّ تحت Explorer) —
 ``WorkspaceHost`` هو من يضمّه في تخطيطه العموديّ.
@@ -20,10 +24,20 @@ HEIGHT = 30
 
 
 class WorkStatusBar(QWidget):
-    """ثلاث مناطق: صفحات (يسار) · عناصر عرض (وسط) · تكبير (يمين)."""
+    """أربع مناطق **مرتَّبة هندسياً LTR دائماً**: رسالة (أقصى اليسار) ·
+    صفحات · عناصر عرض (وسط) · تكبير (أقصى اليمين).
+
+    ‏**STRUCTURAL DIRECTION != TEXT DIRECTION** (P0.3 §3 — نفس مبدأ
+    MainSplitter وTopBar في P0.1/P0.2): ترتيب هذه المناطق ``LEFT → RIGHT``
+    مقصودٌ بنيوياً بصرف النظر عن apply_theme العامّ (RTL)؛ لو تُرِك هذا
+    الودجت يرث RTL من WorkspaceHost الأب كما كان، لانقلب الشريط كاملاً
+    (التكبير يظهر يساراً، الصفحات يميناً) — لذا يُضبَط LTR صراحةً هنا،
+    بينما نصوص/ToolTips كل عنصر تبقى بلغتها المناسبة (عربية) دون تأثّر."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        #  اتجاهٌ بنيويّ صريح — انظر docstring الصنف أعلاه.
+        self.setLayoutDirection(Qt.LeftToRight)
         self.setFixedHeight(HEIGHT)
         self.setStyleSheet(
             f"background: {theme.SURFACE}; border-top: 1px solid {theme.BORDER};"
@@ -33,6 +47,11 @@ class WorkStatusBar(QWidget):
         lay.setContentsMargins(theme.SPACE["md"], 0, theme.SPACE["md"], 0)
         lay.setSpacing(theme.SPACE["sm"])
 
+        self.lbl_message = QLabel("")
+        self.lbl_message.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        lay.addWidget(self.lbl_message)
+        lay.addSpacing(theme.SPACE["md"])
+
         for w in self._build_pages_zone():
             lay.addWidget(w)
         lay.addStretch(1)
@@ -41,6 +60,11 @@ class WorkStatusBar(QWidget):
         lay.addStretch(1)
         for w in self._build_zoom_zone():
             lay.addWidget(w)
+
+    def set_message(self, text: str) -> None:
+        """رسالة الحالة الوحيدة في Shell (P0.3 §4) — بديل QStatusBar
+        الثاني الذي كان يظهر تحت هذا الشريط."""
+        self.lbl_message.setText(text or "")
 
     # ------------------------------------------------------------ المناطق
     def _build_pages_zone(self):

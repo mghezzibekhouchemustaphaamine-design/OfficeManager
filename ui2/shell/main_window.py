@@ -1,16 +1,28 @@
 """OfficeMainWindow — الهيكل الأم للبرنامج (Prototype).
 
-يركّب TopBar + MainSplitter (Explorer placeholder | WorkspaceHost) +
-StatusBar فقط. **لا** business logic خاصّ بأي خدمة هنا — الربط الحقيقي
-بـ Paie/CD/Explorer خارج نطاق هذه المرحلة (راجع docs/CHANGELOG.md).
+يركّب TopBar + MainSplitter (Explorer placeholder | WorkspaceHost) فقط.
+**لا** business logic خاصّ بأي خدمة هنا — الربط الحقيقي بـ Paie/CD/Explorer
+خارج نطاق هذه المرحلة (راجع docs/CHANGELOG.md).
+
+P0.3 §4: لا شريط حالة ثانٍ — رسائل الحالة تعيش في
+``WorkspaceHost.work_status_bar`` وحدها؛ ``QMainWindow.statusBar()``
+الأصليّة تبقى بنيةً متاحة (لم تُحذَف) لكن Shell الجديد لا يستدعيها.
 """
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QMainWindow, QSplitter, QVBoxLayout, QWidget
 
 from ui2 import theme
+from ui2.shell.demo_tabs import DEMO_WORK_TABS
 from ui2.shell.services import ServiceDescriptor
 from ui2.shell.top_bar import TopBar
 from ui2.shell.workspace import WorkspaceHost
+
+#  ‏P0.3 §1: حدود عرضٍ مبدئية للـPrototype — ليست قوانين نهائية. تمنع
+#  سحب Explorer حتى يبتلع Workspace (أو العكس: سحقه شبه الصفر).
+EXPLORER_MIN_WIDTH = 180
+EXPLORER_DEFAULT_WIDTH = 220
+EXPLORER_MAX_WIDTH = 460
+WORKSPACE_MIN_WIDTH = 600
 
 
 class ExplorerPlaceholder(QLabel):
@@ -23,7 +35,10 @@ class ExplorerPlaceholder(QLabel):
         #  الموضع Left/Right شيء، واتجاه القراءة داخل اللوحة شيءٌ آخر).
         self.setLayoutDirection(Qt.RightToLeft)
         self.setAlignment(Qt.AlignCenter)
-        self.setMinimumWidth(140)
+        #  ‏P0.3 §1: حدّا عرضٍ أدنى/أقصى — يمنعان Explorer من ابتلاع
+        #  Workspace عند السحب، أو الانسحاق عن حدٍّ معقول للقراءة.
+        self.setMinimumWidth(EXPLORER_MIN_WIDTH)
+        self.setMaximumWidth(EXPLORER_MAX_WIDTH)
         #  الحدّ على الحافة اليمنى (لا اليسرى) — Explorer صار يسار
         #  الشاشة هندسياً (P0.1 §1)، فحدّه الفاصل عن Workspace يقع يميناً.
         self.setStyleSheet(
@@ -33,7 +48,7 @@ class ExplorerPlaceholder(QLabel):
 
 
 class OfficeMainWindow(QMainWindow):
-    """نافذة Shell الأم — TopBar / MainSplitter(Explorer, Workspace) / StatusBar."""
+    """نافذة Shell الأم — TopBar / MainSplitter(Explorer, Workspace)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -71,19 +86,28 @@ class OfficeMainWindow(QMainWindow):
         self.splitter.addWidget(self.explorer_placeholder)
 
         self.workspace = WorkspaceHost(self.splitter)
+        #  ‏P0.3 §1: حدٌّ أدنى محترم لِـWorkspace — لا يُسحَق شبه الصفر
+        #  عند سحب الفاصل نحو Explorer. النافذة نفسها ترفض الانكماش دون
+        #  مجموع الحدّين الأدنيين (سلوك Qt الطبيعي لتخطيطٍ بحدود دنيا) —
+        #  بلا منع resize العاديّ، فقط حدٌّ سفليّ معقول.
+        self.workspace.setMinimumWidth(WORKSPACE_MIN_WIDTH)
         self.splitter.addWidget(self.workspace)
 
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([220, 960])
+        self.splitter.setSizes([EXPLORER_DEFAULT_WIDTH, 960])
         #  مزامنة عرض Brand Zone في TopBar مع عرض Explorer الفعليّ —
-        #  بصريّ فقط (بند 1 في P0.2: «يتناسق بصرياً مع عرض Explorer»).
+        #  بصريّ فقط (P0.2 §2)، بحدٍّ أقصى مضبوطٍ داخل TopBar نفسه
+        #  (P0.3 §2: لا تتمدّد Brand Zone بلا حدود مع اتساع Explorer).
         self.splitter.splitterMoved.connect(self._sync_brand_width)
 
         self.workspace.home_view.serviceRequested.connect(self._open_service_start)
+        self.workspace.demoWorkActivated.connect(self._on_demo_work_activated)
 
-        self.setStatusBar(self.statusBar())
-        self.statusBar().showMessage("جاهز")
+        #  ‏P0.3 §4: لا شريط حالة ثانٍ — الرسائل تعيش في WorkStatusBar
+        #  وحدها (لا نستدعي self.statusBar()/setStatusBar هنا؛ البنية
+        #  الأصلية لِـQMainWindow تبقى متاحة، فقط غير مُستخدَمة في Shell).
+        self.workspace.work_status_bar.set_message("جاهز")
 
         #  Home هي الشاشة الابتدائية — زرّها في TopBar يبدأ نشِطاً.
         self.top_bar.set_home_active(True)
@@ -92,7 +116,7 @@ class OfficeMainWindow(QMainWindow):
     def go_home(self) -> None:
         self.workspace.show_home()
         self.top_bar.set_home_active(True)
-        self.statusBar().showMessage("الرئيسية")
+        self.workspace.work_status_bar.set_message("الرئيسية")
 
     def _open_service_start(self, key: str) -> None:
         service = next(
@@ -102,14 +126,26 @@ class OfficeMainWindow(QMainWindow):
             return
         self.workspace.show_service_start(service)
         self.top_bar.set_home_active(False)
-        self.statusBar().showMessage(f"خدمة: {service.title}")
+        self.workspace.work_status_bar.set_message(f"خدمة: {service.title}")
 
     def open_service_start(self, service: ServiceDescriptor) -> None:
         """نقطة دخول برمجية مباشرة (تُستخدم في الاختبارات)."""
         self.workspace.show_service_start(service)
         self.top_bar.set_home_active(False)
 
+    def _on_demo_work_activated(self, title: str) -> None:
+        self.top_bar.set_home_active(False)
+        self.workspace.work_status_bar.set_message(f"عمل تجريبيّ: {title}")
+
     def _sync_brand_width(self, *_args) -> None:
         sizes = self.splitter.sizes()
         if sizes:
             self.top_bar.set_brand_width(sizes[0])
+
+    # --------------------------------------------------- Demo Tabs (P0.3 §6)
+    def enable_demo_tabs(self) -> None:
+        """يفعّل تبويبات أعمالٍ تجريبية لتقييم WorkTabBar بصرياً فقط —
+        **لا تدخل مسار المنتج**: بلا Work lifecycle حقيقيّ، بلا كتابة
+        قاعدة بيانات. تُستدعى فقط من نقطة الدخول التجريبية
+        (``python -m ui2.shell --demo-tabs``) أو صراحةً من اختبار."""
+        self.workspace.enable_demo_tabs(DEMO_WORK_TABS)

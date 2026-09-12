@@ -10,7 +10,7 @@ import unittest
 
 try:
     from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QStatusBar
     _HAS_QT = True
 except Exception:                                    # noqa: BLE001
     _HAS_QT = False
@@ -253,6 +253,205 @@ class ShellStructureTest(unittest.TestCase):
         arabic_align = self.win.workspace.service_start_view._title.alignment()
         self.assertEqual(latin_align, arabic_align)
         self.assertTrue(latin_align & _Qt.AlignRight)
+
+    # ==================== P0.3 §1: حدود عرض Explorer/Workspace ====================
+    def test_explorer_has_min_and_max_width_guardrails(self):
+        from ui2.shell.main_window import EXPLORER_MAX_WIDTH, EXPLORER_MIN_WIDTH
+        self.assertEqual(
+            self.win.explorer_placeholder.minimumWidth(), EXPLORER_MIN_WIDTH)
+        self.assertEqual(
+            self.win.explorer_placeholder.maximumWidth(), EXPLORER_MAX_WIDTH)
+
+    def test_dragging_splitter_far_cannot_collapse_workspace(self):
+        """سحب الفاصل نحو أقصى اليمين (محاولة ابتلاع Workspace) يتوقّف
+        عند حدّي Explorer الأقصى وWorkspace الأدنى معاً — لا سحقاً شبه
+        صفريّ لِـWorkspace."""
+        from ui2.shell.main_window import EXPLORER_MAX_WIDTH, WORKSPACE_MIN_WIDTH
+        self.win.resize(1180, 720)
+        self.win.show()
+        self.win.splitter.moveSplitter(5000, 1)   # محاولة سحبٍ متطرّف
+        self.assertLessEqual(self.win.explorer_placeholder.width(), EXPLORER_MAX_WIDTH)
+        self.assertGreaterEqual(self.win.workspace.width(), WORKSPACE_MIN_WIDTH)
+
+    def test_dragging_splitter_to_zero_respects_explorer_minimum(self):
+        from ui2.shell.main_window import EXPLORER_MIN_WIDTH
+        self.win.resize(1180, 720)
+        self.win.show()
+        self.win.splitter.moveSplitter(0, 1)
+        self.assertGreaterEqual(
+            self.win.explorer_placeholder.width(), EXPLORER_MIN_WIDTH)
+
+    def test_window_stays_usable_below_natural_minimum_size(self):
+        """نافذةٌ أصغر من مجموع الحدود الدنيا الطبيعيّة — Qt يرفض
+        الانكماش أكثر (لا layout مكسور، لا استثناء)."""
+        self.win.show()
+        self.win.resize(300, 300)
+        self.assertGreaterEqual(self.win.explorer_placeholder.width(), 1)
+        self.assertGreaterEqual(self.win.workspace.width(), 1)
+
+    # ==================== P0.3 §2: حدّ أقصى لِـBrand Zone ====================
+    def test_brand_width_never_exceeds_max_even_with_huge_explorer(self):
+        from ui2.shell.top_bar import MAX_BRAND_WIDTH
+        self.win.resize(1180, 720)
+        self.win.show()
+        self.win.splitter.moveSplitter(5000, 1)
+        self.assertLessEqual(self.win.top_bar._brand_zone.width(), MAX_BRAND_WIDTH)
+
+    def test_brand_width_respects_min_when_explorer_shrunk(self):
+        from ui2.shell.top_bar import MIN_BRAND_WIDTH
+        self.win.resize(1180, 720)
+        self.win.show()
+        self.win.splitter.moveSplitter(0, 1)
+        self.assertGreaterEqual(self.win.top_bar._brand_zone.width(), MIN_BRAND_WIDTH)
+
+    # ==================== P0.3 §3: اتجاه WorkStatusBar البنيويّ ====================
+    def test_work_status_bar_zones_in_structural_ltr_order(self):
+        """ترتيب المناطق يجب أن يكون رسالة ← صفحات ← ... ← تكبير من
+        اليسار لليمين في تخطيط الودجت نفسه — بصرف النظر عن RTL العامّ."""
+        wsb = self.win.workspace.work_status_bar
+        lay = wsb.layout()
+        idx_msg = lay.indexOf(wsb.lbl_message)
+        idx_prev = lay.indexOf(wsb.btn_prev_page)
+        idx_fit_page = lay.indexOf(wsb.btn_fit_page)
+        idx_zoom_out = lay.indexOf(wsb.btn_zoom_out)
+        idx_fullscreen = lay.indexOf(wsb.btn_fullscreen)
+        self.assertLess(idx_msg, idx_prev)
+        self.assertLess(idx_prev, idx_fit_page)
+        self.assertLess(idx_fit_page, idx_zoom_out)
+        #  ترتيب التكبير نفسه: minus → slider → plus → percentage → fullscreen
+        self.assertLess(lay.indexOf(wsb.btn_zoom_out), lay.indexOf(wsb.zoom_slider))
+        self.assertLess(lay.indexOf(wsb.zoom_slider), lay.indexOf(wsb.btn_zoom_in))
+        self.assertLess(lay.indexOf(wsb.btn_zoom_in), lay.indexOf(wsb.lbl_zoom))
+        self.assertLess(lay.indexOf(wsb.lbl_zoom), idx_fullscreen)
+
+    def test_work_status_bar_structural_direction_is_explicit_ltr(self):
+        self.assertEqual(
+            self.win.workspace.work_status_bar.layoutDirection(), Qt.LeftToRight)
+
+    def test_global_rtl_does_not_flip_bottom_bar_order(self):
+        original = self.app.layoutDirection()
+        try:
+            for direction in (Qt.LeftToRight, Qt.RightToLeft):
+                self.app.setLayoutDirection(direction)
+                self.assertEqual(
+                    self.win.workspace.work_status_bar.layoutDirection(),
+                    Qt.LeftToRight)
+        finally:
+            self.app.setLayoutDirection(original)
+
+    # ==================== P0.3 §4: شريط حالة واحد فقط ====================
+    def test_only_one_status_bar_visible_in_shell(self):
+        """لا شريط QMainWindow.statusBar() الأصليّ مضبوطاً فعلياً على
+        النافذة — Shell الجديد لا يستدعي ``setStatusBar``/``statusBar()``
+        إطلاقاً (البنية الأصليّة تبقى متاحة في Qt، غير مُستخدَمة فقط)؛
+        الرسالة الوحيدة الظاهرة تصل عبر WorkStatusBar داخل Workspace."""
+        self.assertIsNone(self.win.findChild(QStatusBar))
+        self.win.go_home()
+        self.assertEqual(
+            self.win.workspace.work_status_bar.lbl_message.text(), "الرئيسية")
+
+    # ==================== P0.3 §5: بطاقات Home بلا Fixed height ====================
+    def test_home_cards_do_not_use_fixed_height_size_policy(self):
+        from PySide6.QtWidgets import QSizePolicy
+        home = HomeView()
+        for card in home._cards.values():
+            self.assertNotEqual(
+                card.sizePolicy().verticalPolicy(), QSizePolicy.Fixed)
+
+    def test_home_card_grows_for_long_description(self):
+        """بطاقةٌ بوصفٍ طويل عند عرضٍ ضيّق (Fixed لا Minimum كانت تقصّه) —
+        ارتفاعها المحسوب عند ذلك العرض أكبر من بطاقةٍ بوصفٍ قصير لنفس
+        العرض؛ إثباتٌ بنيويّ أنّ الارتفاع ينمو مع المحتوى، لا مقصوصاً."""
+        short = HomeView(services=[
+            ServiceDescriptor(key="x", title="خدمة", description="قصير")])
+        long_ = HomeView(services=[ServiceDescriptor(
+            key="x", title="خدمة", description="وصفٌ طويلٌ جداً " * 12)])
+        short_card, long_card = short._cards["x"], long_._cards["x"]
+        short_card.setFixedWidth(180)
+        long_card.setFixedWidth(180)
+        self.assertGreater(
+            long_card.sizeHint().height(), short_card.sizeHint().height())
+
+    # ==================== P0.3 §6: Demo Work Tabs (معزولة) ====================
+    def test_demo_tabs_not_created_in_normal_mode(self):
+        self.assertEqual(self.win.workspace.work_tab_bar.count(), 0)
+
+    def test_demo_tabs_appear_only_after_explicit_enable(self):
+        from ui2.shell.demo_tabs import DEMO_WORK_TABS
+        self.win.enable_demo_tabs()
+        self.assertEqual(self.win.workspace.work_tab_bar.count(), len(DEMO_WORK_TABS))
+
+    def test_home_does_not_make_demo_work_look_active(self):
+        self.win.enable_demo_tabs()
+        # التفعيل نفسه يبدأ على Home — لا نمط Active ظاهر.
+        self.assertEqual(self.win.workspace.work_tab_bar.property("workActive"), False)
+        # اختيار تبويب فعلياً يفعّله... (Qt يضبط currentIndex=0 آلياً عند
+        # أوّل addTab بلا إصدار currentChanged؛ tabBarClicked يحاكي نقرة
+        # المستخدم الحقيقية فيُفعِّل حتى التبويب الأوّل هذا).
+        self.win.workspace.work_tab_bar.tabBarClicked.emit(0)
+        self.assertEqual(self.win.workspace.work_tab_bar.property("workActive"), True)
+        # ...والعودة لِـHome يُخفي النمط النشِط مجدَّداً.
+        self.win.go_home()
+        self.assertEqual(self.win.workspace.work_tab_bar.property("workActive"), False)
+
+    def test_demo_work_activation_does_not_change_shell_geometry(self):
+        self.win.resize(1180, 720)
+        self.win.show()
+        self.win.enable_demo_tabs()
+        top_pos = self.win.top_bar.pos()
+        expl_pos = self.win.explorer_placeholder.pos()
+        cb_pos = self.win.workspace.command_bar.pos()
+        tb_pos = self.win.workspace.work_tab_bar.pos()
+        wsb_pos = self.win.workspace.work_status_bar.pos()
+        win_size = self.win.size()
+
+        self.win.workspace.work_tab_bar.setCurrentIndex(1)
+        self.assertIs(
+            self.win.workspace.current_view(), self.win.workspace.demo_work_view)
+        self.assertEqual(self.win.top_bar.pos(), top_pos)
+        self.assertEqual(self.win.explorer_placeholder.pos(), expl_pos)
+        self.assertEqual(self.win.workspace.command_bar.pos(), cb_pos)
+        self.assertEqual(self.win.workspace.work_tab_bar.pos(), tb_pos)
+        self.assertEqual(self.win.workspace.work_status_bar.pos(), wsb_pos)
+        self.assertEqual(self.win.size(), win_size)
+
+    def test_demo_work_activation_marks_home_inactive(self):
+        self.win.enable_demo_tabs()
+        self.win.workspace.work_tab_bar.tabBarClicked.emit(0)   # نقرة حقيقية محاكاة
+        self.assertFalse(self.win.top_bar.btn_home.isChecked())
+
+    # ========= P0.3 §9: Home→Service→Home→DemoWork→Home→DemoWork آخر =========
+    def test_full_navigation_sequence_with_demo_work_no_jumping(self):
+        self.win.resize(1180, 720)
+        self.win.show()
+        self.win.enable_demo_tabs()
+        top_pos = self.win.top_bar.pos()
+        expl_pos = self.win.explorer_placeholder.pos()
+        cb_pos = self.win.workspace.command_bar.pos()
+        tb_pos = self.win.workspace.work_tab_bar.pos()
+        wsb_pos = self.win.workspace.work_status_bar.pos()
+
+        def _assert_fixed():
+            self.assertEqual(self.win.top_bar.pos(), top_pos)
+            self.assertEqual(self.win.explorer_placeholder.pos(), expl_pos)
+            self.assertEqual(self.win.workspace.command_bar.pos(), cb_pos)
+            self.assertEqual(self.win.workspace.work_tab_bar.pos(), tb_pos)
+            self.assertEqual(self.win.workspace.work_status_bar.pos(), wsb_pos)
+
+        self.win.open_service_start(default_services()[0])
+        _assert_fixed()
+        self.win.go_home()
+        _assert_fixed()
+        self.win.workspace.work_tab_bar.tabBarClicked.emit(0)   # نقرة محاكاة
+        self.assertIs(
+            self.win.workspace.current_view(), self.win.workspace.demo_work_view)
+        _assert_fixed()
+        self.win.go_home()
+        _assert_fixed()
+        self.win.workspace.work_tab_bar.setCurrentIndex(1)
+        self.assertIs(
+            self.win.workspace.current_view(), self.win.workspace.demo_work_view)
+        _assert_fixed()
 
 
 if __name__ == "__main__":

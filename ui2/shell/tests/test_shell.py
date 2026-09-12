@@ -156,7 +156,11 @@ class ShellStructureTest(unittest.TestCase):
             self.win.explorer_placeholder.layoutDirection(), Qt.RightToLeft)
 
     def test_top_bar_direction_is_explicit_not_accidental(self):
-        self.assertEqual(self.win.top_bar.layoutDirection(), Qt.RightToLeft)
+        """P0.2 §1 يبني على قرار P0.1: TopBar صار منطقتين بنيويّتين ثابتتي
+        الموضع (Brand يساراً فوق Explorer، Nav يميناً فوق Workspace) —
+        فاتجاهه الأعلى صار LTR صراحةً (نفس مبدأ splitter)، لا RTL كما
+        كان في P0.1 حين كان محتوًى واحداً بلا تقسيمٍ بنيويّ."""
+        self.assertEqual(self.win.top_bar.layoutDirection(), Qt.LeftToRight)
 
     # ============== P0.1 §3/§4: CommandBar/WorkTabBar يبقيان مكانهما ==============
     def test_command_bar_and_tab_bar_same_widgets_and_position_across_views(self):
@@ -176,6 +180,79 @@ class ShellStructureTest(unittest.TestCase):
         self.assertIs(self.win.workspace.work_tab_bar, tb)
         self.assertEqual(cb.pos(), cb_pos)
         self.assertEqual(tb.pos(), tb_pos)
+
+    # ==================== P0.2 §6: WorkStatusBar ====================
+    def test_work_status_bar_exists_inside_workspace_below_content_stack(self):
+        from ui2.shell.work_status_bar import WorkStatusBar
+        wsb = self.win.workspace.work_status_bar
+        self.assertIsInstance(wsb, WorkStatusBar)
+        #  ابنٌ لِـWorkspaceHost نفسه (لا splitter) — لا يمتدّ تحت Explorer.
+        self.assertIs(wsb.parent(), self.win.workspace)
+        self.assertIs(
+            self.win.explorer_placeholder.parent(), self.win.splitter)
+        #  ترتيبٌ عموديّ: أسفل ContentStack (فهرسٌ أكبر في تخطيط Workspace).
+        lay = self.win.workspace.layout()
+        idx_stack = lay.indexOf(self.win.workspace.content_stack)
+        idx_status = lay.indexOf(wsb)
+        self.assertGreater(idx_status, idx_stack)
+
+    def test_work_status_bar_keeps_position_across_views(self):
+        self.win.resize(1180, 720)
+        self.win.show()
+        wsb = self.win.workspace.work_status_bar
+        pos0 = wsb.pos()
+        self.win.open_service_start(default_services()[0])
+        self.assertIs(self.win.workspace.work_status_bar, wsb)
+        self.assertEqual(wsb.pos(), pos0)
+        self.win.go_home()
+        self.assertEqual(wsb.pos(), pos0)
+
+    # ==================== P0.2 §1: حالة Home النشِطة ====================
+    def test_home_button_active_state_toggles_with_view(self):
+        self.assertTrue(self.win.top_bar.btn_home.isChecked())   # Home ابتدائياً
+        self.win.open_service_start(default_services()[0])
+        self.assertFalse(self.win.top_bar.btn_home.isChecked())
+        self.win.go_home()
+        self.assertTrue(self.win.top_bar.btn_home.isChecked())
+
+    # ============ P0.2 §11: تسلسل Home→CD→Home→Attestation كامل ============
+    def test_home_cd_home_attestation_sequence_keeps_bars_fixed_no_work_tab(self):
+        self.win.resize(1180, 720)
+        self.win.show()
+        top_pos = self.win.top_bar.pos()
+        expl_pos = self.win.explorer_placeholder.pos()
+        cb_pos = self.win.workspace.command_bar.pos()
+        tb_pos = self.win.workspace.work_tab_bar.pos()
+        tabs_before = self.win.workspace.work_tab_bar.count()
+
+        services_by_key = {s.key: s for s in default_services()}
+        for key in ("cd", None, "hr_attestation_travail"):
+            if key is None:
+                self.win.go_home()
+                self.assertIs(
+                    self.win.workspace.current_view(), self.win.workspace.home_view)
+            else:
+                self.win.open_service_start(services_by_key[key])
+                self.assertIs(
+                    self.win.workspace.current_view(),
+                    self.win.workspace.service_start_view)
+            self.assertEqual(self.win.top_bar.pos(), top_pos)
+            self.assertEqual(self.win.explorer_placeholder.pos(), expl_pos)
+            self.assertEqual(self.win.workspace.command_bar.pos(), cb_pos)
+            self.assertEqual(self.win.workspace.work_tab_bar.pos(), tb_pos)
+            self.assertEqual(
+                self.win.workspace.work_tab_bar.count(), tabs_before)
+
+    # ==================== P0.2 §3: محاذاة ServiceStartView ====================
+    def test_service_title_pinned_right_regardless_of_latin_content(self):
+        from PySide6.QtCore import Qt as _Qt
+        services_by_key = {s.key: s for s in default_services()}
+        self.win.open_service_start(services_by_key["cd"])          # "CD" لاتينيّ
+        latin_align = self.win.workspace.service_start_view._title.alignment()
+        self.win.open_service_start(services_by_key["hr_attestation_travail"])
+        arabic_align = self.win.workspace.service_start_view._title.alignment()
+        self.assertEqual(latin_align, arabic_align)
+        self.assertTrue(latin_align & _Qt.AlignRight)
 
 
 if __name__ == "__main__":

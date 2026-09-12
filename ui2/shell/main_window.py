@@ -76,15 +76,22 @@ class OfficeMainWindow(QMainWindow):
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([220, 960])
+        #  مزامنة عرض Brand Zone في TopBar مع عرض Explorer الفعليّ —
+        #  بصريّ فقط (بند 1 في P0.2: «يتناسق بصرياً مع عرض Explorer»).
+        self.splitter.splitterMoved.connect(self._sync_brand_width)
 
         self.workspace.home_view.serviceRequested.connect(self._open_service_start)
 
         self.setStatusBar(self.statusBar())
         self.statusBar().showMessage("جاهز")
 
+        #  Home هي الشاشة الابتدائية — زرّها في TopBar يبدأ نشِطاً.
+        self.top_bar.set_home_active(True)
+
     # ------------------------------------------------------------- تنقّل
     def go_home(self) -> None:
         self.workspace.show_home()
+        self.top_bar.set_home_active(True)
         self.statusBar().showMessage("الرئيسية")
 
     def _open_service_start(self, key: str) -> None:
@@ -94,8 +101,15 @@ class OfficeMainWindow(QMainWindow):
         if service is None:
             return
         self.workspace.show_service_start(service)
+        self.top_bar.set_home_active(False)
         self.statusBar().showMessage(f"خدمة: {service.title}")
 
     def open_service_start(self, service: ServiceDescriptor) -> None:
         """نقطة دخول برمجية مباشرة (تُستخدم في الاختبارات)."""
         self.workspace.show_service_start(service)
+        self.top_bar.set_home_active(False)
+
+    def _sync_brand_width(self, *_args) -> None:
+        sizes = self.splitter.sizes()
+        if sizes:
+            self.top_bar.set_brand_width(sizes[0])

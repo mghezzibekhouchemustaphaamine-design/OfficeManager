@@ -18,6 +18,7 @@ from ui2 import theme
 from ui2.shell.command_bar import CommandBar
 from ui2.shell.home import HomeView
 from ui2.shell.services import ServiceDescriptor
+from ui2.shell.work_status_bar import WorkStatusBar
 
 WORK_TAB_BAR_HEIGHT = 34
 
@@ -26,7 +27,21 @@ class WorkTabBar(QTabBar):
     """شريط تبويبات الأعمال المفتوحة — منفصل تماماً عن ContentStack.
 
     Prototype: لا تبويبات حقيقية بعد. يبقى ظاهراً وبارتفاع ثابت حتى وهو
-    فارغ (بند 5 — ثبات الـ layout)."""
+    فارغ (بند 5 — ثبات الـ layout).
+
+    **لغة بصريّة Active/Inactive (P0.2 §5)** — تجهيزٌ بصريّ مسبق قبل ربط
+    أعمالٍ حقيقية:
+
+    * ACTIVE (التبويب الحاليّ): خطٌّ سفليّ بلون Accent (``theme.PRIMARY``)
+      + نصٌّ بلون Accent غامق — واضحٌ بصرياً، لا مجرّد اختلاف خلفية خفيف.
+    * OPEN BUT INACTIVE: خلفية محايدة رماديّة (``theme.ROW_ALT``) —
+      مفتوحٌ لكن غير مركَّزٌ عليه.
+    * HOVER: درجة بين الاثنين (``theme.SELECTION``).
+
+    عندما لا توجد تبويبات (Home/ServiceStartView معروضتان) لا شيء
+    "نشِط" أصلاً — ``currentIndex() == -1`` طبيعياً، فحالة :selected لا
+    تُطبَّق على أيّ شيء. مؤشّرات مستقبليّة (●  للتعديل غير المحفوظ، 🔒
+    للقفل) غير منفَّذة الآن — تحتاج lifecycle عملٍ حقيقيّ لاحقاً."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -37,13 +52,28 @@ class WorkTabBar(QTabBar):
         #  (BG) فيختفي بصرياً حين يكون فارغاً بلا تبويبات — الآن SURFACE
         #  + حدّ سفليّ خفيف يجعلان مكان «منطقة تبويبات الأعمال» مقروءاً
         #  دائماً، فارغاً كان أم لا، بلا أيّ تبويب وهميّ.
-        self.setStyleSheet(
-            f"QTabBar {{ background: {theme.SURFACE};"
-            f" border-bottom: 1px solid {theme.BORDER}; }}"
-            f"QTabBar::tab {{ background: {theme.BG}; border: 1px solid {theme.BORDER};"
-            f" border-bottom: none; padding: 4px 12px; }}"
-            f"QTabBar::tab:selected {{ background: {theme.SURFACE}; }}"
-        )
+        self.setStyleSheet(f"""
+            QTabBar {{ background: {theme.SURFACE};
+                       border-bottom: 1px solid {theme.BORDER}; }}
+            QTabBar::tab {{
+                background: {theme.ROW_ALT};
+                color: {theme.TEXT_DIM};
+                border: 1px solid {theme.BORDER};
+                border-bottom: none;
+                padding: 6px 14px;
+                margin-right: 2px;
+            }}
+            QTabBar::tab:hover {{
+                background: {theme.SELECTION};
+                color: {theme.TEXT};
+            }}
+            QTabBar::tab:selected {{
+                background: {theme.SURFACE};
+                color: {theme.PRIMARY_DK};
+                font-weight: 600;
+                border-bottom: 2px solid {theme.PRIMARY};
+            }}
+        """)
 
     def _debug_add_tab(self, title: str) -> int:
         """أداة تطوير/إثبات معماري فقط — غير مستخدَمة في مسار المنتج."""
@@ -67,11 +97,18 @@ class ServiceStartView(QWidget):
         self._title.setStyleSheet(
             f"font-size: {theme.FONT_SIZES['title']}px; font-weight: 600;"
         )
+        #  ‏P0.2 §3: محاذاةٌ **مطلقة** يميناً (Qt.AlignRight — لا AlignLeading
+        #  التي تتبع اتجاه النصّ المكتشَف تلقائياً) — عنوانٌ لاتينيّ محضٌ
+        #  مثل "CD" كان يُحاذى يساراً تلقائياً فيقفز عن بقيّة العناوين
+        #  العربية. الموضع الآن ثابتٌ يميناً دائماً؛ شكل النصّ نفسه
+        #  (تشكيل الحروف LTR/RTL) يبقى تابعاً لمحتواه كما هو طبيعيّ.
+        self._title.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         lay.addWidget(self._title)
 
         self._desc = QLabel()
         self._desc.setStyleSheet(f"color: {theme.TEXT_DIM};")
         self._desc.setWordWrap(True)
+        self._desc.setAlignment(Qt.AlignRight | Qt.AlignTop)
         lay.addWidget(self._desc)
 
         self.btn_nouveau = QPushButton("جديد")
@@ -86,10 +123,12 @@ class ServiceStartView(QWidget):
 
 
 class WorkspaceHost(QWidget):
-    """يجمّع CommandBar + WorkTabBar + ContentStack عمودياً.
+    """يجمّع CommandBar + WorkTabBar + ContentStack + WorkStatusBar عمودياً.
 
     ``show_home()`` / ``show_service_start(descriptor)`` يتحكّمان بمحتوى
-    ContentStack فقط — CommandBar وWorkTabBar لا يتغيّر مكانهما."""
+    ContentStack فقط — بقيّة الأشرطة لا يتغيّر مكانها (P0.2 §8: لا
+    layout jumping). WorkStatusBar أسفل Workspace فقط — لا يمتدّ تحت
+    Explorer (ليس ابناً لِـ splitter، بل لهذا الودجت وحده)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -118,6 +157,9 @@ class WorkspaceHost(QWidget):
 
         self.service_start_view = ServiceStartView(self)
         self.content_stack.addWidget(self.service_start_view)
+
+        self.work_status_bar = WorkStatusBar(self)
+        lay.addWidget(self.work_status_bar)
 
         self.show_home()
 

@@ -100,3 +100,36 @@ def _bind_demo_commands(session: WorkSession, spec: DemoWorkSpec) -> None:
         #  ‏Attestation Nadia: SAVE/PRINT فقط.
         session.set_command(CommandId.SAVE, demo_save, enabled=lambda: session.dirty)
         session.set_command(CommandId.PRINT, lambda: None, enabled=True)
+
+
+#  ‏P2.1 §15: عناوين قصيرة وطويلة متعمَّدة — تثبت العرض الموحَّد +
+#  ellipsis + tooltip الكامل + overflow/scroll معاً في اختبارٍ واحد.
+MANY_DEMO_TITLES = (
+    "Bulletin Ahmed",
+    "CD 1584",
+    "Attestation Nadia",
+    "Bulletin BENALI Karim OCTOBRE 2026",
+    "CD 2201",
+    "Attestation Yasmine — Description Longue Ville",
+    "Bulletin X",
+    "CD 9999 Dossier Complet Annuel",
+    "Attestation K",
+    "Bulletin Sara Mensuel",
+    "CD 42",
+    "Attestation — Titre Très Long Pour Tester Overflow",
+    "Bulletin Z",
+)
+
+
+def build_many_demo_sessions(count: int = 13):
+    """‏P2.1 §15: مولّد Demo Works للاختبار اليدويّ/الآليّ لِـoverflow —
+    مفاتيحه منفصلة عن ``DEMO_WORK_SPECS`` (``service_key="demo-many"``)
+    فلا تتصادم معها إن استُدعيا معاً. بلا Commands (خارج نطاق هذا
+    الاختبار — التركيز هنا على عرض/تمرير التبويبات فقط)."""
+    sessions = []
+    for i in range(count):
+        title = MANY_DEMO_TITLES[i % len(MANY_DEMO_TITLES)]
+        key = WorkKey("demo-many", f"work-{i}")
+        widget = DemoWorkContent(title)
+        sessions.append(WorkSession(key, f"{title} #{i + 1}", widget))
+    return sessions

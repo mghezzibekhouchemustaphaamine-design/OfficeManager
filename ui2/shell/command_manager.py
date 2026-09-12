@@ -22,6 +22,7 @@ from PySide6.QtGui import QAction, QKeySequence
 
 from PySide6.QtCore import QObject, Signal
 
+from ui2.shell.command_icons import command_icon
 from ui2.shell.commands import COMMAND_REGISTRY, CommandId, CommandSpec
 from ui2.shell.workspace_manager import WorkspaceManager
 
@@ -47,7 +48,12 @@ class CommandManager(QObject):
 
         for spec in COMMAND_REGISTRY:
             action = QAction(spec.label, action_owner)
-            action.setToolTip(spec.tooltip or spec.label)
+            action.setIcon(command_icon(spec.id))
+            #  ‏P2.1 §10: "حفظ (Ctrl+S)" — الاختصار من Registry نفسها، لا
+            #  تكراراً hard-coded في CommandBar. بلا اختصار → التسمية فقط.
+            action.setToolTip(
+                f"{spec.label} ({spec.shortcut})" if spec.shortcut else spec.label
+            )
             if spec.shortcut:
                 action.setShortcut(QKeySequence(spec.shortcut))
             #  لا عمل نشِط بعد — كل الأوامر تبدأ غير ظاهرة/معطَّلة (P2 §7).

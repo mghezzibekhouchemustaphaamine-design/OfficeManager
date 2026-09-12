@@ -10,12 +10,14 @@
 وحده (``WorkspaceHost.workspace_manager``)؛ هذا الشريط يعرض فقط ما
 تُمليه إشاراته، ويُصدر أحداث النقر/الإغلاق ليقرِّر المدير بها.
 """
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
-    QLabel, QPushButton, QStackedWidget, QTabBar, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QMenu, QPushButton, QStackedWidget, QTabBar,
+    QVBoxLayout, QWidget,
 )
 
 from ui2 import theme
+from ui2.shell._icon_button import IconButton
 from ui2.shell.command_bar import CommandBar
 from ui2.shell.command_manager import CommandManager
 from ui2.shell.home import HomeView
@@ -25,6 +27,9 @@ from ui2.shell.work_status_bar import WorkStatusBar
 from ui2.shell.workspace_manager import WorkspaceManager
 
 WORK_TAB_BAR_HEIGHT = 34
+#  ‏P2.1 §1: عرضٌ موحَّد لكلّ Work Tab — ثابتة/سهلة التعديل، بدل تبعية
+#  عرض التبويب لطول العنوان (يُقصّ بـellipsis + tooltip كامل بدلاً منه).
+WORK_TAB_WIDTH = 180
 
 
 class WorkTabBar(QTabBar):
@@ -47,12 +52,22 @@ class WorkTabBar(QTabBar):
     #  التبويب مباشرةً، لا فهرساً خاماً (المستهلك: WorkspaceHost).
     tabActivateRequested = Signal(object)      # WorkKey
     tabCloseKeyRequested = Signal(object)      # WorkKey
+    #  ‏P2.1 §7: قائمة سياق زرّ يمين — "إغلاق الأخرى"/"إغلاق الكلّ".
+    #  "إغلاق" وحدها تُعاد استعمال tabCloseKeyRequested أعلاه.
+    closeOthersRequested = Signal(object)      # WorkKey يُستثنى
+    closeAllRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(WORK_TAB_BAR_HEIGHT)
         self.setExpanding(False)
         self.setDrawBase(False)
+        #  ‏P2.1 §1/§5: عرضٌ موحَّد (``tabSizeHint`` أدناه) + Ellipsis
+        #  بدل تصغير كلّ التبويبات حين تكثر (``usesScrollButtons``):
+        #  Qt يعرض أسهم تمرير بدل سحق العرض الموحَّد — القراءة تبقى
+        #  سليمة دائماً بصرف النظر عن عدد الأعمال المفتوحة.
+        self.setElideMode(Qt.ElideRight)
+        self.setUsesScrollButtons(True)
         #  P1 §1: انظر شرح الصنف أعلاه — بلا هذا يرث RTL من الأب فينعكس
         #  ترتيب Tabs (أوّل عملٍ يظهر يميناً بدل يساراً).
         self.setLayoutDirection(Qt.LeftToRight)
@@ -89,6 +104,13 @@ class WorkTabBar(QTabBar):
         #  Home/ServiceStartView تصير False فيبدو التبويب "الحاليّ"
         #  محايداً كأيّ تبويبٍ آخر، دون التأثير في فهرسه الداخليّ.
         self.setProperty("workActive", False)
+        #  ‏P2.1 §3: "Foreground/merged look" — بحدود QSS البحتة (لا ظلّ
+        #  حقيقيّ، Qt Style Sheets لا تدعم box-shadow لِـQTabBar::tab):
+        #  Active يحمل نفس خلفية Content (SURFACE) + accent علويّ خفيف
+        #  بدل الخطّ السفليّ القديم، وحدّه السفليّ يتماهى مع BG بهامشٍ
+        #  سالب (margin-bottom: -1) يُغطّي حدّ الشريط الفاصل تحته تماماً
+        #  — إحساسٌ بأنّ Tab وContent كيانٌ واحد. Inactive يبقى محايداً
+        #  خلفه بصرياً (ROW_ALT أغمق قليلاً من SURFACE).
         self.setStyleSheet(f"""
             QTabBar {{ background: {theme.SURFACE};
                        border-bottom: 1px solid {theme.BORDER}; }}
@@ -97,7 +119,7 @@ class WorkTabBar(QTabBar):
                 color: {theme.TEXT_DIM};
                 border: 1px solid {theme.BORDER};
                 border-bottom: none;
-                padding: 6px 14px;
+                padding: 6px 10px;
                 margin-right: 2px;
             }}
             QTabBar::tab:hover {{
@@ -108,9 +130,50 @@ class WorkTabBar(QTabBar):
                 background: {theme.SURFACE};
                 color: {theme.PRIMARY_DK};
                 font-weight: 600;
-                border-bottom: 2px solid {theme.PRIMARY};
+                border: 1px solid {theme.BORDER};
+                border-top: 2px solid {theme.PRIMARY};
+                border-bottom: 1px solid {theme.SURFACE};
+                margin-bottom: -1px;
+            }}
+            QTabBar::close-button {{
+                subcontrol-position: right;
+                padding: 1px;
+            }}
+            QTabBar::close-button:hover {{
+                background: {theme.SELECTION};
+                border-radius: 3px;
             }}
         """)
+
+    def tabSizeHint(self, index: int):
+        """عرضٌ موحَّد لكلّ تبويب (P2.1 §1) — بصرف النظر عن طول العنوان؛
+        الارتفاع يبقى من حساب Qt الطبيعيّ (``WORK_TAB_BAR_HEIGHT`` مضبوطٌ
+        أصلاً على الشريط كاملاً عبر ``setFixedHeight``)."""
+        hint = super().tabSizeHint(index)
+        hint.setWidth(WORK_TAB_WIDTH)
+        return hint
+
+    def contextMenuEvent(self, event) -> None:
+        """‏P2.1 §7: قائمة يمين-كليك — إغلاق/إغلاق الأخرى/إغلاق الكلّ.
+        بلا حوار حفظ/تجاهل هنا (P2.1 §7/§18 — ذلك لِـP2.5)؛ المسار
+        الحاليّ لِـclose_work/close_others/close_all فقط."""
+        index = self.tabAt(event.pos())
+        if index < 0:
+            return
+        key = self.tabData(index)
+        if key is None:
+            return
+        menu = QMenu(self)
+        act_close = menu.addAction("إغلاق")
+        act_close_others = menu.addAction("إغلاق الأخرى")
+        act_close_all = menu.addAction("إغلاق الكلّ")
+        chosen = menu.exec(event.globalPos())
+        if chosen is act_close:
+            self.tabCloseKeyRequested.emit(key)
+        elif chosen is act_close_others:
+            self.closeOthersRequested.emit(key)
+        elif chosen is act_close_all:
+            self.closeAllRequested.emit()
 
     def set_active(self, active: bool) -> None:
         """يتحكّم بظهور نمط ACTIVE (خطّ Accent) على التبويب "الحاليّ" —
@@ -211,6 +274,17 @@ class ServiceStartView(QWidget):
         self._desc.setText(service.description)
 
 
+def _tab_tooltip_text(session) -> str:
+    """‏P2.1 §2: العنوان الكامل دائماً — حتى حين يُقصّ نصّ التبويب
+    بـellipsis. الحالة تظهر بوضوح بالكلمة (لا بالرمز فقط) كي لا تُفقَد
+    مع أيّ قصّ بصريّ محتمل؛ الهويّة لا تعتمد عليها (P2.1 §2)."""
+    if session.locked:
+        return f"{session.title} — مقفل 🔒"
+    if session.dirty:
+        return f"{session.title} — تعديلات غير محفوظة ●"
+    return session.title
+
+
 class WorkspaceHost(QWidget):
     """يجمّع CommandBar + WorkTabBar + ContentStack + WorkStatusBar عمودياً.
 
@@ -253,7 +327,32 @@ class WorkspaceHost(QWidget):
         #  ‏P2 (Drag & Drop): Qt نقل التبويب بصرياً فعلاً قبل إصدار هذه
         #  الإشارة — هنا فقط نزامن WorkspaceManager._order معه.
         self.work_tab_bar.tabMoved.connect(self._on_tab_moved)
-        lay.addWidget(self.work_tab_bar)
+        #  ‏P2.1 §7: يمين-كليك على تبويب — إغلاق الأخرى/الكلّ (لا حوار
+        #  حفظ بعد، ذلك P2.5).
+        self.work_tab_bar.closeOthersRequested.connect(self._on_close_others_requested)
+        self.work_tab_bar.closeAllRequested.connect(self._on_close_all_requested)
+
+        #  ‏P2.1 §6: صفٌّ أفقيّ [WorkTabBar (يتمدَّد) | زرّ "كلّ الأعمال"]
+        #  — غلافٌ LTR صريح (نفس مبدأ STRUCTURAL DIRECTION) كي يبقى الزرّ
+        #  فعلياً في أقصى يمين شريط التبويبات (طرف الشريط اللاحق) بصرف
+        #  النظر عن RTL العامّ الموروث من WorkspaceHost.
+        tab_row = QWidget(self)
+        tab_row.setLayoutDirection(Qt.LeftToRight)
+        tab_row_lay = QHBoxLayout(tab_row)
+        tab_row_lay.setContentsMargins(0, 0, 0, 0)
+        tab_row_lay.setSpacing(0)
+        tab_row_lay.addWidget(self.work_tab_bar, 1)
+        self.btn_all_works = IconButton("▾", tooltip="كلّ الأعمال المفتوحة")
+        self.btn_all_works.setFixedSize(WORK_TAB_BAR_HEIGHT, WORK_TAB_BAR_HEIGHT)
+        self.btn_all_works.setStyleSheet(
+            self.btn_all_works.styleSheet()
+            + f"QToolButton {{ background: {theme.SURFACE};"
+            f" border-bottom: 1px solid {theme.BORDER};"
+            f" border-left: 1px solid {theme.BORDER}; border-radius: 0; }}"
+        )
+        self.btn_all_works.clicked.connect(self._show_all_works_menu)
+        tab_row_lay.addWidget(self.btn_all_works)
+        lay.addWidget(tab_row)
 
         self.content_stack = QStackedWidget(self)
         lay.addWidget(self.content_stack, 1)
@@ -318,6 +417,7 @@ class WorkspaceHost(QWidget):
         (التفعيل يصل عبر إشارة ``activated`` منفصلة)."""
         idx = self.work_tab_bar.addTab(session.display_text())
         self.work_tab_bar.setTabData(idx, session.key)
+        self.work_tab_bar.setTabToolTip(idx, _tab_tooltip_text(session))
         self.content_stack.addWidget(session.widget)
 
     def _on_work_activated(self, key) -> None:
@@ -362,3 +462,49 @@ class WorkspaceHost(QWidget):
         session = self.workspace_manager.get(key)
         if idx >= 0 and session is not None:
             self.work_tab_bar.setTabText(idx, session.display_text())
+            self.work_tab_bar.setTabToolTip(idx, _tab_tooltip_text(session))
+
+    # -------------------------------------------------- إغلاق جماعيّ (P2.1 §7)
+    def _on_close_others_requested(self, keep_key: WorkKey) -> None:
+        self.workspace_manager.close_others(keep_key)
+
+    def _on_close_all_requested(self) -> None:
+        self.workspace_manager.close_all()
+
+    # -------------------------------------------- All Open Works menu (P2.1 §6)
+    def _build_all_works_menu(self) -> QMenu:
+        """قائمةٌ بكلّ الأعمال المفتوحة بترتيبها الحاليّ — التفعيل عبر
+        ``WorkKey`` حصراً (لا فهرس Tab، P2.1 §6)، مع علامة ✓ للعمل
+        النشِط وإجراءات إغلاق عامّة أسفلها."""
+        menu = QMenu(self)
+        works = self.workspace_manager.open_works()
+        active_key = self.workspace_manager.active_key()
+        for session in works:
+            action = menu.addAction(session.display_text())
+            action.setToolTip(session.title)
+            action.setCheckable(True)
+            action.setChecked(session.key == active_key)
+            action.triggered.connect(
+                lambda checked=False, k=session.key: self.workspace_manager.activate_work(k)
+            )
+        if works:
+            menu.addSeparator()
+            act_close = menu.addAction("إغلاق العمل النشِط")
+            act_close.setEnabled(active_key is not None)
+            act_close.triggered.connect(
+                lambda: self.workspace_manager.close_work(active_key)
+                if active_key is not None else None
+            )
+            act_close_others = menu.addAction("إغلاق البقية")
+            act_close_others.setEnabled(active_key is not None and len(works) > 1)
+            act_close_others.triggered.connect(
+                lambda: self.workspace_manager.close_others(active_key)
+                if active_key is not None else None
+            )
+            act_close_all = menu.addAction("إغلاق الكلّ")
+            act_close_all.triggered.connect(self.workspace_manager.close_all)
+        return menu
+
+    def _show_all_works_menu(self) -> None:
+        menu = self._build_all_works_menu()
+        menu.exec(self.btn_all_works.mapToGlobal(self.btn_all_works.rect().bottomLeft()))

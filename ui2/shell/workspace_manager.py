@@ -122,6 +122,23 @@ class WorkspaceManager(QObject):
                 self.deactivate()
         return True
 
+    def close_others(self, keep_key: WorkKey) -> None:
+        """يغلق كلّ الأعمال المفتوحة عدا ``keep_key`` (P2.1 §7) — عبر
+        ``close_work`` نفسها (تحترم ``can_close`` لكلّ جلسة). ينتهي
+        بتنشيط ``keep_key`` صراحةً (إن بقيت مفتوحة) بصرف النظر عن أيّ
+        تنشيطٍ وسيط للمجاورين أثناء الإغلاقات المتتالية."""
+        for key in [k for k in self._order if k != keep_key]:
+            self.close_work(key)
+        if keep_key in self._sessions:
+            self.activate_work(keep_key)
+
+    def close_all(self) -> None:
+        """يغلق كلّ الأعمال المفتوحة (P2.1 §7) — عبر ``close_work`` لكلّ
+        واحدٍ (تحترم ``can_close``)؛ ينتهي بـHome (لا عمل نشِط) إن أُغلقت
+        فعلياً جميعها."""
+        for key in list(self._order):
+            self.close_work(key)
+
     def move_work(self, from_index: int, to_index: int) -> None:
         """يزامن ترتيب ``_order`` مع سحبٍ بصريّ لِـTab في ``WorkTabBar``
         (‏``QTabBar.setMovable``). لا يغيّر ``WorkKey``، لا يعيد إنشاء أيّ

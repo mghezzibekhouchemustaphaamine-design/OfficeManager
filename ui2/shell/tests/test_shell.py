@@ -978,6 +978,234 @@ class CommandBarIntegrationTest(unittest.TestCase):
                       if w.frameShape() == QFrame.VLine]
         self.assertEqual(len(separators), 1)
 
+    # ==================== P2.1 §9/§10/§11: أيقونات + tooltip + shortcut ====================
+    def test_command_bar_uses_same_qactions_as_command_manager(self):
+        a = _session("paie", "1")
+        _bind(a, CommandId.SAVE, enabled=True)
+        self.mgr.open_work(a)
+        from PySide6.QtWidgets import QToolButton
+        btn = self._visible_buttons()[0]
+        self.assertIs(btn.defaultAction(), self.cm.action(CommandId.SAVE))
+
+    def test_tooltip_contains_shortcut_from_registry(self):
+        from ui2.shell.commands import COMMAND_REGISTRY
+        for spec in COMMAND_REGISTRY:
+            action = self.cm.action(spec.id)
+            if spec.shortcut:
+                self.assertIn(spec.shortcut, action.toolTip())
+            else:
+                self.assertNotIn("(", action.toolTip())
+
+    def test_disabled_action_shows_disabled_in_bar(self):
+        a = _session("cd", "1", locked=True)
+        _bind(a, CommandId.SAVE, enabled=False)
+        self.mgr.open_work(a)
+        btn = self._visible_buttons()[0]
+        self.assertFalse(btn.isEnabled())
+
+    def test_unsupported_action_not_in_bar(self):
+        a = _session("paie", "1")
+        _bind(a, CommandId.SAVE, enabled=True)     # PRINT غير مدعوم
+        self.mgr.open_work(a)
+        labels = [btn.text() for btn in self._visible_buttons()]
+        self.assertNotIn("طباعة", labels)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class WorkTabUXTest(unittest.TestCase):
+    """اختبارات P2.1: عرضٌ موحَّد + ellipsis/tooltip + overflow + All
+    Open Works menu + Close/Close Others/Close All."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self.win = OfficeMainWindow()
+        self.win.resize(900, 700)
+        self.win.show()
+        self.mgr = self.win.workspace.workspace_manager
+        self.tabs = self.win.workspace.work_tab_bar
+
+    def tearDown(self):
+        self.win.deleteLater()
+
+    def _open(self, service_key, work_id, **kw):
+        s = _session(service_key, work_id, **kw)
+        self.mgr.open_work(s)
+        return s
+
+    # -------------------------------------------------------- عرضٌ موحَّد
+    def test_all_tabs_have_uniform_width(self):
+        from ui2.shell.workspace import WORK_TAB_WIDTH
+        a = self._open("a", "1", title="قصير")
+        b = self._open("b", "2", title="عنوانٌ طويلٌ جداً جداً جداً للاختبار")
+        self.assertEqual(self.tabs.tabSizeHint(self.tabs.index_for_key(a.key)).width(),
+                          WORK_TAB_WIDTH)
+        self.assertEqual(self.tabs.tabSizeHint(self.tabs.index_for_key(b.key)).width(),
+                          WORK_TAB_WIDTH)
+
+    def test_long_title_does_not_widen_tab(self):
+        from ui2.shell.workspace import WORK_TAB_WIDTH
+        a = self._open("a", "1", title="ع" * 60)
+        self.assertEqual(self.tabs.tabRect(self.tabs.index_for_key(a.key)).width(),
+                          WORK_TAB_WIDTH)
+
+    def test_tooltip_contains_full_title(self):
+        a = self._open("a", "1", title="Bulletin BENALI Karim OCTOBRE 2026")
+        idx = self.tabs.index_for_key(a.key)
+        self.assertIn("Bulletin BENALI Karim OCTOBRE 2026", self.tabs.tabToolTip(idx))
+
+    def test_tooltip_updates_with_dirty_locked(self):
+        a = self._open("a", "1", title="عمل")
+        idx = self.tabs.index_for_key(a.key)
+        a.set_dirty(True)
+        self.assertIn("عمل", self.tabs.tabToolTip(idx))
+        self.assertIn("محفوظة", self.tabs.tabToolTip(idx))
+        a.set_locked(True)
+        self.assertIn("مقفل", self.tabs.tabToolTip(idx))
+
+    # -------------------------------------------------------- Active/Inactive
+    def test_active_inactive_property_toggles_correctly(self):
+        a, b = self._open("a", "1"), self._open("b", "2")
+        self.tabs.tabBarClicked.emit(self.tabs.index_for_key(a.key))
+        self.assertEqual(self.tabs.property("workActive"), True)
+        self.win.go_home()
+        self.assertEqual(self.tabs.property("workActive"), False)
+
+    # -------------------------------------------------------------- LTR/DnD
+    def test_ltr_still_enforced(self):
+        self.assertEqual(self.tabs.layoutDirection(), Qt.LeftToRight)
+
+    def test_movable_still_enabled(self):
+        self.assertTrue(self.tabs.isMovable())
+
+    def test_reorder_reflected_in_all_open_works_menu(self):
+        a, b, c = self._open("a", "1"), self._open("b", "2"), self._open("c", "3")
+        self.tabs.moveTab(self.tabs.index_for_key(c.key), 0)
+        menu = self.win.workspace._build_all_works_menu()
+        titles = [act.text() for act in menu.actions()
+                  if act.isCheckable()]
+        self.assertEqual(titles, [c.display_text(), a.display_text(), b.display_text()])
+
+    # ------------------------------------------------------------ Overflow
+    def test_scroll_buttons_enabled_for_overflow(self):
+        self.assertTrue(self.tabs.usesScrollButtons())
+        for i in range(15):
+            self._open("x", str(i), title=f"عمل رقم {i}")
+        from ui2.shell.workspace import WORK_TAB_WIDTH
+        self.assertGreater(15 * WORK_TAB_WIDTH, self.tabs.width())
+        # كلّ تبويب يبقى بعرضه الموحَّد رغم الكثرة — لا سحقٌ للعرض.
+        for i in range(15):
+            idx = self.tabs.index_for_key(WorkKey("x", str(i)))
+            self.assertEqual(self.tabs.tabRect(idx).width(), WORK_TAB_WIDTH)
+
+    # ------------------------------------------- All Open Works menu (P2.1 §6)
+    def test_all_open_works_menu_lists_all_in_order(self):
+        a, b, c = self._open("a", "1"), self._open("b", "2"), self._open("c", "3")
+        menu = self.win.workspace._build_all_works_menu()
+        entries = [act.text() for act in menu.actions() if act.isCheckable()]
+        self.assertEqual(entries, [a.display_text(), b.display_text(), c.display_text()])
+
+    def test_all_open_works_menu_checks_active_work(self):
+        a, b = self._open("a", "1"), self._open("b", "2")
+        self.mgr.activate_work(a.key)
+        menu = self.win.workspace._build_all_works_menu()
+        checked = {act.text(): act.isChecked() for act in menu.actions() if act.isCheckable()}
+        self.assertTrue(checked[a.display_text()])
+        self.assertFalse(checked[b.display_text()])
+
+    def test_selecting_menu_entry_activates_correct_work(self):
+        a, b = self._open("a", "1"), self._open("b", "2")
+        menu = self.win.workspace._build_all_works_menu()
+        entry_a = next(act for act in menu.actions() if act.text() == a.display_text())
+        entry_a.trigger()
+        self.assertEqual(self.mgr.active_key(), a.key)
+
+    def test_menu_uses_workkey_not_tab_index(self):
+        a, b, c = self._open("a", "1"), self._open("b", "2"), self._open("c", "3")
+        self.tabs.moveTab(self.tabs.index_for_key(c.key), 0)   # [c, a, b]
+        menu = self.win.workspace._build_all_works_menu()
+        entry_b = next(act for act in menu.actions() if act.text() == b.display_text())
+        entry_b.trigger()
+        self.assertEqual(self.mgr.active_key(), b.key)   # لا index 1 (a بعد النقل)
+
+    # ------------------------------------------- Close / Close Others / Close All
+    def test_close_active_action_closes_correct_work(self):
+        a, b = self._open("a", "1"), self._open("b", "2")
+        self.mgr.activate_work(a.key)
+        menu = self.win.workspace._build_all_works_menu()
+        act_close = next(act for act in menu.actions() if act.text() == "إغلاق العمل النشِط")
+        act_close.trigger()
+        self.assertFalse(self.mgr.is_open(a.key))
+        self.assertTrue(self.mgr.is_open(b.key))
+
+    def test_close_others_excludes_selected(self):
+        a, b, c = self._open("a", "1"), self._open("b", "2"), self._open("c", "3")
+        self.mgr.activate_work(b.key)
+        menu = self.win.workspace._build_all_works_menu()
+        act = next(act for act in menu.actions() if act.text() == "إغلاق البقية")
+        act.trigger()
+        self.assertTrue(self.mgr.is_open(b.key))
+        self.assertFalse(self.mgr.is_open(a.key))
+        self.assertFalse(self.mgr.is_open(c.key))
+        self.assertEqual(self.mgr.active_key(), b.key)
+
+    def test_close_all_closes_everything(self):
+        self._open("a", "1"), self._open("b", "2"), self._open("c", "3")
+        menu = self.win.workspace._build_all_works_menu()
+        act = next(act for act in menu.actions() if act.text() == "إغلاق الكلّ")
+        act.trigger()
+        self.assertEqual(self.mgr.open_works(), [])
+        self.assertIsNone(self.mgr.active_key())
+
+    def test_context_menu_close_others_signal(self):
+        a, b = self._open("a", "1"), self._open("b", "2")
+        self.tabs.closeOthersRequested.emit(a.key)
+        self.assertTrue(self.mgr.is_open(a.key))
+        self.assertFalse(self.mgr.is_open(b.key))
+
+    def test_context_menu_close_all_signal(self):
+        self._open("a", "1"), self._open("b", "2")
+        self.tabs.closeAllRequested.emit()
+        self.assertEqual(self.mgr.open_works(), [])
+
+    # -------------------------------------------------------- Home behaviour
+    def test_home_shows_no_active_work_but_keeps_menu_entries(self):
+        self._open("a", "1")
+        self.win.go_home()
+        self.assertEqual(self.tabs.property("workActive"), False)
+        menu = self.win.workspace._build_all_works_menu()
+        self.assertEqual(len([a for a in menu.actions() if a.isCheckable()]), 1)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class SearchSlotTest(unittest.TestCase):
+    """‏P2.1 §13: مكانٌ بصريّ محجوز فقط — بلا منطق."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self.win = OfficeMainWindow()
+
+    def tearDown(self):
+        self.win.deleteLater()
+
+    def test_search_box_exists_in_top_bar(self):
+        from PySide6.QtWidgets import QLineEdit
+        self.assertIsInstance(self.win.top_bar.search_box, QLineEdit)
+
+    def test_search_box_has_no_wired_logic(self):
+        #  لا receivers على textChanged/returnPressed — placeholder بحت.
+        from PySide6.QtCore import SIGNAL
+        box = self.win.top_bar.search_box
+        self.assertEqual(box.receivers(SIGNAL("returnPressed()")), 0)
+        self.assertEqual(box.receivers(SIGNAL("textChanged(QString)")), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,7 +11,7 @@ Explorer|Workspace في P0.1):
 مستقبلاً. Settings/Lock تبقيان placeholders معطّلين بصريّين فقط.
 """
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QWidget
 
 from ui2 import theme
 from ui2.shell._icon_button import IconButton
@@ -95,7 +95,23 @@ class TopBar(QWidget):
         self.btn_home.clicked.connect(self.homeRequested)
         lay.addWidget(self.btn_home)
 
-        lay.addStretch(1)
+        lay.addSpacing(theme.SPACE["md"])
+        #  ‏P2.1 §13: مكانٌ بصريّ محجوز فقط لحقل بحث مستقبليّ — بلا أيّ
+        #  منطق (لا Explorer، لا DB، لا Global/Explorer قرار الآن). يتمدّد
+        #  مع اتساع النافذة ضمن حدّين (responsive معقول) فلا يزدحم
+        #  TopBar ولا يختفي كلياً عند تضييق النافذة.
+        self.search_box = QLineEdit(zone)
+        self.search_box.setPlaceholderText("بحث / Rechercher…")
+        self.search_box.setMinimumWidth(120)
+        self.search_box.setMaximumWidth(320)
+        self.search_box.setFixedHeight(30)
+        self.search_box.setStyleSheet(
+            f"QLineEdit {{ background: {theme.BG}; border: 1px solid {theme.BORDER};"
+            f" border-radius: 6px; padding: 2px 10px; color: {theme.TEXT}; }}"
+        )
+        lay.addWidget(self.search_box, 1)
+
+        lay.addStretch(0)
 
         # placeholders بصرية فقط — بلا سلوك في هذه المرحلة
         self.btn_settings = IconButton("⚙", tooltip="الإعدادات")

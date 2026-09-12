@@ -179,3 +179,13 @@ class OfficeMainWindow(QMainWindow):
         for spec in DEMO_WORK_SPECS:
             self.workspace.workspace_manager.open_work(build_demo_session(spec))
         self.go_home()
+
+    def enable_demo_many_tabs(self, count: int = 13) -> None:
+        """‏P2.1 §15: يفتح ``count`` عملاً تجريبياً (عناوين قصيرة/طويلة
+        مختلطة عمداً) عبر ``WorkspaceManager`` الحقيقيّ — لإثبات العرض
+        الموحَّد + ellipsis + overflow/scroll + قائمة «كلّ الأعمال»
+        يدوياً (``python -m ui2.shell --demo-many-tabs``) أو من اختبار."""
+        from ui2.shell.demo_tabs import build_many_demo_sessions
+        for session in build_many_demo_sessions(count):
+            self.workspace.workspace_manager.open_work(session)
+        self.go_home()

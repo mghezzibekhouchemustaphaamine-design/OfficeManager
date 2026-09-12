@@ -8,13 +8,16 @@
 Prototype قبل P2: كانت حاويةً فارغة ثابتة الارتفاع فقط — ذلك السلوك
 (لا layout jumping، P0.2 §8) محفوظٌ الآن أيضاً: الارتفاع لا يتغيّر
 سواء ظهرت أزرار أو لا."""
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QToolButton, QWidget
 
 from ui2 import theme
 from ui2.shell.commands import GROUP_ORDER
 
 HEIGHT = 40
+#  ‏P2.1 §9/§12: toolbar أيقونات مدمج — لا نصّ دائم (الاسم/الاختصار في
+#  الـtooltip فقط، من CommandManager مباشرةً عن Registry).
+ICON_SIZE = QSize(18, 18)
 
 
 class CommandBar(QWidget):
@@ -80,7 +83,11 @@ class CommandBar(QWidget):
             for action in group_actions:
                 btn = QToolButton(self)
                 btn.setDefaultAction(action)
-                btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+                #  ‏Icon فقط — الاسم/الاختصار يصلان عبر الـtooltip
+                #  (P2.1 §9/§12: لا نصّاً دائماً إلا إن كانت الأيقونة
+                #  غامضة، وليست هنا).
+                btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+                btn.setIconSize(ICON_SIZE)
                 btn.setAutoRaise(True)
                 self._lay.insertWidget(insert_at, btn)
                 insert_at += 1

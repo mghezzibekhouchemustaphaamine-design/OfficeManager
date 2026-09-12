@@ -2,6 +2,7 @@
 
     python -m ui2.shell                 # وضعٌ عاديّ — بلا Demo Tabs
     python -m ui2.shell --demo-tabs     # + تبويبات أعمالٍ تجريبية (P0.3 §6)
+    python -m ui2.shell --demo-many-tabs  # + 13 عملاً لاختبار overflow (P2.1 §15)
 """
 import sys
 
@@ -20,6 +21,8 @@ def main() -> int:
     #  الوضع العاديّ (تحقّقٌ بصريّ فقط، ليست جزءاً من مسار المنتج).
     if "--demo-tabs" in sys.argv[1:]:
         win.enable_demo_tabs()
+    elif "--demo-many-tabs" in sys.argv[1:]:
+        win.enable_demo_many_tabs()
     win.show()
 
     return app.exec()

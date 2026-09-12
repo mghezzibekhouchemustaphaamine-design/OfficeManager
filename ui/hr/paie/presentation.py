@@ -46,11 +46,19 @@
 فقط بـ :func:`fmt_rate_pct` (يعيد استعمال ``fmt_montant`` — لا مصدر قانونيّ
 ثانٍ). غيابها ⇒ عمودٌ فارغ، لا رقمٌ مخترَع.
 """
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 
 from programme.payroll.calc import fmt_montant
 from ui.hr.constants import PAIE_DEFAULT_CODES
+
+#  نصّ نسبة مئويّة صريح: علامة سالبة اختياريّة + أرقام + فاصل عشريّ
+#  (فاصلة أو نقطة) اختياريّ + أرقام. **لا** يقبل فراغاً ولا حروفاً — أساس
+#  التحقّق الصارم لِـTAUX IEP (مراجعة عن بعد E4.8 §2): خلافاً لِـ`_dec`
+#  المتساهلة (نصٌّ غير صالح → 0)، هذا النمط يميّز «رقمٌ حقيقيّ (قد يكون
+#  صفراً)» عن «نصٌّ فاسد/غير رقميّ» بدل تحويل الثاني صامتاً إلى الأوّل.
+_RATE_TEXT_RX = re.compile(r"^-?\d+([.,]\d+)?$")
 
 #  أنواع Z1 المُنقِصة — تُعرَض اقتطاعاً موجباً (§9).
 BASE_REDUCERS = ("abs_jours", "abs_heures", "retard")
@@ -173,6 +181,15 @@ def parse_rate_pct(text) -> Decimal:
     القيمة المُرجَعة هي **بالضبط** ما كان سيُكتب مباشرةً قبل هذا التصحيح؛
     لا مضاعفة لقيمة المحرّك، فقط تحويل عرضٍ ÷100."""
     return _dec(text) / Decimal(100)
+
+
+def is_valid_rate_text(text) -> bool:
+    """True فقط لنصٍّ يمثّل رقماً صريحاً (علامة سالبة اختياريّة، فاصلة/
+    نقطة عشريّة اختياريّة، أرقام قبلها وبعدها) — لا فراغ، لا حروف. أساس
+    التحقّق الصارم لِـTAUX IEP: يميّز «صفرٌ حقيقيّ مقصود» عن «نصٌّ فاسد
+    غير رقميّ» (مراجعة عن بعد E4.8 §2) بدل تمرير الاثنين معاً عبر `_dec`
+    المتساهلة التي تُرجع صفراً لأيّ إدخالٍ غير صالح."""
+    return bool(_RATE_TEXT_RX.match(str(text or "").strip()))
 
 
 def _fmt_display(raw: str) -> str:

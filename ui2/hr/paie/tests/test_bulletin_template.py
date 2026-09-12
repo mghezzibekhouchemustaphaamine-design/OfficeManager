@@ -298,6 +298,139 @@ class BulletinTemplatePin(unittest.TestCase):
         self.assertEqual(r._amount, (base * Decimal("0.15")).quantize(
             Decimal("0.01")))
 
+    # ------- مراجعة عن بعد E4.8 §1/§2: 0% صالحة + دِقّة صارمة للإدخال -------
+    def test_iep_below_minimum_auto_suggestion_is_zero_and_complete(self):
+        """اقتراحٌ آليّ تحت الحدّ الأدنى (anciennete_minimale_annees=1) —
+        0% نتيجةٌ صالحة، لا ناقصة (§1)."""
+        self._fill()
+        #  قبل الفترة (OCTOBRE 2026) بأقلّ من سنة، وقبل تاريخ اليوم
+        #  الفعليّ أيضاً (DateField يرفض تاريخاً مستقبلياً حرفياً).
+        self.scr._widgets["id_date_embauche"].set_iso("2026-08-15")
+        r = self._add("iep")
+        self.assertEqual(r.val("taux"), "0.00")
+        self.assertEqual(r.display_text("taux"), "0,00")
+        state, complete, _ = self.scr._row_status(r)
+        self.assertTrue(state)
+        self.assertTrue(complete)
+
+    def test_iep_manual_zero_accepted(self):
+        self._fill()
+        r = self._add("iep")
+        r.set_val("taux", "0")
+        self.assertTrue(r._iep_manual)
+        _, complete, _ = self.scr._row_status(r)
+        self.assertTrue(complete)
+
+    def test_iep_blank_rate_is_incomplete_not_zero(self):
+        """بلا تاريخ دخولٍ صالح ⇒ لا اقتراح ممكن (§1 «missing rate because
+        no valid suggestion/input remains incomplete») — الخليّة تبقى
+        فارغةً فعلياً (لا يعيدها ``_on_row_edit`` لاقتراحٍ لأنه غير
+        موجود أصلاً)، لا صفراً."""
+        self._fill()
+        self.scr._widgets["id_date_embauche"].set_iso("")
+        r = self._add("iep")
+        self.assertEqual(r.iep_taux_validity(), ("blank", None))
+        _, complete, _ = self.scr._row_status(r)
+        self.assertFalse(complete)
+
+    def test_iep_negative_rate_rejected(self):
+        self._fill()
+        r = self._add("iep")
+        r.set_val("taux", "-5")
+        st, frac = r.iep_taux_validity()
+        self.assertEqual(st, "ok")
+        self.assertLess(frac, 0)
+        _, complete, _ = self.scr._row_status(r)
+        self.assertFalse(complete)
+
+    def test_iep_garbage_text_never_becomes_legitimate_zero(self):
+        """نصٌّ فاسد (مسوّدة قديمة تالفة، أو ``set_val`` مباشر) — لا يُقرأ
+        صفراً حقيقياً صامتاً (§2): ``val()`` يرجع "" لا "0"، والحالة
+        "invalid" لا "ok"، فيُرفَض الإصدار النهائي، والنصّ الفاسد يبقى
+        ظاهراً حرفياً بدل أن يُصحَّح صامتاً إلى "0,00"."""
+        self._fill()
+        r = self._add("iep")
+        r.set_val("taux", "abc")
+        self.assertEqual(r.val("taux"), "")
+        self.assertEqual(r.display_text("taux"), "abc")   # يبقى ظاهراً، لا "0,00"
+        st, frac = r.iep_taux_validity()
+        self.assertEqual(st, "invalid")
+        self.assertIsNone(frac)
+        self.assertTrue(r._iep_manual)       # غير فارغة ⇒ يدويّة (لا تُستبدَل صامتاً)
+        _, complete, _ = self.scr._row_status(r)
+        self.assertFalse(complete)
+
+    def test_iep_rate_input_validator_blocks_letters_interactively(self):
+        """الفاليديتور التفاعليّ يمنع الحروف من الدخول أصلاً — «abc»
+        المكتوبة حرفاً حرفاً لا تصل الخليّة إطلاقاً (§2، لا فراغاً فقط
+        لصقاً/برمجياً كما في الاختبار أعلاه)."""
+        from PySide6.QtGui import QValidator
+        self._fill()
+        r = self._add("iep")
+        w = r.widgets["taux"]
+        for ch in "abc":
+            state, _txt, _pos = w.validator().validate(ch, 0)
+            self.assertEqual(state, QValidator.Invalid)
+
+    def test_iep_rate_7_08_parses_to_exact_raw_fraction(self):
+        self._fill()
+        r = self._add("iep")
+        r.set_val("taux", "0.0708")
+        self.assertEqual(r.display_text("taux"), "7,08")
+        self.assertEqual(r.val("taux"), "0.0708")
+
+    # ------------ مراجعة عن بعد E4.8 §3: AVANCE نوعٌ دلاليٌّ مخصَّص ------------
+    def test_smart_avance_entry_type_is_avance_not_libre(self):
+        self._fill()
+        r = self._add("avance", libelle="AVANCE", montant="5000")
+        self.assertEqual(r.entry()["type"], "avance")
+
+    def test_avance_code_210_edit_does_not_change_semantic_type(self):
+        self._fill()
+        r = self._add("avance", libelle="AVANCE", montant="5000")
+        r.set_val("code", "999")             # تعديلٌ يدويّ للرمز المعروض فقط
+        self.assertEqual(r.entry()["type"], "avance")
+
+    def test_avance_and_free_retenue_zone_c_coexist_without_stealing_amounts(self):
+        """مراجعة E4.8 §3: قبل الإصلاح كانت AVANCE تُرسَل كـ"libre" — نفس
+        توقيع المحرّك (type, zone, sens) لسطرٍ حرٍّ باقتطاعٍ عامّ في
+        Zone C (كلاهما ("libre","Z4","RETENUE") قديماً). فصل النوع
+        يزيل التصادم بنيوياً بدل الاعتماد على تطابق ترتيب الإرسال."""
+        self._fill()
+        av = self._add("avance", libelle="AVANCE", montant="4000")
+        self.scr._add_row("free", segment="C")            # RETENUE حرّة = Zone C
+        free = self._row("free", -1)
+        free.set_val("libelle", "PRÊT MUTUELLE")
+        free.set_val("retenue", "1500")
+        self.scr._recompute()
+        self.assertEqual(av.entry()["type"], "avance")
+        self.assertEqual(free.entry()["type"], "libre")
+        self.assertEqual(av._amount, Decimal("4000.00"))
+        self.assertEqual(free._amount, Decimal("1500.00"))
+        #  سطرٌ حرٌّ ثانٍ بنفس المفتاح ("libre") في نفس المنطقة — يثبت أنّ
+        #  AVANCE (نوعها الآن مستقلّ) لا تتأثّر بتعدّد أسطر "libre" حولها.
+        self.scr._add_row("free", segment="C")
+        free2 = self._row("free", -1)
+        free2.set_val("libelle", "AUTRE RETENUE")
+        free2.set_val("retenue", "600")
+        self.scr._recompute()
+        self.assertEqual(av._amount, Decimal("4000.00"))
+        self.assertEqual(free._amount, Decimal("1500.00"))
+        self.assertEqual(free2._amount, Decimal("600.00"))
+
+    def test_avance_net_identical_to_direct_engine_avance_type(self):
+        from programme.payroll import lignes
+        self._fill()
+        r = self._add("avance", libelle="AVANCE", montant="3000")
+        base = self._row("salaire")._amount
+        cfg = self.scr._load_cfg()
+        direct = lignes.compute_bulletin(
+            [{"type": "salaire_base", "values": {"montant": str(base)}},
+             {"type": "avance", "values": {"montant": "3000"}}], cfg)
+        direct_amt = next(lv.montant for lv in direct.lignes if lv.key == "avance")
+        self.assertEqual(r._amount, direct_amt)
+        self.assertEqual(r._amount, Decimal("3000.00"))
+
     def test_abs_jours_and_abs_heures_are_distinct_types(self):
         #  E.4 intentional contract change: "mode" ضمن سطرٍ واحد أُلغي —
         #  abs_jours/abs_heures صارا نوعين ذكيّين مستقلّين (§B)، لا خياراً
@@ -1717,6 +1850,76 @@ class BulletinTemplateE3Calc(unittest.TestCase):
         self.assertGreater(self.scr._calc_result.net_a_payer, n50)
         self.assertGreater(r100._amount, r50._amount)  # 100% > 50% لنفس الكمّية
 
+    def _snap_taux(self, r):
+        """قيمة TAUX كما تصل فعلياً إلى اللقطة (نفس مصدر الشاشة/PDF/Word،
+        _row_snapshots) — hs_50/hs_100 خليّة عرضٍ محسوبة بلا widget، فلا
+        ``display_text`` مباشرةً (مراجعة عن بعد E4.8 §4)."""
+        snap = next(s for s in self.scr._row_snapshots() if s.rid == r.rid)
+        return snap.taux
+
+    def test_hs50_taux_display_matches_exact_domain_rate_for_fractional_hours(self):
+        """مراجعة عن بعد E4.8 §4: TAUX المعروض = المعدّل الساعيّ الدقيق
+        (‏taux_horaire × 1.5، بلا تقريبٍ وسيط) منسَّقاً لخانتين — لا مبلغ
+        السطر المقرَّب ÷ الساعات (يختلف فعلياً لساعاتٍ كسريّة صغيرة —
+        0.10/0.33 هنا تثبتان الفرق صراحةً)."""
+        for qty in ("0.10", "0.33", "1.17", "7.88"):
+            with self.subTest(qty=qty):
+                r = self._add("hs_50", qty=qty)
+                res = self.scr._bulletin_view.result
+                exact_rate = res.taux_horaire * Decimal("1.5")
+                expected = calc.fmt_montant(exact_rate)
+                self.assertEqual(self._snap_taux(r), expected)
+                old_buggy = calc.fmt_montant(r._amount / Decimal(qty))
+                if qty in ("0.10", "0.33"):
+                    self.assertNotEqual(expected, old_buggy, qty)
+                self.scr._remove_row(r)
+                self.scr._recompute()
+
+    def test_hs100_taux_display_matches_exact_domain_rate(self):
+        r = self._add("hs_100", qty="0.33")
+        res = self.scr._bulletin_view.result
+        expected = calc.fmt_montant(res.taux_horaire * Decimal("2.0"))
+        self.assertEqual(self._snap_taux(r), expected)
+
+    # ---------- Panier/Transport TAUX × سياسة التنسيب (E4.8 §5) ----------
+    def test_panier_taux_matches_actual_prorata_factor_across_policies(self):
+        """مراجعة عن بعد E4.8 §5: TAUX Panier = ساعاتٌ معادِلة للعامل
+        الفعليّ المُستهلَك في GAIN، أياً كانت السياسة — لا
+        ``heures_presence`` دائماً (يختلف فعلياً في AUCUN/PRORATA_JOURS
+        حيث العامل الحقيقيّ ليس نسبة الساعات)."""
+        cfg = self.scr._load_cfg()
+        heures_mois = Decimal(str(cfg["heures_mois"]))
+        panier_row = next(r for r in self.scr._rows if r.kind == "panier")
+        panier_row.set_val("gain", "2500")
+
+        def _clear_absences():
+            for r in list(self.scr._rows):
+                if r.kind in ("abs_jours", "abs_heures"):
+                    self.scr._remove_row(r)
+
+        scenarios = (
+            ("AUCUN", lambda: None),
+            ("PRORATA_HEURES", lambda: self._add("abs_heures", qty="10")),
+            ("PRORATA_JOURS", lambda: self._add("abs_jours", qty="3")),
+            ("PRORATA_MIXTE", lambda: self._add("abs_jours", qty="1")),
+        )
+        for policy, setup in scenarios:
+            with self.subTest(policy=policy):
+                _clear_absences()
+                setup()
+                self.scr._prorata_policy = policy
+                self.scr._recompute()
+                res = self.scr._bulletin_view.result
+                expected = calc.fmt_montant(res.panier_transport_heures_equiv)
+                self.assertEqual(self._snap_taux(panier_row), expected)
+                #  يطابق فعلياً عامل GAIN الحقيقيّ — لا رقماً معروضاً موازياً
+                #  بلا صلة بالمبلغ الفعليّ.
+                facteur = res.panier_transport_heures_equiv / heures_mois
+                self.assertEqual(res.panier, calc.da(Decimal("2500") * facteur))
+        _clear_absences()
+        self.scr._prorata_policy = "PRORATA_MIXTE"
+        self.scr._recompute()
+
     def test_duplicate_hs50_blocked(self):
         #  E.4 intentional contract change: كان بالإمكان تكرار "hs" (كان
         #  نوعاً واحداً بمُنتقي) — الاختبار القديم test_two_hs_rows_each_
@@ -2122,6 +2325,81 @@ class BulletinTemplateValidation(unittest.TestCase):
         self._fill_final()
         self._add("avance", libelle="AVANCE", montant="")   # بلا مبلغ
         self.assertFalse(self._v().ready_for_final)
+
+    # ------- مراجعة عن بعد E4.8 §1: 0% IEP لا يمنع الإصدار النهائي -------
+    def test_iep_zero_percent_final_ready(self):
+        self._fill_final()
+        self.scr._widgets["id_date_embauche"].set_iso("2026-08-15")
+        self._add("iep")                     # اقتراحٌ آليّ تحت الحدّ الأدنى ⇒ 0%
+        v = self._v()
+        self.assertTrue(v.ready_for_final, v.summary_lines())
+
+    def test_iep_manual_zero_final_ready(self):
+        self._fill_final()
+        r = self._add("iep")
+        r.set_val("taux", "0")
+        self.scr._recompute()
+        v = self._v()
+        self.assertTrue(v.ready_for_final, v.summary_lines())
+
+    # ------- مراجعة عن بعد E4.8 §6: حضورٌ مستحيل يمنع الإصدار فقط -------
+    #  الفترة OCTOBRE 2026 (params_2026.json): jours_mois=30 ·
+    #  heures_mois=173.33 (‏``_fill_final`` تضبط mois/annee هذين).
+    def test_attendance_days_exactly_at_capacity_allowed(self):
+        self._fill_final()
+        self._add("abs_jours", qty="30")
+        v = self._v()
+        self.assertTrue(v.ready_for_final, v.summary_lines())
+
+    def test_attendance_days_over_capacity_blocks_final(self):
+        self._fill_final()
+        self._add("abs_jours", qty="31")
+        self.assertFalse(self._v().ready_for_final)
+
+    def test_attendance_hours_exactly_at_capacity_allowed(self):
+        self._fill_final()
+        self._add("abs_heures", qty="173.33")
+        v = self._v()
+        self.assertTrue(v.ready_for_final, v.summary_lines())
+
+    def test_attendance_hours_over_capacity_blocks_final(self):
+        self._fill_final()
+        self._add("abs_heures", qty="174")
+        self.assertFalse(self._v().ready_for_final)
+
+    def test_attendance_retard_over_capacity_blocks_final(self):
+        self._fill_final()
+        self._add("retard", qty="174")
+        self.assertFalse(self._v().ready_for_final)
+
+    def test_attendance_mixed_day_hour_exactly_100_percent_allowed(self):
+        self._fill_final()
+        self._add("abs_jours", qty="15")           # 15/30 = 0.5
+        self._add("abs_heures", qty="86.665")       # 86.665/173.33 ≈ 0.5
+        v = self._v()
+        self.assertTrue(v.ready_for_final, v.summary_lines())
+
+    def test_attendance_mixed_day_hour_over_100_percent_blocks_final(self):
+        self._fill_final()
+        self._add("abs_jours", qty="20")            # 20/30 ≈ 0.667
+        self._add("abs_heures", qty="90")           # + 90/173.33 ≈ 0.519 ⇒ >1
+        self.assertFalse(self._v().ready_for_final)
+
+    def test_attendance_absence_plus_retard_reducers_over_100_percent_blocks_final(self):
+        self._fill_final()
+        self._add("abs_jours", qty="20")
+        self._add("retard", qty="90")
+        self.assertFalse(self._v().ready_for_final)
+
+    def test_incomplete_work_can_still_be_saved_with_impossible_attendance(self):
+        """‏§4: الحفظ لا يستشير هذا التحقّق إطلاقاً — حضورٌ مستحيل يمنع
+        الإصدار النهائي فقط، لا الحفظ."""
+        self._fill_final()
+        self._add("abs_jours", qty="99")
+        self.assertFalse(self._v().ready_for_final)
+        self.scr.flush_draft()
+        path = self.scr._draft_path()
+        self.assertTrue(path and os.path.exists(path))
 
     def test_incomplete_autre(self):
         self._fill_final()

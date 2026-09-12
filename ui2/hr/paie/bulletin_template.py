@@ -508,6 +508,13 @@ class _InlineChoice(QLineEdit):
         self.setTextMargins(0, 0, s, 0)
 
 
+#  رقمٌ صريحٌ فقط أثناء الكتابة التفاعليّة (علامة سالبة + أرقام + فاصل
+#  عشريّ اختياريّ) — يمنع الحروف من الدخول أصلاً (مراجعة عن بعد E4.8 §2).
+#  حالاتٌ وسيطة مسموحة ("-"، "1,"، "") تُرفَض لاحقاً في التحقّق الصارم
+#  (``PZ.is_valid_rate_text``) لا هنا — الفاليديتور يمنع الحروف فقط.
+_RATE_INPUT_RX = QRegularExpression(r"^-?\d*[.,]?\d*$")
+
+
 class _RateEdit(QLineEdit):
     """خليّة TAUX لسطر IEP — **تصحيح عرض** (طلب المستخدم، لا SPEC_PAIE_DZ):
     النصّ المعروض/المكتوب نسبةٌ مئويّة (0,10 داخليّاً ⇒ "10,00" على
@@ -520,15 +527,40 @@ class _RateEdit(QLineEdit):
     التنسيق/الفكّ يعيدان استعمال ``PZ.fmt_rate_pct``/``PZ.parse_rate_pct``
     (نفس زوج نسبة CNAS — لا مصدر قانونيّ ثانٍ). presentation فقط: **لا**
     مضاعفة لقيمة المحرّك — الكسر المرسَل له هو نفسه المكتوب أصلاً، فقط
-    مقسومٌ ÷100 عند القراءة (عكس ×100 عند الكتابة)."""
+    مقسومٌ ÷100 عند القراءة (عكس ×100 عند الكتابة).
+
+    **دِقّة صارمة (مراجعة عن بعد E4.8 §1/§2):** صفرٌ ليس فراغاً — ``0``
+    نسبةٌ صالحة تماماً (اقتراح آليّ تحت الحدّ الأدنى، أو إدخالٌ يدويّ
+    مقصود). لكن نصّاً غير رقميّ **لا** يجوز أن يتحوّل صامتاً إلى صفرٍ
+    حقيقيّ — لا في القراءة التفاعليّة (فاليديتور يمنع الحروف أصلاً) ولا
+    في استرجاع نصٍّ محفوظٍ فاسد (مسوّدة قديمة تالفة): ``value()`` يُرجع
+    ``""`` (لا "0") لنصٍّ غير صالح، و``set_value`` يعرض النصّ الفاسد
+    حرفياً بدل تصحيحه صامتاً إلى "0,00" — فيلتقطه التحقّق الصارم
+    (‏``_Row.iep_taux_validity``) بدل أن يختفي كصفرٍ مخترَع."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setValidator(QRegularExpressionValidator(_RATE_INPUT_RX, self))
+
+    def raw_text(self) -> str:
+        return self.text().strip()
 
     def value(self) -> str:
-        t = self.text().strip()
-        return "" if not t else str(PZ.parse_rate_pct(t))
+        t = self.raw_text()
+        if not t or not PZ.is_valid_rate_text(t):
+            return ""                     # فراغ أو فاسد — لا صفرٌ مخترَع
+        return str(PZ.parse_rate_pct(t))
 
     def set_value(self, raw) -> None:
         raw = str(raw or "").strip()
-        self.setText(PZ.fmt_rate_pct(raw) if raw else "")
+        if not raw:
+            self.setText("")
+        elif not PZ.is_valid_rate_text(raw):
+            #  نصٌّ محفوظٌ فاسد — يُعرَض كما هو حرفياً، لا يُصحَّح صامتاً
+            #  (التحقّق الصارم يحجبه لاحقاً بدل أن يختفي كصفرٍ سليم).
+            self.setText(raw)
+        else:
+            self.setText(PZ.fmt_rate_pct(raw))
 
 
 def _prime_entry(r):
@@ -543,10 +575,14 @@ def _prime_entry(r):
 
 
 def _avance_entry(r):
-    return {"type": "libre", "values": {
-        "libelle": r.val("libelle") or "AVANCE / RETENUE",
-        "montant": r.val("montant"), "est_retenue": _YES,
-        "cotisable": _NO, "imposable": _NO}}
+    #  مراجعة عن بعد E4.8 §3: النوع الدلاليّ الحقيقيّ ``avance`` (لا
+    #  ``libre`` عامّ) — ``lignes.LINE_TYPES["avance"]`` مخصَّصٌ لهذا
+    #  بالضبط (RETENUE ثابتة، Zone C دائماً، بلا CNAS/IRG — نفس الأثر
+    #  الماليّ حرفياً على NET، مُتحقَّقٌ بالاختبار). CODE/LIBELLÉ المعروضان
+    #  (210 / AVANCE / ACOMPTE أو ما كتبه المستخدم) يبقيان قيَم الشاشة
+    #  فقط — لا علاقة لهما بمفتاح النوع المرسَل هنا؛ تعديل CODE يدوياً لا
+    #  يغيّر الدلالة (نفس مبدأ §20 لبقيّة الأنواع الذكيّة).
+    return {"type": "avance", "values": {"montant": r.val("montant")}}
 
 
 def _autre_entry(r):
@@ -613,9 +649,11 @@ def _row_display_extra(row, view):
     ``retard``: TAUX = ``taux_horaire`` (عمود TAUX خالٍ من أيّ widget لهذا
     النوع — آمنٌ للإضافة). ``iep``: BASE = مبلغ سطر الأجر القاعديّ الفعليّ
     (نفس القاعدة المُستعمَلة فعلياً — SAL_BASE_BRUT، هذه الشاشة لا تمرّر
-    اتفاقية base_iep مغايرة). ``panier``/``transport``: TAUX = ساعات
-    الحضور الفعليّة (‏``res.heures_presence`` — نفس الحقل في كلّ أوضاع
-    التنسيب، بما فيها PRORATA_MIXTE الجديد §3).
+    اتفاقية base_iep مغايرة). ``panier``/``transport``: TAUX = ساعاتٌ
+    معادِلة لعامل التنسيب الفعليّ (‏``res.panier_transport_heures_equiv``
+    — مراجعة عن بعد E4.8 §5: ``heures_presence`` وحده لا يطابق العامل
+    الفعليّ في PRORATA_JOURS/AUCUN، فاستُبدل بحقلٍ يعكس السياسة الفعليّة
+    أياً كانت — AUCUN/PRORATA_HEURES/PRORATA_JOURS/PRORATA_MIXTE معاً).
 
     ‏E.4 §B/§D: ``abs_jours``/``abs_heures``/``hs_50``/``hs_100`` نوعٌ
     مستقلّ لكلٍّ منها الآن — لا مُنتقٍ حيّ يشغل TAUX بعد اليوم، فتُضاف
@@ -629,17 +667,17 @@ def _row_display_extra(row, view):
     if row.kind in ("abs_heures", "retard"):
         return {"taux": res.taux_horaire}
     if row.kind in ("hs_50", "hs_100"):
-        #  المعدَّل الساعيّ المُعوَّض الفعليّ لهذا السطر بالذات = مبلغه
-        #  المحسوب ÷ ساعاته — مُشتقٌّ من نفس النتيجة الفعليّة
-        #  (‏``row._amount``، مطابَقٌ بتوقيع E.3-Review-2)، لا معاملاً
-        #  ثابتاً (1.5/2.0) يُعاد اختراعه موازياً هنا (§D). صحيحٌ حتى لو
-        #  غيّرت اتفاقيةٌ مستقبليّة معامل الاتفاقية — لا مصدر حقيقة ثانٍ.
-        if row._amount is None:
+        #  مراجعة عن بعد E4.8 §4: المعدَّل الساعيّ المُعوَّض **الدقيق**
+        #  (taux_horaire × coef، بلا تقريب) — من ``LineView.taux`` الفعليّ
+        #  (مطابَقٌ بتوقيع E.3-Review-2 في ``_assign_computed_amounts`` ⇒
+        #  ``row._taux_exact``)، **لا** ``row._amount ÷ الساعات`` (كان
+        #  يُخفي فرقاً حقيقياً لساعاتٍ كسريّة صغيرة بسبب تقريب المبلغ
+        #  لخانتين قبل القسمة — §مراجعة). لا معاملاً ثابتاً (1.5/2.0)
+        #  يُعاد اختراعه موازياً هنا (§D) — المحرّك وحده مصدر الرقم.
+        taux = getattr(row, "_taux_exact", None)
+        if taux is None:
             return {}
-        heures = _num(row.val("qty"))
-        if heures <= 0:
-            return {}
-        return {"taux": row._amount / Decimal(str(heures))}
+        return {"taux": taux}
     if row.kind == "iep":
         #  اسم العمود الفعليّ "nbase" (N/BASE) — لا عمود باسم "base" في
         #  layout_spec/COLS؛ استعمال "base" هنا كان يُسقِط استثناءً صامتاً
@@ -649,7 +687,13 @@ def _row_display_extra(row, view):
         base = sr._amount if sr is not None and sr._amount is not None else None
         return {} if base is None else {"nbase": base}
     if row.kind in ("panier", "transport"):
-        return {"taux": res.heures_presence}
+        #  مراجعة عن بعد E4.8 §5: ``res.heures_presence`` لا يطابق دائماً
+        #  العامل الفعليّ لتنسيب السلة/النقل (PRORATA_JOURS/AUCUN يستعملان
+        #  عاملاً مختلفاً تماماً بينما heures_presence يبقى حساباً ساعياً
+        #  موازياً) — المصدر الوحيد الآن ``res.panier_transport_heures_equiv``
+        #  (محسوبٌ في calc.py من نفس ``facteur`` المُستعمَل فعلياً للمبلغ،
+        #  أياً كانت السياسة). لا اشتقاق موازٍ هنا.
+        return {"taux": res.panier_transport_heures_equiv}
     return {}
 
 
@@ -851,6 +895,7 @@ class _Row:
         self._cellspec = {c["name"]: c for c in spec["cells"]}
         self.widgets = {}
         self._amount = None                       # المبلغ المحسوب (إن وُجد)
+        self._taux_exact = None    # معدّلٌ دقيق اختياريّ (hs_50/hs_100 — E4.8 §4)
         self._iep_manual = False
         self._code_manual = False                 # §20: CODE عُدِّل يدوياً؟
         for c in spec["cells"]:
@@ -963,6 +1008,23 @@ class _Row:
             w.set_value(value)                    # كسرٌ → نسبة مئويّة معروضة
         else:
             w.setText(str(value or ""))
+
+    def iep_taux_validity(self):
+        """‏(state, fraction) لخليّة TAUX لسطر IEP فقط (مراجعة عن بعد
+        E4.8 §1/§2). ``state``: ``"blank"`` (فراغٌ حقيقيّ — ناقص، لا
+        صفر)، ``"invalid"`` (نصٌّ محفوظ/مكتوب غير رقميّ — لا يُقرأ صفراً
+        صامتاً)، أو ``"ok"`` (رقمٌ صريح، ``fraction`` = Decimal الكسر —
+        قد يكون صفراً أو سالباً؛ السلبيّة تُرفَض في `_row_status` لا هنا،
+        فهذه دالةٌ نصّيّة صِرفة)."""
+        w = self.widgets.get("taux")
+        if not isinstance(w, _RateEdit):
+            return "blank", None
+        raw = w.raw_text()
+        if not raw:
+            return "blank", None
+        if not PZ.is_valid_rate_text(raw):
+            return "invalid", None
+        return "ok", PZ.parse_rate_pct(raw)
 
     def is_empty(self) -> bool:
         pk = _ROW_SPECS[self.kind].get("primary")
@@ -2576,7 +2638,13 @@ class BulletinTemplateScreen(Screen):
         if k == "prime":
             return started, _num(r.val("gain")) > 0, "Prime / تعويض"
         if k == "iep":
-            return started, _num(r.val("taux")) > 0, "نسبة الأقدمية (IEP)"
+            #  مراجعة عن بعد E4.8 §1: 0% نتيجةٌ صالحة (اقتراح آليّ تحت
+            #  الحدّ الأدنى، أو إدخالٌ يدويّ مقصود) — لا نطلب `> 0`.
+            #  ناقصٌ فقط إن كانت الخليّة فارغة حقاً أو نصّها غير رقميّ
+            #  (لا نقرأها صفراً صامتاً)؛ السالب يبقى غير صالح.
+            state, frac = r.iep_taux_validity()
+            complete = state == "ok" and frac is not None and frac >= 0
+            return started, complete, "نسبة الأقدمية (IEP)"
         if k in ("hs_50", "hs_100"):
             #  E.4 §B/§D: النوع نفسه يحمل 50%/100% الآن — لا حقل coef.
             return started, _num(r.val("qty")) > 0, "ساعات العمل الإضافيّ"
@@ -2941,8 +3009,12 @@ class BulletinTemplateScreen(Screen):
         for r in self._rows:
             if r.kind == "iep" and key == r.cell_key("taux"):
                 # تعديل يدويّ للنسبة → Manual Override؛ تفريغها → العودة
-                # للاقتراح (لفتة خفيفة، بلا زرّ إضافيّ).
-                r._iep_manual = bool(r.val("taux"))
+                # للاقتراح (لفتة خفيفة، بلا زرّ إضافيّ). مراجعة عن بعد
+                # E4.8 §1/§2: الاعتماد على الخليّة **فارغة أم لا**
+                # (‏``iep_taux_validity``) لا ``val()`` — نصٌّ فاسد يُعتبَر
+                # يدوياً أيضاً (يبقى ظاهراً، لا يُستبدَل صامتاً باقتراحٍ
+                # جديد يخفي الفساد)؛ فراغٌ حقيقيّ وحده يعيد للاقتراح.
+                r._iep_manual = r.iep_taux_validity()[0] != "blank"
             if r.kind == "free" and key in (r.cell_key("gain"),
                                             r.cell_key("retenue")):
                 self._enforce_free_gain_retenue(r, key)
@@ -3023,6 +3095,7 @@ class BulletinTemplateScreen(Screen):
         used = {}
         for r in self._visible_body_rows():
             r._amount = None
+            r._taux_exact = None
             if r.role == "system":
                 continue
             sig = _row_engine_signature(r)
@@ -3032,6 +3105,7 @@ class BulletinTemplateScreen(Screen):
             n = used.get(sig, 0)
             if n < len(lst):
                 r._amount = lst[n].montant
+                r._taux_exact = lst[n].taux
                 used[sig] = n + 1
 
     def _sync_row_styles(self):

@@ -102,6 +102,12 @@ class SequenceResult:
     taux_journalier: Decimal = _ZERO         # [2a] (دقة كاملة)
     retenue_absence: Decimal = _ZERO         # [2]  (مبلغ السطر، مقرّب)
     heures_supp_lignes: List[Decimal] = field(default_factory=list)   # [3] مبالغ مقرّبة بترتيب الإدخال
+    heures_supp_taux: List[Decimal] = field(default_factory=list)
+    #  [3] المعدّل الساعيّ المُعوَّض **الفعليّ الدقيق** لكلّ سطر (taux_horaire
+    #  × coef، بلا أيّ تقريب) — بترتيب الإدخال، موازٍ لـheures_supp_lignes.
+    #  مراجعة عن بعد E4.8 §4: لا يُشتَقّ العرض من مبلغ السطر المقرَّب
+    #  (heures_supp_lignes[i]) ÷ الساعات — يُخفي فرقاً حقيقياً لساعاتٍ
+    #  كسريّة صغيرة. هذا الحقل هو مصدر الحقيقة الوحيد لِـTAUX HS.
     heures_supp_total: Decimal = _ZERO       # [3]  (مجموع المبالغ المقرّبة)
     retenue_jours_abs: Decimal = _ZERO       # [2b] سطر مقرّب
     retenue_abs_irreguliere: Decimal = _ZERO # [2c] رُبريكة منفصلة، سطر مقرّب (§2.2)
@@ -119,6 +125,11 @@ class SequenceResult:
     net_a_payer: Decimal = _ZERO             # [12] = [E]
     cout_employeur: Decimal = _ZERO          # [13]
     heures_presence: Decimal = _ZERO         # §1.2.3
+    panier_transport_heures_equiv: Decimal = _ZERO
+    #  ساعاتٌ معادِلة لعامل تنسيب السلة/النقل **الفعليّ** أياً كانت
+    #  السياسة (AUCUN=heures_mois · PRORATA_HEURES=heures_presence ·
+    #  PRORATA_JOURS/MIXTE=facteurهما الخاصّ × heures_mois) — مصدر
+    #  الحقيقة الوحيد لِـTAUX Panier/Transport المعروض (E4.8 §5).
     panier: Decimal = _ZERO                  # Z2 (منسَّب)
     transport: Decimal = _ZERO               # Z2 (منسَّب)
     avertissements: List[str] = field(default_factory=list)   # تحذيرات مراجعة (V2…)
@@ -163,7 +174,8 @@ def compute_sequence(
                        + ret_abs_justifiee + ret_retard)      # مجموع السطور المقرّبة
 
     # [3] الساعات الإضافية = Σ (taux_horaire × coef × nb_heures)
-    hs_exacts = [taux_horaire * _d(h.coef) * _pos(h.heures) for h in si.heures_supp]
+    hs_taux_exacts = [taux_horaire * _d(h.coef) for h in si.heures_supp]  # معدّلٌ دقيق، مستقلّ عن الساعات
+    hs_exacts = [t * _pos(h.heures) for t, h in zip(hs_taux_exacts, si.heures_supp)]
     hs_lignes = [da(x) for x in hs_exacts]                    # مبالغ السطور (مقرّبة)
 
     # [3b] BASE_PRIMES = salaire_base − retenue_absence  (وسيط موثَّق)
@@ -219,6 +231,14 @@ def compute_sequence(
         facteur = (heures_presence / heures_mois) if heures_mois else Decimal("1")
     panier = da(_pos(si.panier_mensuel) * facteur)
     transport = da(_pos(si.transport_mensuel) * facteur)
+    #  مراجعة عن بعد E4.8 §5: ``heures_presence`` أعلاه **لا** يعكس دائماً
+    #  العامل الفعليّ المُستهلَك لتنسيب السلة/النقل — في PRORATA_JOURS/
+    #  AUCUN يبقى حساباً ساعياً موازياً بينما ``facteur`` الفعليّ مبنيٌّ
+    #  على الأيام أو ثابتٌ 1. هذا الحقل وحده هو مصدر الحقيقة لِـTAUX
+    #  المعروض (ساعاتٌ معادِلة = facteur × heures_mois)، أياً كانت
+    #  السياسة — بلا تغيير أيّ صيغة ماليّة (facteur/panier/transport
+    #  كما هي أعلاه بالضبط).
+    panier_transport_heures_equiv = (heures_mois * facteur) if heures_mois else _ZERO
 
     # [7] ASSIETTE_CNAS = [A]  — §5.4: مكوّنات Z1 غير الغياب (القاعدي،
     # الساعات الإضافية، IEP، PRI، منح Z1) تُجمَع بدقة كاملة؛ أسطر الغياب
@@ -292,6 +312,7 @@ def compute_sequence(
         retenue_abs_justifiee=ret_abs_justifiee,
         retenue_retard=ret_retard,
         heures_supp_lignes=hs_lignes,
+        heures_supp_taux=hs_taux_exacts,
         heures_supp_total=sum(hs_lignes, _ZERO),
         base_primes=da(base_primes),
         iep=iep,
@@ -305,6 +326,7 @@ def compute_sequence(
         net_a_payer=net_a_payer,
         cout_employeur=cout_employeur,
         heures_presence=da(heures_presence),
+        panier_transport_heures_equiv=panier_transport_heures_equiv,
         panier=panier,
         transport=transport,
         avertissements=avertissements,

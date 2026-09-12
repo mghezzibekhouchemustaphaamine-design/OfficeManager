@@ -50,6 +50,11 @@ class Screen(QWidget):
     DRAFT_VERSION = 1          # ارفعه عند أيّ تغيير في بنية draft_state()
 
     companySelected = Signal(object)          # client_id | None
+    #  ‏P3 §9: أصغر إشارةٌ عامّة ممكنة لحالة dirty — أيّ مضيفٍ خارجي
+    #  (Shell WorkSession لاحقاً) يستطيع الربط بها بلا معرفة تفاصيل
+    #  الشاشة الوارثة. تُصدَر فقط عند تغيّرٍ فعليّ (لا استدعاءً مكرَّراً
+    #  بنفس القيمة) — mark_dirty()/mark_clean() تحت تصدرها.
+    dirtyChanged = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -126,13 +131,19 @@ class Screen(QWidget):
     # ===================== التغييرات غير المحفوظة =====================
     def mark_dirty(self) -> None:
         """يستدعيها الوارث عند كل تعديل حقيقي من المستخدم."""
+        changed = not self._dirty
         self._dirty = True
         self.schedule_draft_save()
+        if changed:
+            self.dirtyChanged.emit(True)
 
     def mark_clean(self) -> None:
         """بعد حفظ ناجح (أو استمارة جديدة): يُصفّر العلَم ويمسح المسوّدة."""
+        changed = self._dirty
         self._dirty = False
         self.clear_draft()
+        if changed:
+            self.dirtyChanged.emit(False)
 
     def has_unsaved_changes(self) -> bool:
         return self._dirty

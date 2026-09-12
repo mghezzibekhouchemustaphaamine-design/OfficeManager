@@ -334,6 +334,9 @@ class WorkspaceHost(QWidget):
         #  (الذي لا يعرف سوى "عملٌ نشِط" أو "لا شيء"). تمنع أيضاً حلقة
         #  استدعاءٍ ذاتية بين show_home() و_on_work_activated(None).
         self._showing_shell = True
+        #  ‏P3 §6: الخدمة المعروضة حالياً في ServiceStartView — يقرأها
+        #  _on_nouveau_clicked فقط، لا تُخزَّن في WorkspaceManager.
+        self._current_service = None
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -382,6 +385,7 @@ class WorkspaceHost(QWidget):
         self.content_stack.addWidget(self.home_view)
 
         self.service_start_view = ServiceStartView(self)
+        self.service_start_view.btn_nouveau.clicked.connect(self._on_nouveau_clicked)
         self.content_stack.addWidget(self.service_start_view)
 
         self.work_status_bar = WorkStatusBar(self)
@@ -417,12 +421,26 @@ class WorkspaceHost(QWidget):
 
     def show_service_start(self, service: ServiceDescriptor) -> None:
         self._showing_shell = True
+        self._current_service = service
         self.service_start_view.set_service(service)
         self.content_stack.setCurrentWidget(self.service_start_view)
         self.workspace_manager.deactivate()
 
     def current_view(self) -> QWidget:
         return self.content_stack.currentWidget()
+
+    # -------------------------------------------- Nouveau → Work (P3 §6/§19)
+    def _on_nouveau_clicked(self) -> None:
+        """‏Nouveau ينشئ عملاً حقيقياً فقط إن كانت الخدمة الحالية سجَّلت
+        ``new_work_factory`` (عبر ``ui2.shell.services.
+        register_new_work_factory`` من integration module خارجيّ، مثل
+        ``ui2.shell.integrations.paie``) — لا فرع ``if service_key ==
+        ...`` هنا؛ خدمةٌ بلا factory تبقى placeholder صامتاً كما كانت."""
+        service = self._current_service
+        if service is None or service.new_work_factory is None:
+            return
+        session = service.new_work_factory()
+        self.workspace_manager.open_work(session)
 
     # -------------------------------------------- WorkTabBar → WorkspaceManager
     def _on_tab_activate_requested(self, key: WorkKey) -> None:
@@ -482,6 +500,13 @@ class WorkspaceHost(QWidget):
             self.work_tab_bar.removeTab(idx)
             self.work_tab_bar.blockSignals(False)
         self.content_stack.removeWidget(session.widget)
+        #  ‏P3 §14: خطّاف تنظيف عامّ اختياريّ (duck-typed) — أيّ widget
+        #  يطبّق بروتوكول ``ui2.screen.Screen`` (``close_screen()``:
+        #  on_close + on_deactivate + flush_draft) يُستدعى هنا قبل
+        #  الحذف. لا معرفة بأيّ خدمةٍ بعينها — Shell لا تستورد Paie.
+        close_hook = getattr(session.widget, "close_screen", None)
+        if callable(close_hook):
+            close_hook()
         session.widget.deleteLater()
 
     def _on_work_title_or_state_changed(self, key, _value) -> None:

@@ -9,12 +9,17 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from ui2 import theme
+from ui2.shell.integrations import paie as paie_integration
 from ui2.shell.main_window import OfficeMainWindow
 
 
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     theme.apply_theme(app)
+
+    #  ‏P3 §19: تسجيل factory Bulletin de paie قبل أوّل OfficeMainWindow —
+    #  بعدها Nouveau في خدمة «كشف راتب شهري» ينشئ Work حقيقية.
+    paie_integration.register()
 
     win = OfficeMainWindow()
     #  ‏P0.3 §6: Demo Tabs معزولةٌ خلف علمٍ صريح — لا تظهر تلقائياً في

@@ -1102,6 +1102,11 @@ class BulletinTemplateScreen(Screen):
     ZOOM_MIN, ZOOM_MAX, ZOOM_STEP, ZOOM_DEFAULT = 30, 260, 20, 100
     MARGIN = 18
 
+    #  ‏P3 §13: أصغر إشارةٌ عامّة ممكنة لحالة 🔒 — أيّ مضيفٍ خارجي (Shell
+    #  WorkSession لاحقاً عبر Adapter) يربط بها بلا معرفة تفاصيل العمل
+    #  الداخلية. تُصدَر فقط عند تغيّرٍ فعليّ (راجع ``_set_locked``).
+    lockedChanged = Signal(bool)
+
     def __init__(self, conn=None, parent=None):
         super().__init__(parent)
         self._conn = conn
@@ -2436,8 +2441,7 @@ class BulletinTemplateScreen(Screen):
             self.show_required_warnings()
         # نظّف بعد كلّ إعادة البناء: عملٌ مُحمَّل حديثاً = «غير ملموس»
         # (‏auto-draft لا يطغى عليه) — §26/§14.
-        self._dirty = False
-        self.clear_draft()
+        self.mark_clean()
         self._update_incomplete_indicator()
         self._update_state_indicator()
         self.status.setText("فُتح العمل: %s" % (self.work_badge() or "—"))
@@ -2450,16 +2454,19 @@ class BulletinTemplateScreen(Screen):
             return "⚠️"
         return self.incomplete_badge()
 
-    def _on_save(self):
+    def _on_save(self) -> bool:
         """يحفظ التقدّم — **لا يُمنَع أبداً** بنقص المعلومات (§4). ينتج/يحدّث
         عملاً بحالة ⚠️ (لا DOCX/PDF نهائيَّين، لا قفل). عمل كان 🔒 ثمّ
         عُدِّل بعد فتح القفل ⇒ يعود ⚠️ ولا تُلمَس ملفّاته النهائية القديمة
-        (§16)."""
+        (§16).
+
+        ‏P3 §10: تُرجع ``bool`` (نجح/فشل) — لازمٌ لِـPaieWorkAdapter
+        لبناء ``SaveResult`` بدقّة بدل التخمين من قيمة ``None`` غامضة."""
         if self._locked:
             from ui2.alerts import warn
             warn(self, self.TITLE,
                  ["العمل مقفول (🔒). افتح القفل للتعديل قبل الحفظ."])
-            return
+            return False
         self._recompute()
         state = "incomplete"                      # SAVE لا يُنتج نهائياً أبداً
         #  §16: عمل كان 🔒 ثمّ فُتح وعُدِّل ⇒ يعود ⚠️، ولا تُلمَس ملفّاته
@@ -2476,20 +2483,27 @@ class BulletinTemplateScreen(Screen):
             logger.warning("حفظ العمل فشل", exc_info=True)
             from ui2.alerts import warn
             warn(self, self.TITLE, [f"تعذّر حفظ العمل: {exc}"])
-            return
+            return False
         self._work_state = state
-        self._dirty = False
-        self.clear_draft()
+        self.mark_clean()
         self._update_incomplete_indicator()
         v = self._validation
         tail = ("⚠️ غير مكتمل" if (v is not None and v.is_incomplete)
                 else "قابل للإصدار النهائيّ")
         self.status.setText(f"💾 حُفظ العمل — {tail}")
+        return True
+
+    @property
+    def locked(self) -> bool:
+        """‏P3 §13: مقابلٌ عامّ لِـ``self._locked`` — يستعمله Adapter
+        خارجيّاً بدل الوصول لحقلٍ خاصّ."""
+        return self._locked
 
     def _set_locked(self, locked: bool):
         """🔒: كلّ مدخلات الوثيقة للقراءة فقط (حقول الترويسة + خلايا كلّ
         صفّ ديناميكيّ)، وأزرار ＋/－ على الهامش تختفي (§28). لا يمسّ
         Zoom/Ctrl+Wheel/التمرير ولا أزرار المعاينة/الحفظ باسم."""
+        changed = self._locked != bool(locked)
         self._locked = bool(locked)
         for w in self._widgets.values():
             if isinstance(w, QComboBox):
@@ -2507,6 +2521,8 @@ class BulletinTemplateScreen(Screen):
         self._update_state_indicator()
         if hasattr(self, "_canvas"):
             self._canvas.update()
+        if changed:
+            self.lockedChanged.emit(self._locked)
 
     # ----------------------- البيانات والحساب -----------------------
     def _w(self, key):
@@ -2977,8 +2993,7 @@ class BulletinTemplateScreen(Screen):
             warn(self, self.TITLE,
                  [f"وُلِّدت الملفّات لكن تعذّر حفظ حالة العمل — لم يُقفَل.\n{exc}"])
             return
-        self._dirty = False
-        self.clear_draft()
+        self.mark_clean()
         self._set_locked(True)
         self._update_incomplete_indicator()
         self._update_state_indicator()
@@ -3046,10 +3061,9 @@ class BulletinTemplateScreen(Screen):
         self._work_state = "incomplete"
         self._has_final_artifacts = False
         self._final_docx = self._final_pdf = None
-        self._dirty = False
         if self._locked:
             self._set_locked(False)
-        self.clear_draft()
+        self.mark_clean()
         self._update_incomplete_indicator()
         self._update_state_indicator()
         self.status.setText("💾 أُنشئت نسخة مستقلّة (⚠️) — الأصل لم يتغيّر.")

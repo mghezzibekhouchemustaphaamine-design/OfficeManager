@@ -12,16 +12,20 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QMainWindow, QSplitter, QVBoxLayout, QWidget
 
 from ui2 import theme
+from ui2.shell import metrics
 from ui2.shell.services import ServiceDescriptor
 from ui2.shell.top_bar import TopBar
 from ui2.shell.workspace import WorkspaceHost
 
-#  ‏P0.3 §1: حدود عرضٍ مبدئية للـPrototype — ليست قوانين نهائية. تمنع
-#  سحب Explorer حتى يبتلع Workspace (أو العكس: سحقه شبه الصفر).
-EXPLORER_MIN_WIDTH = 180
-EXPLORER_DEFAULT_WIDTH = 220
-EXPLORER_MAX_WIDTH = 460
-WORKSPACE_MIN_WIDTH = 600
+#  ‏P2.2 §1: القيَم الفعلية عاشت الآن في ``ui2.shell.metrics`` المركزية —
+#  هذه أسماءٌ مُعادة التصدير فقط (توافقٌ خلفيّ لكلّ من يستورد من هنا،
+#  بما فيها اختبارات P0.3/P2.1). ``EXPLORER_MAX_WIDTH`` يبقى الاسم
+#  التاريخي للحدّ *المطلق* — الحدّ *الفعليّ* أصبح ديناميكياً (P2.2 §3،
+#  راجع ``_update_explorer_effective_max``).
+EXPLORER_MIN_WIDTH = metrics.EXPLORER_MIN_WIDTH
+EXPLORER_DEFAULT_WIDTH = metrics.EXPLORER_DEFAULT_WIDTH
+EXPLORER_MAX_WIDTH = metrics.EXPLORER_ABSOLUTE_MAX_WIDTH
+WORKSPACE_MIN_WIDTH = metrics.WORKSPACE_MIN_WIDTH
 
 
 class ExplorerPlaceholder(QLabel):
@@ -52,6 +56,9 @@ class OfficeMainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("OfficeManager — Shell (Prototype)")
+        #  ‏P2.2 §2: حدٌّ أدنى صريح ومركزيّ (metrics.WINDOW_MIN_*) — لا
+        #  اعتماد على sizeHint التلقائيّ. البرنامج يرفض الانكماش تحته.
+        self.setMinimumSize(metrics.WINDOW_MIN_WIDTH, metrics.WINDOW_MIN_HEIGHT)
         self.resize(1180, 720)
 
         central = QWidget(self)
@@ -99,6 +106,11 @@ class OfficeMainWindow(QMainWindow):
         #  بصريّ فقط (P0.2 §2)، بحدٍّ أقصى مضبوطٍ داخل TopBar نفسه
         #  (P0.3 §2: لا تتمدّد Brand Zone بلا حدود مع اتساع Explorer).
         self.splitter.splitterMoved.connect(self._sync_brand_width)
+        #  ‏P2.2 §3: الحدّ الأقصى الفعليّ لِـExplorer يعتمد أيضاً على عرض
+        #  النافذة (Workspace أولويّتها دائماً) — يُعاد حسابه عند كلّ
+        #  resize فقط (لا استطلاعٌ دوريّ)، ويُطبَّق أولاً هنا لِـالحالة
+        #  الابتدائية.
+        self._update_explorer_effective_max()
 
         self.workspace.home_view.serviceRequested.connect(self._open_service_start)
         self.workspace.workspace_manager.activated.connect(self._on_work_activated)
@@ -164,6 +176,31 @@ class OfficeMainWindow(QMainWindow):
         sizes = self.splitter.sizes()
         if sizes:
             self.top_bar.set_brand_width(sizes[0])
+
+    # -------------------------------------------- Explorer dynamic max (P2.2 §3)
+    def resizeEvent(self, event) -> None:  # noqa: N802 — Qt override
+        super().resizeEvent(event)
+        self._update_explorer_effective_max()
+
+    def _update_explorer_effective_max(self) -> None:
+        """الحدّ الأقصى الفعليّ = min(المطلق، عرض_النافذة × النسبة) —
+        Workspace لها الأولوية دائماً (P2.2 §3/§4). لا يُعاد ضبط عرض
+        Explorer الحاليّ إلا إذا **تجاوز** الحدّ الجديد فعلياً؛ عرضٌ
+        يختاره المستخدم ويبقى صالحاً لا يُلمَس (بلا resize متقلقل)."""
+        effective_max = min(
+            metrics.EXPLORER_ABSOLUTE_MAX_WIDTH,
+            int(self.width() * metrics.EXPLORER_MAX_RATIO),
+        )
+        effective_max = max(effective_max, metrics.EXPLORER_MIN_WIDTH)
+        self.explorer_placeholder.setMaximumWidth(effective_max)
+
+        sizes = self.splitter.sizes()
+        if sizes and sizes[0] > effective_max:
+            overflow = sizes[0] - effective_max
+            sizes[0] = effective_max
+            sizes[1] += overflow
+            self.splitter.setSizes(sizes)
+            self._sync_brand_width()
 
     # --------------------------------------------------- Demo Works (P1 §11)
     def enable_demo_tabs(self) -> None:

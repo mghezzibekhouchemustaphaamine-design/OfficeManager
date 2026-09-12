@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui2 import theme
+from ui2.shell import metrics
 from ui2.shell._icon_button import IconButton
 from ui2.shell.command_bar import CommandBar
 from ui2.shell.command_manager import CommandManager
@@ -26,10 +27,11 @@ from ui2.shell.work import WorkKey
 from ui2.shell.work_status_bar import WorkStatusBar
 from ui2.shell.workspace_manager import WorkspaceManager
 
-WORK_TAB_BAR_HEIGHT = 34
-#  ‏P2.1 §1: عرضٌ موحَّد لكلّ Work Tab — ثابتة/سهلة التعديل، بدل تبعية
-#  عرض التبويب لطول العنوان (يُقصّ بـellipsis + tooltip كامل بدلاً منه).
-WORK_TAB_WIDTH = 180
+#  ‏P2.2 §1: القيَم الفعلية في ``ui2.shell.metrics`` — أسماءٌ مُعادة
+#  التصدير فقط (توافقٌ خلفيّ لاختبارات P1/P2.1 التي تستورد من هنا).
+#  ‏P2.2 §12: العرض الموحَّد **ثابتٌ** عمداً — لا يستجيب لـresize.
+WORK_TAB_BAR_HEIGHT = metrics.WORK_TAB_HEIGHT
+WORK_TAB_WIDTH = metrics.WORK_TAB_WIDTH
 
 
 class WorkTabBar(QTabBar):
@@ -235,11 +237,26 @@ class ServiceStartView(QWidget):
     """نقطة انطلاق خدمة — اسم + وصف + Nouveau/Ouvrir existant (placeholders).
 
     لا تُنشئ Work Tab ولا تنفّذ أي workflow حقيقي في هذه المرحلة (P1 §16:
-    اختيار خدمة لا يفتح Work — Nouveau/Ouvrir لاحقاً)."""
+    اختيار خدمة لا يفتح Work — Nouveau/Ouvrir لاحقاً).
+
+    ‏**P2.2 §9**: نفس حاوي/هوامش Home بالضبط (عرضٌ أقصى ``metrics.
+    CONTENT_MAX_WIDTH`` متمركزٌ أفقياً، محاذاة أعلى) — موضع المجموعة
+    (عنوان/وصف) ثابتٌ بصرف النظر عن كون النصّ عربياً أو فرنسياً/لاتينياً؛
+    RTL/LTR للنصّ نفسه لا يحرّك الحاوي (بلا إعادة تصميمٍ جذريّ)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        lay = QVBoxLayout(self)
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addStretch(1)
+
+        content = QWidget(self)
+        #  ‏عرضٌ أدنى مريح للقراءة (لا يعتمد على طول العنوان/الأزرار
+        #  وحدها فيبدو ضيّقاً بلا داع) + نفس الحدّ الأقصى الذي تستعمله
+        #  Home تماماً (metrics.CONTENT_MAX_WIDTH).
+        content.setMinimumWidth(min(480, metrics.CONTENT_MAX_WIDTH))
+        content.setMaximumWidth(metrics.CONTENT_MAX_WIDTH)
+        lay = QVBoxLayout(content)
         lay.setContentsMargins(
             theme.SPACE["lg"], theme.SPACE["lg"], theme.SPACE["lg"], theme.SPACE["lg"]
         )
@@ -268,6 +285,9 @@ class ServiceStartView(QWidget):
         lay.addWidget(self.btn_nouveau)
         lay.addWidget(self.btn_ouvrir)
         lay.addStretch(1)
+
+        outer.addWidget(content, 0, Qt.AlignTop)
+        outer.addStretch(1)
 
     def set_service(self, service: ServiceDescriptor) -> None:
         self._title.setText(service.title)

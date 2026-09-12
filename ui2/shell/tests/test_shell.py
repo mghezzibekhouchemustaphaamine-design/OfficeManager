@@ -261,10 +261,14 @@ class ShellStructureTest(unittest.TestCase):
 
     # ==================== P0.3 §1: حدود عرض Explorer/Workspace ====================
     def test_explorer_has_min_and_max_width_guardrails(self):
+        #  ‏P2.2 §3: الحدّ الأقصى صار *ديناميكياً* (min(المطلق، عرض
+        #  النافذة × النسبة)) — لم يعد يساوي EXPLORER_MAX_WIDTH (المطلق)
+        #  حرفياً إلا في نوافذ واسعة بما يكفي؛ يبقى سقفاً أعلى صحيحاً
+        #  دائماً (راجع ExplorerDynamicMaxTest للقاعدة الدقيقة).
         from ui2.shell.main_window import EXPLORER_MAX_WIDTH, EXPLORER_MIN_WIDTH
         self.assertEqual(
             self.win.explorer_placeholder.minimumWidth(), EXPLORER_MIN_WIDTH)
-        self.assertEqual(
+        self.assertLessEqual(
             self.win.explorer_placeholder.maximumWidth(), EXPLORER_MAX_WIDTH)
 
     def test_dragging_splitter_far_cannot_collapse_workspace(self):
@@ -1205,6 +1209,285 @@ class SearchSlotTest(unittest.TestCase):
         box = self.win.top_bar.search_box
         self.assertEqual(box.receivers(SIGNAL("returnPressed()")), 0)
         self.assertEqual(box.receivers(SIGNAL("textChanged(QString)")), 0)
+
+    # ==================== P2.2 §11: غير قابل للتحرير حالياً ====================
+    def test_search_box_is_read_only_and_not_focusable(self):
+        box = self.win.top_bar.search_box
+        self.assertTrue(box.isReadOnly())
+        self.assertEqual(box.focusPolicy(), Qt.NoFocus)
+
+    def test_typing_into_search_box_does_not_change_text(self):
+        from PySide6.QtTest import QTest
+        box = self.win.top_bar.search_box
+        box.setFocusPolicy(Qt.StrongFocus)   # مؤقّتاً لإيصال الكتابة فعلياً لهذا الاختبار
+        box.setFocus()
+        before = box.text()
+        QTest.keyClicks(box, "abc")   # read-only يمنع أيّ إدراج فعليّ من لوحة المفاتيح
+        self.assertEqual(box.text(), before)
+        box.setFocusPolicy(Qt.NoFocus)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class ShellMetricsCentralizationTest(unittest.TestCase):
+    """‏P2.2 §1: القيَم البنيوية تأتي من ``ui2.shell.metrics`` فعلياً —
+    لا نسخة محلية مختلفة مبعثرة في كلّ ملف."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def test_top_bar_reexports_match_metrics(self):
+        from ui2.shell import metrics, top_bar
+        self.assertEqual(top_bar.MIN_BRAND_WIDTH, metrics.BRAND_MIN_WIDTH)
+        self.assertEqual(top_bar.MAX_BRAND_WIDTH, metrics.BRAND_MAX_WIDTH)
+        self.assertEqual(top_bar.HEIGHT, metrics.TOP_BAR_HEIGHT)
+
+    def test_main_window_reexports_match_metrics(self):
+        from ui2.shell import main_window, metrics
+        self.assertEqual(main_window.EXPLORER_MIN_WIDTH, metrics.EXPLORER_MIN_WIDTH)
+        self.assertEqual(main_window.EXPLORER_MAX_WIDTH, metrics.EXPLORER_ABSOLUTE_MAX_WIDTH)
+        self.assertEqual(main_window.WORKSPACE_MIN_WIDTH, metrics.WORKSPACE_MIN_WIDTH)
+
+    def test_workspace_reexports_match_metrics(self):
+        from ui2.shell import metrics, workspace
+        self.assertEqual(workspace.WORK_TAB_WIDTH, metrics.WORK_TAB_WIDTH)
+        self.assertEqual(workspace.WORK_TAB_BAR_HEIGHT, metrics.WORK_TAB_HEIGHT)
+
+    def test_work_status_bar_reexports_match_metrics(self):
+        from ui2.shell import metrics, work_status_bar
+        self.assertEqual(work_status_bar.HEIGHT, metrics.WORK_STATUS_BAR_HEIGHT)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class WindowAndExplorerResponsiveTest(unittest.TestCase):
+    """‏P2.2 §2/§3/§4: حدّ أدنى للنافذة + حدّ أقصى ديناميكيّ لِـExplorer."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self.win = OfficeMainWindow()
+
+    def tearDown(self):
+        self.win.deleteLater()
+
+    def test_window_minimum_size_matches_metrics(self):
+        from ui2.shell import metrics
+        self.assertEqual(self.win.minimumWidth(), metrics.WINDOW_MIN_WIDTH)
+        self.assertEqual(self.win.minimumHeight(), metrics.WINDOW_MIN_HEIGHT)
+
+    def test_explorer_effective_max_never_exceeds_absolute_max(self):
+        from ui2.shell import metrics
+        self.win.resize(3000, 900)
+        self.win.show()
+        self.assertLessEqual(
+            self.win.explorer_placeholder.maximumWidth(),
+            metrics.EXPLORER_ABSOLUTE_MAX_WIDTH)
+
+    def test_explorer_effective_max_follows_ratio_on_narrow_window(self):
+        from ui2.shell import metrics
+        self.win.resize(metrics.WINDOW_MIN_WIDTH, 700)
+        self.win.show()
+        expected = max(
+            metrics.EXPLORER_MIN_WIDTH,
+            min(metrics.EXPLORER_ABSOLUTE_MAX_WIDTH,
+                int(self.win.width() * metrics.EXPLORER_MAX_RATIO)),
+        )
+        self.assertEqual(self.win.explorer_placeholder.maximumWidth(), expected)
+
+    def test_workspace_never_collapses_below_minimum(self):
+        from ui2.shell import metrics
+        self.win.resize(metrics.WINDOW_MIN_WIDTH, 700)
+        self.win.show()
+        self.assertGreaterEqual(self.win.workspace.width(), 1)
+        self.win.splitter.moveSplitter(5000, 1)
+        self.assertGreaterEqual(self.win.workspace.width(), metrics.WORKSPACE_MIN_WIDTH - 5)
+
+    def test_user_chosen_explorer_width_preserved_within_new_bounds(self):
+        """توسيع النافذة ثمّ تضييقها قليلاً لا يُعيد ضبط عرض Explorer
+        الذي اختاره المستخدم ما دام لا يزال صالحاً (P2.2 §3: بلا
+        resize متقلقل)."""
+        self.win.resize(1600, 800)
+        self.win.show()
+        self.win.splitter.setSizes([300, 1200])
+        self.win.resize(1400, 800)
+        self.assertEqual(self.win.splitter.sizes()[0], 300)
+
+    def test_brand_width_still_clamped_via_metrics(self):
+        from ui2.shell import metrics
+        self.win.resize(1600, 800)
+        self.win.show()
+        self.win.splitter.moveSplitter(5000, 1)
+        self.assertLessEqual(self.win.top_bar._brand_zone.width(), metrics.BRAND_MAX_WIDTH)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class HomeResponsiveGridTest(unittest.TestCase):
+    """‏P2.2 §6/§7/§8/§18: أعمدة Home، توحيد البطاقات، تمرير عموديّ،
+    وتفعيل لوحة المفاتيح."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def _cols_for_width(self, width: int) -> int:
+        home = HomeView()
+        home.resize(width, 600)
+        home.show()
+        return home._cols
+
+    def test_wide_width_uses_three_columns(self):
+        from ui2.shell import metrics
+        self.assertEqual(self._cols_for_width(metrics.BREAKPOINT_WIDE + 200), 3)
+
+    def test_medium_width_uses_two_columns(self):
+        from ui2.shell import metrics
+        mid = (metrics.BREAKPOINT_MEDIUM + metrics.BREAKPOINT_WIDE) // 2
+        self.assertEqual(self._cols_for_width(mid), 2)
+
+    def test_compact_width_uses_one_column(self):
+        from ui2.shell import metrics
+        self.assertEqual(self._cols_for_width(metrics.BREAKPOINT_MEDIUM - 100), 1)
+
+    def test_cards_share_same_minimum_sizing_metrics(self):
+        home = HomeView()
+        from ui2.shell import metrics
+        for card in home._cards.values():
+            self.assertEqual(card.minimumWidth(), metrics.SERVICE_CARD_MIN_WIDTH)
+            self.assertEqual(card.minimumHeight(), metrics.SERVICE_CARD_MIN_HEIGHT)
+
+    def test_long_description_does_not_clip_short_card(self):
+        short = HomeView(services=[
+            ServiceDescriptor(key="x", title="خدمة", description="قصير")])
+        long_ = HomeView(services=[ServiceDescriptor(
+            key="x", title="خدمة", description="وصفٌ طويلٌ جداً " * 12)])
+        short_card, long_card = short._cards["x"], long_._cards["x"]
+        short_card.setFixedWidth(180)
+        long_card.setFixedWidth(180)
+        self.assertGreaterEqual(
+            long_card.sizeHint().height(), short_card.sizeHint().height())
+
+    def test_home_content_is_inside_scroll_area(self):
+        from PySide6.QtWidgets import QScrollArea
+        home = HomeView()
+        self.assertTrue(home.findChildren(QScrollArea))
+
+    def test_service_card_keyboard_activation(self):
+        home = HomeView()
+        card = next(iter(home._cards.values()))
+        received = []
+        card.clicked.connect(received.append)
+        from PySide6.QtGui import QKeyEvent
+        from PySide6.QtCore import QEvent
+        event = QKeyEvent(QEvent.KeyPress, Qt.Key_Return, Qt.NoModifier)
+        card.keyPressEvent(event)
+        self.assertEqual(received, [card.service.key])
+
+    def test_service_card_accepts_focus(self):
+        home = HomeView()
+        card = next(iter(home._cards.values()))
+        self.assertNotEqual(card.focusPolicy(), Qt.NoFocus)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class WorkStatusBarPriorityTest(unittest.TestCase):
+    """‏P2.2 §15/§16: الرسالة تتنازل، Pages/Zoom لا يُدفَعان خارج الشاشة."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self.win = OfficeMainWindow()
+
+    def tearDown(self):
+        self.win.deleteLater()
+
+    def test_zoom_controls_stay_visible_at_minimum_window(self):
+        from ui2.shell import metrics
+        self.win.resize(metrics.WINDOW_MIN_WIDTH, metrics.WINDOW_MIN_HEIGHT)
+        self.win.show()
+        wsb = self.win.workspace.work_status_bar
+        self.assertTrue(wsb.btn_zoom_in.isVisible())
+        self.assertTrue(wsb.zoom_slider.isVisible())
+        self.assertTrue(wsb.lbl_zoom.isVisible())
+        self.assertLessEqual(wsb.btn_fullscreen.geometry().right(), wsb.width())
+
+    def test_long_status_message_gets_elided(self):
+        #  ‏WorkStatusBar مستقلّة (بلا أب مُدار بتخطيط) كي يبقى resize()
+        #  اليدويّ فعلياً — داخل WorkspaceHost الحيّة يتحكّم التخطيط
+        #  الأب بعرضها الفعليّ بصرف النظر عن أيّ resize() مباشر عليها.
+        from ui2.shell.work_status_bar import WorkStatusBar
+        wsb = WorkStatusBar()
+        wsb.resize(300, 30)
+        wsb.show()
+        self.app.processEvents()
+        long_text = "رسالة طويلة جداً جداً جداً " * 10
+        wsb.set_message(long_text)
+        self.assertNotEqual(wsb.lbl_message.text(), long_text)
+        self.assertIn("…", wsb.lbl_message.text())
+        wsb.deleteLater()
+
+    def test_full_message_available_via_tooltip(self):
+        from ui2.shell.work_status_bar import WorkStatusBar
+        wsb = WorkStatusBar()
+        wsb.resize(200, 30)
+        wsb.show()
+        self.app.processEvents()
+        long_text = "رسالة طويلة جداً جداً جداً " * 10
+        wsb.set_message(long_text)
+        self.assertEqual(wsb.lbl_message.toolTip(), long_text)
+        wsb.deleteLater()
+
+    def test_bottom_bar_structural_order_preserved(self):
+        wsb = self.win.workspace.work_status_bar
+        lay = wsb.layout()
+        self.assertLess(lay.indexOf(wsb.lbl_message), lay.indexOf(wsb.btn_prev_page))
+        self.assertLess(lay.indexOf(wsb.btn_prev_page), lay.indexOf(wsb.btn_fit_page))
+        self.assertLess(lay.indexOf(wsb.btn_fit_page), lay.indexOf(wsb.btn_zoom_out))
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class WorkTabsAtVariousSizesTest(unittest.TestCase):
+    """‏P2.2 §12/§13: Work Tabs/All-Works button تبقى سليمة على full/
+    medium/minimum window — لا تكسير لمنطق P2.1."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self.win = OfficeMainWindow()
+
+    def tearDown(self):
+        self.win.deleteLater()
+
+    def _check_at(self, width, height):
+        from ui2.shell import metrics
+        self.win.resize(width, height)
+        self.win.show()
+        self.win.enable_demo_many_tabs(12)
+        tabs = self.win.workspace.work_tab_bar
+        for i in range(tabs.count()):
+            self.assertEqual(tabs.tabRect(i).width(), metrics.WORK_TAB_WIDTH)
+        self.assertTrue(self.win.workspace.btn_all_works.isVisible())
+        self.assertGreater(self.win.workspace.btn_all_works.width(), 0)
+
+    def test_tabs_stable_at_full_width(self):
+        self._check_at(1920, 1080)
+
+    def test_tabs_stable_at_medium_width(self):
+        self._check_at(1100, 700)
+
+    def test_tabs_stable_at_minimum_width(self):
+        from ui2.shell import metrics
+        self._check_at(metrics.WINDOW_MIN_WIDTH, metrics.WINDOW_MIN_HEIGHT)
 
 
 if __name__ == "__main__":

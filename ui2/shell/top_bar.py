@@ -14,18 +14,15 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QWidget
 
 from ui2 import theme
+from ui2.shell import metrics
 from ui2.shell._icon_button import IconButton
 
-HEIGHT = 52
-#  عرض Brand Zone الافتراضي — يطابق عرض Explorer الابتدائي في
-#  main_window.py (splitter.setSizes([220, ...])). يُزامَن لاحقاً مع
-#  سحب الفاصل عبر set_brand_width()، بحدٍّ أقصى (P0.3 §2): Explorer
-#  قابلٌ للتوسّع حتى 460px (main_window.EXPLORER_MAX_WIDTH)، لكن Brand
-#  Zone لا تكبر معه بلا حدود — تتجمّد عند MAX_BRAND_WIDTH فلا تتحوّل
-#  رأس "OfficeManager" إلى مساحة فارغة ضخمة.
-MIN_BRAND_WIDTH = 180
-DEFAULT_BRAND_WIDTH = 220
-MAX_BRAND_WIDTH = 320
+#  ‏P2.2 §1: القيَم الفعلية في ``ui2.shell.metrics`` المركزية — أسماءٌ
+#  مُعادة التصدير فقط (توافقٌ خلفيّ لاختبارات P0.2/P0.3 التي تستورد من هنا).
+HEIGHT = metrics.TOP_BAR_HEIGHT
+MIN_BRAND_WIDTH = metrics.BRAND_MIN_WIDTH
+DEFAULT_BRAND_WIDTH = metrics.BRAND_DEFAULT_WIDTH
+MAX_BRAND_WIDTH = metrics.BRAND_MAX_WIDTH
 
 
 class TopBar(QWidget):
@@ -96,18 +93,25 @@ class TopBar(QWidget):
         lay.addWidget(self.btn_home)
 
         lay.addSpacing(theme.SPACE["md"])
-        #  ‏P2.1 §13: مكانٌ بصريّ محجوز فقط لحقل بحث مستقبليّ — بلا أيّ
-        #  منطق (لا Explorer، لا DB، لا Global/Explorer قرار الآن). يتمدّد
-        #  مع اتساع النافذة ضمن حدّين (responsive معقول) فلا يزدحم
-        #  TopBar ولا يختفي كلياً عند تضييق النافذة.
+        #  ‏P2.1 §13 → P2.2 §11: مكانٌ بصريّ محجوز فقط لحقل بحث مستقبليّ —
+        #  بلا أيّ منطق (لا Explorer، لا DB، لا Global/Explorer قرار
+        #  الآن). read-only + NoFocus صراحةً: يبدو طبيعياً (غير رماديّ/
+        #  disabled) لكن لا يستقبل كتابة فعلية ولا يسرق Tab focus بلا
+        #  معنى — كي لا يوحي للمستخدم بخللٍ ("لماذا لا تكتب؟"). يتقلّص
+        #  هو أوّلاً (P2.2 §10) ضمن حدّي metrics.SEARCH_MIN/MAX_WIDTH —
+        #  الأزرار المجاورة (Home/Settings/Lock) بلا stretch فتحافظ على
+        #  حجمها الطبيعيّ دائماً، فلا تُدفَع خارج الشاشة.
         self.search_box = QLineEdit(zone)
-        self.search_box.setPlaceholderText("بحث / Rechercher…")
-        self.search_box.setMinimumWidth(120)
-        self.search_box.setMaximumWidth(320)
+        self.search_box.setPlaceholderText("بحث…")
+        self.search_box.setReadOnly(True)
+        self.search_box.setFocusPolicy(Qt.NoFocus)
+        self.search_box.setCursor(Qt.ArrowCursor)
+        self.search_box.setMinimumWidth(metrics.SEARCH_MIN_WIDTH)
+        self.search_box.setMaximumWidth(metrics.SEARCH_MAX_WIDTH)
         self.search_box.setFixedHeight(30)
         self.search_box.setStyleSheet(
             f"QLineEdit {{ background: {theme.BG}; border: 1px solid {theme.BORDER};"
-            f" border-radius: 6px; padding: 2px 10px; color: {theme.TEXT}; }}"
+            f" border-radius: 6px; padding: 2px 10px; color: {theme.TEXT_DIM}; }}"
         )
         lay.addWidget(self.search_box, 1)
 

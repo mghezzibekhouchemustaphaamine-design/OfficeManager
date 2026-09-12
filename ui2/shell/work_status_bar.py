@@ -18,9 +18,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSlider, QWidget
 
 from ui2 import theme
+from ui2.shell import metrics
 from ui2.shell._icon_button import IconButton
 
-HEIGHT = 30
+#  ‏P2.2 §1: القيمة الفعلية في ``ui2.shell.metrics`` — اسمٌ مُعاد
+#  التصدير فقط (توافقٌ خلفيّ).
+HEIGHT = metrics.WORK_STATUS_BAR_HEIGHT
 
 
 class WorkStatusBar(QWidget):
@@ -47,11 +50,27 @@ class WorkStatusBar(QWidget):
         lay.setContentsMargins(theme.SPACE["md"], 0, theme.SPACE["md"], 0)
         lay.setSpacing(theme.SPACE["sm"])
 
+        #  ‏P2.2 §15: الرسالة هي العنصر "الثانويّ" الوحيد الذي يتنازل —
+        #  minimumWidth(0) + Ignored horizontal policy + stretch=1 تجعلها
+        #  أوّل من يتقلّص (حتى الصفر) عند ضيق المساحة، بينما Pages/View/
+        #  Zoom (بلا stretch) تحافظ على حجمها الطبيعيّ الثابت دائماً —
+        #  لا تُدفَع خارج الشاشة أبداً. النصّ الكامل يُقصّ بـellipsis
+        #  (``_refresh_message_elide``) ويبقى متاحاً كاملاً عبر tooltip.
+        self._message_text = ""
         self.lbl_message = QLabel("")
         self.lbl_message.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        #  ‏minimumWidth(0) صريح (بخلاف QLabel الافتراضية التي تمنع
+        #  الانكماش دون عرض النصّ كاملاً) — أوّل عنصرٍ يتنازل عند
+        #  الازدحام الحقيقيّ فقط؛ السياسة تبقى Preferred الطبيعية كي لا
+        #  يخسر مساحته أمام الفاصلتين addStretch(1) في الحالة الرحبة
+        #  العادية (Ignored كانت تجعله ينهار دائماً — جُرِّب وتراجَع عنه).
+        self.lbl_message.setMinimumWidth(0)
         lay.addWidget(self.lbl_message)
         lay.addSpacing(theme.SPACE["md"])
 
+        #  ‏P2.2 §16: ترتيبٌ بنيويّ محفوظ من P0.3 — LEFT: pages ·
+        #  CENTER: view controls (بين الفاصلتين) · RIGHT: zoom. الفاصلتان
+        #  addStretch(1) هما مصدر المساحة المرنة الوحيد هنا (لا الرسالة).
         for w in self._build_pages_zone():
             lay.addWidget(w)
         lay.addStretch(1)
@@ -63,8 +82,21 @@ class WorkStatusBar(QWidget):
 
     def set_message(self, text: str) -> None:
         """رسالة الحالة الوحيدة في Shell (P0.3 §4) — بديل QStatusBar
-        الثاني الذي كان يظهر تحت هذا الشريط."""
-        self.lbl_message.setText(text or "")
+        الثاني الذي كان يظهر تحت هذا الشريط. النصّ الكامل يبقى متاحاً
+        عبر tooltip حتى لو قُصَّ بصرياً (P2.2 §15)."""
+        self._message_text = text or ""
+        self._refresh_message_elide()
+
+    def _refresh_message_elide(self) -> None:
+        fm = self.lbl_message.fontMetrics()
+        available = max(self.lbl_message.width(), 0)
+        elided = fm.elidedText(self._message_text, Qt.ElideRight, available)
+        self.lbl_message.setText(elided)
+        self.lbl_message.setToolTip(self._message_text)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 — Qt override
+        super().resizeEvent(event)
+        self._refresh_message_elide()
 
     # ------------------------------------------------------------ المناطق
     def _build_pages_zone(self):

@@ -12,12 +12,13 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QToolButton, QWidget
 
 from ui2 import theme
+from ui2.shell import metrics
 from ui2.shell.commands import GROUP_ORDER
 
-HEIGHT = 40
-#  ‏P2.1 §9/§12: toolbar أيقونات مدمج — لا نصّ دائم (الاسم/الاختصار في
-#  الـtooltip فقط، من CommandManager مباشرةً عن Registry).
-ICON_SIZE = QSize(18, 18)
+#  ‏P2.2 §1/§14: القيَم الفعلية في ``ui2.shell.metrics`` — مثبَّتة هنا
+#  (لا تصغر مع resize، P2.2 §14: "لا تصغر Icons بسبب resize").
+HEIGHT = metrics.COMMAND_BAR_HEIGHT
+ICON_SIZE = QSize(metrics.COMMAND_ICON_SIZE, metrics.COMMAND_ICON_SIZE)
 
 
 class CommandBar(QWidget):

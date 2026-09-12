@@ -12,15 +12,15 @@ from PySide6.QtWidgets import (
 )
 
 from ui2 import theme
+from ui2.shell import metrics
 from ui2.shell.services import ServiceDescriptor, default_services
 
-#  عرضٌ أقصى لمحتوى Home (بند 2 — P0.2): يمنع تمدّد البطاقات على كامل
-#  عرض Workspace في الشاشات الواسعة، ويُبقيها متمركزة أفقياً بدل تكدّسها
-#  في ركنٍ واحد مع فراغٍ كبير.
-_CONTENT_MAX_WIDTH = 960
-#  عتبات تبسيطيّة لعدد الأعمدة حسب عرض المحتوى المتاح — استجابةٌ خفيفة
-#  («بقدر بسيط» كما طُلب)، لا Grid ديناميكيّ معقّد.
-_COLUMN_BREAKPOINTS = (560, 760)   # < 560 → عمود واحد · < 760 → عمودان · وإلا 3
+#  ‏P2.2 §1: القيَم الفعلية في ``ui2.shell.metrics`` المركزية — أسماءٌ
+#  مُعادة التصدير محلياً فقط لتقليل التغيير في بقية هذا الملف.
+_CONTENT_MAX_WIDTH = metrics.CONTENT_MAX_WIDTH
+#  ‏P2.2 §7: عتبتا عدد الأعمدة — على عرض *المحتوى المتاح* (هذا الودجت،
+#  الذي يساوي عرض Workspace لا الشاشة كاملةً)، لا Grid ديناميكيّ معقّد.
+_COLUMN_BREAKPOINTS = (metrics.BREAKPOINT_MEDIUM, metrics.BREAKPOINT_WIDE)
 
 _CARD_QSS = f"""
 QFrame#ServiceCard {{
@@ -30,6 +30,10 @@ QFrame#ServiceCard {{
 }}
 QFrame#ServiceCard:hover {{
     border-color: {theme.PRIMARY};
+}}
+QFrame#ServiceCard:focus {{
+    border-color: {theme.PRIMARY};
+    border-width: 2px;
 }}
 """
 
@@ -46,7 +50,13 @@ class ServiceCard(QFrame):
         self.setStyleSheet(_CARD_QSS)
         self.setCursor(Qt.PointingHandCursor)
         self.setFrameShape(QFrame.NoFrame)
-        self.setMinimumSize(180, 110)
+        self.setMinimumSize(
+            metrics.SERVICE_CARD_MIN_WIDTH, metrics.SERVICE_CARD_MIN_HEIGHT
+        )
+        #  ‏P2.2 §18: قابلة لِـkeyboard focus — Enter/Space يكافئان النقر
+        #  (نفس ``clicked``)؛ مؤشّر تركيز هادئ عبر QSS (``:focus`` أعلاه)
+        #  بلا إطار Accessibility جديد.
+        self.setFocusPolicy(Qt.StrongFocus)
         #  ‏P0.3 §5: كانت Fixed — تُثبِّت الارتفاع على sizeHint الأصليّ
         #  بلا اعتبار طول الوصف الفعليّ بعد إعادة اللفّ، فتُقصّ الأسطر
         #  الزائدة عند تضييق Workspace (أعمدة أكثر ⇒ بطاقة أضيق ⇒ وصفٌ
@@ -55,11 +65,11 @@ class ServiceCard(QFrame):
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(*(theme.SPACE["md"],) * 4)
+        lay.setContentsMargins(*(metrics.SERVICE_CARD_PADDING,) * 4)
         lay.setSpacing(theme.SPACE["xs"])
 
         icon = QLabel(service.icon or "🗂️")
-        icon.setStyleSheet(f"font-size: {theme.FONT_SIZES['title']}px;")
+        icon.setStyleSheet(f"font-size: {metrics.SERVICE_CARD_ICON_SIZE}px;")
         lay.addWidget(icon)
 
         title = QLabel(service.title)
@@ -79,6 +89,13 @@ class ServiceCard(QFrame):
         if event.button() == Qt.LeftButton:
             self.clicked.emit(self.service.key)
         super().mousePressEvent(event)
+
+    def keyPressEvent(self, event):  # noqa: N802 — Qt override
+        """‏P2.2 §18: Enter/Space يكافئان نقر البطاقة تماماً."""
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self.clicked.emit(self.service.key)
+            return
+        super().keyPressEvent(event)
 
 
 class HomeView(QWidget):

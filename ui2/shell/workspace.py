@@ -1,13 +1,14 @@
 """WorkspaceHost — قلب Shell: CommandBar + WorkTabBar + ContentStack.
 
-قصداً **لا** ``QTabWidget`` كحاوية موحّدة — التبويبات (أعمال مفتوحة
-مستقبلاً) منفصلة معمارياً عن محتوى العرض (Home / Service Start View).
-Home وService Start View تُعرَضان في ``ContentStack`` بلا أن تصبحا
-تبويباً. راجع بند 4/9 في المهمّة.
+قصداً **لا** ``QTabWidget`` كحاوية موحّدة — Works منفصلة معمارياً عن
+محتوى العرض (Home / Service Start View)؛ الأخيرتان تُعرَضان في
+``ContentStack`` بلا أن تصبحا Work (P1 §7).
 
-``WorkTabBar`` هنا Prototype بلا ربط بأعمال حقيقية بعد — ``_debug_add_tab``
-موجودة فقط لإثبات أن الشريط يبقى مستقلاً عن ContentStack، وليست جزءاً من
-سلوك المنتج (لا يستدعيها أي شيء تلقائياً).
+‏**فصل P1 §4**: ``WorkTabBar`` هنا عرضٌ بصريّ بحت (presentation) — لا
+تعرف شيئاً عن ``WorkSession``/``WorkspaceManager``. مصدر الحقيقة عن
+الأعمال المفتوحة هو ``ui2.shell.workspace_manager.WorkspaceManager``
+وحده (``WorkspaceHost.workspace_manager``)؛ هذا الشريط يعرض فقط ما
+تُمليه إشاراته، ويُصدر أحداث النقر/الإغلاق ليقرِّر المدير بها.
 """
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -18,52 +19,62 @@ from ui2 import theme
 from ui2.shell.command_bar import CommandBar
 from ui2.shell.home import HomeView
 from ui2.shell.services import ServiceDescriptor
+from ui2.shell.work import WorkKey
 from ui2.shell.work_status_bar import WorkStatusBar
+from ui2.shell.workspace_manager import WorkspaceManager
 
 WORK_TAB_BAR_HEIGHT = 34
 
 
 class WorkTabBar(QTabBar):
-    """شريط تبويبات الأعمال المفتوحة — منفصل تماماً عن ContentStack.
+    """عرضٌ بصريّ بحت لأعمالٍ مفتوحة — لا حالة خاصّة به (P1 §4): كل
+    تبويبٍ يحمل ``WorkKey`` صاحبه عبر ``setTabData`` (لا تطابق بالعنوان
+    — P1 §8)، ويبقى ظاهراً وبارتفاع ثابت حتى فارغاً (P0 §5).
 
-    Prototype: لا تبويبات حقيقية بعد. يبقى ظاهراً وبارتفاع ثابت حتى وهو
-    فارغ (بند 5 — ثبات الـ layout).
+    **ترتيب Tabs ثابتٌ LEFT to RIGHT (P1 §1)**: أوّل عملٍ يُفتَح أقصى
+    اليسار، وكلّ عملٍ جديد يُضاف يمين سابقه — ``setLayoutDirection``
+    صريحٌ هنا (STRUCTURAL DIRECTION != TEXT DIRECTION، نفس مبدأ
+    splitter/WorkStatusBar) لأنّ QTabBar بلا هذا يرث RTL من
+    WorkspaceHost الأب فينعكس ترتيب التبويبات بالكامل.
 
-    **لغة بصريّة Active/Inactive (P0.2 §5)** — تجهيزٌ بصريّ مسبق قبل ربط
-    أعمالٍ حقيقية:
+    **لغة بصريّة Active/Inactive/Hover** كما في P0 (بلا تغيير): ACTIVE
+    بخطٍّ سفليّ Accent، INACTIVE برماديّ محايد، HOVER بينهما. مؤشّرا
+    dirty(●)/locked(🔒) يصلان ضمن نصّ التبويب نفسه (``WorkSession.
+    display_text``) — لا لونٌ إضافيّ للتبويب كاملاً بسببهما (P1 §9)."""
 
-    * ACTIVE (التبويب الحاليّ): خطٌّ سفليّ بلون Accent (``theme.PRIMARY``)
-      + نصٌّ بلون Accent غامق — واضحٌ بصرياً، لا مجرّد اختلاف خلفية خفيف.
-    * OPEN BUT INACTIVE: خلفية محايدة رماديّة (``theme.ROW_ALT``) —
-      مفتوحٌ لكن غير مركَّزٌ عليه.
-    * HOVER: درجة بين الاثنين (``theme.SELECTION``).
-
-    عندما لا توجد تبويبات (Home/ServiceStartView معروضتان) لا شيء
-    "نشِط" أصلاً — ``currentIndex() == -1`` طبيعياً، فحالة :selected لا
-    تُطبَّق على أيّ شيء. مؤشّرات مستقبليّة (●  للتعديل غير المحفوظ، 🔒
-    للقفل) غير منفَّذة الآن — تحتاج lifecycle عملٍ حقيقيّ لاحقاً."""
+    #  نقرة/تنشيط تبويب أو طلب إغلاقه — كلاهما يحمل WorkKey صاحب
+    #  التبويب مباشرةً، لا فهرساً خاماً (المستهلك: WorkspaceHost).
+    tabActivateRequested = Signal(object)      # WorkKey
+    tabCloseKeyRequested = Signal(object)      # WorkKey
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(WORK_TAB_BAR_HEIGHT)
         self.setExpanding(False)
         self.setDrawBase(False)
-        #  ‏P0.3 §6: زرّ إغلاق × قياسيّ من Qt على كلّ تبويب — يظهر فقط
-        #  حين توجد تبويبات (Demo أو حقيقية مستقبلاً)؛ بلا أثرٍ حين
-        #  الشريط فارغ. تبسيطٌ مقصود (بلا تخصيص شفافية إضافي per-state).
+        #  P1 §1: انظر شرح الصنف أعلاه — بلا هذا يرث RTL من الأب فينعكس
+        #  ترتيب Tabs (أوّل عملٍ يظهر يميناً بدل يساراً).
+        self.setLayoutDirection(Qt.LeftToRight)
+        #  P0.3 §6: زرّ إغلاق × قياسيّ من Qt على كلّ تبويب — يظهر فقط
+        #  حين توجد تبويبات؛ بلا أثرٍ حين الشريط فارغ.
         self.setTabsClosable(True)
-        self.tabCloseRequested.connect(self.removeTab)
-        #  ‏P0.1 §4: خلفية الشريط نفسه كانت مطابقةً تماماً لخلفية النافذة
+        self.tabCloseRequested.connect(self._emit_close_requested)
+        #  نقرةٌ حقيقية على أيّ تبويب — بما فيها الفهرس 0 (Qt يختاره
+        #  تلقائياً عند أوّل addTab بلا إصدار currentChanged، فلا يكفي
+        #  الاعتماد عليها وحدها لالتقاط أوّل نقرة فعلية على ذلك التبويب).
+        self.tabBarClicked.connect(self._emit_activate_requested)
+        self.currentChanged.connect(self._emit_activate_requested)
+        #  P0.1 §4: خلفية الشريط نفسه كانت مطابقةً تماماً لخلفية النافذة
         #  (BG) فيختفي بصرياً حين يكون فارغاً بلا تبويبات — الآن SURFACE
         #  + حدّ سفليّ خفيف يجعلان مكان «منطقة تبويبات الأعمال» مقروءاً
         #  دائماً، فارغاً كان أم لا، بلا أيّ تبويب وهميّ.
         #
-        #  ‏P0.3 §6/§9: ``QTabBar.setCurrentIndex(-1)`` **لا يعمل** فعلياً
-        #  بعد إضافة تبويبات (Qt يُبقي فهرساً صالحاً دائماً، يتجاهل -1
+        #  P0.3 §6/§9: QTabBar.setCurrentIndex(-1) لا يعمل فعلياً بعد
+        #  إضافة تبويبات (Qt يُبقي فهرساً صالحاً دائماً، يتجاهل -1
         #  صامتاً) — فلا يمكن الاعتماد على "لا فهرس محدَّد" لإخفاء حالة
         #  Active بصرياً عند Home. البديل: خاصّية Qt الديناميكية
-        #  ``workActive`` تتحكّم بتفعيل نمط ``:selected`` نفسه عبر QSS —
-        #  عند Home/ServiceStartView تصير False فيبدو التبويب "الحاليّ"
+        #  workActive تتحكّم بتفعيل نمط :selected نفسه عبر QSS — عند
+        #  Home/ServiceStartView تصير False فيبدو التبويب "الحاليّ"
         #  محايداً كأيّ تبويبٍ آخر، دون التأثير في فهرسه الداخليّ.
         self.setProperty("workActive", False)
         self.setStyleSheet(f"""
@@ -96,6 +107,26 @@ class WorkTabBar(QTabBar):
         self.style().unpolish(self)
         self.style().polish(self)
 
+    def index_for_key(self, key: WorkKey) -> int:
+        """فهرس تبويبٍ مفتاحه ``key``، أو -1 — مطابقةٌ بالمفتاح لا
+        بالعنوان (P1 §8): إعادة ترتيب/تسمية لا تُفقِد العلاقة."""
+        for i in range(self.count()):
+            if self.tabData(i) == key:
+                return i
+        return -1
+
+    def _emit_activate_requested(self, index: int) -> None:
+        if index < 0:
+            return
+        key = self.tabData(index)
+        if key is not None:
+            self.tabActivateRequested.emit(key)
+
+    def _emit_close_requested(self, index: int) -> None:
+        key = self.tabData(index)
+        if key is not None:
+            self.tabCloseKeyRequested.emit(key)
+
     def _debug_add_tab(self, title: str) -> int:
         """أداة تطوير/إثبات معماري فقط — غير مستخدَمة في مسار المنتج."""
         return self.addTab(title)
@@ -104,7 +135,8 @@ class WorkTabBar(QTabBar):
 class ServiceStartView(QWidget):
     """نقطة انطلاق خدمة — اسم + وصف + Nouveau/Ouvrir existant (placeholders).
 
-    لا تُنشئ Work Tab ولا تنفّذ أي workflow حقيقي في هذه المرحلة."""
+    لا تُنشئ Work Tab ولا تنفّذ أي workflow حقيقي في هذه المرحلة (P1 §16:
+    اختيار خدمة لا يفتح Work — Nouveau/Ouvrir لاحقاً)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -118,7 +150,7 @@ class ServiceStartView(QWidget):
         self._title.setStyleSheet(
             f"font-size: {theme.FONT_SIZES['title']}px; font-weight: 600;"
         )
-        #  ‏P0.2 §3: محاذاةٌ **مطلقة** يميناً (Qt.AlignRight — لا AlignLeading
+        #  P0.2 §3: محاذاةٌ **مطلقة** يميناً (Qt.AlignRight — لا AlignLeading
         #  التي تتبع اتجاه النصّ المكتشَف تلقائياً) — عنوانٌ لاتينيّ محضٌ
         #  مثل "CD" كان يُحاذى يساراً تلقائياً فيقفز عن بقيّة العناوين
         #  العربية. الموضع الآن ثابتٌ يميناً دائماً؛ شكل النصّ نفسه
@@ -143,54 +175,34 @@ class ServiceStartView(QWidget):
         self._desc.setText(service.description)
 
 
-class DemoWorkView(QWidget):
-    """محتوى Placeholder بسيط جداً لعملٍ تجريبيّ — يثبت فقط أنّ اختيار
-    تبويبٍ Demo يبدّل ContentStack (P0.3 §6)؛ لا workflow حقيقي."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(
-            theme.SPACE["lg"], theme.SPACE["lg"], theme.SPACE["lg"], theme.SPACE["lg"]
-        )
-        self._label = QLabel("")
-        self._label.setStyleSheet(
-            f"font-size: {theme.FONT_SIZES['title']}px; font-weight: 600;"
-            f" color: {theme.TEXT_DIM};"
-        )
-        self._label.setAlignment(Qt.AlignRight | Qt.AlignTop)
-        lay.addWidget(self._label)
-        lay.addStretch(1)
-
-    def set_title(self, title: str) -> None:
-        self._label.setText(f"معاينة تجريبية — {title}")
-
-
 class WorkspaceHost(QWidget):
     """يجمّع CommandBar + WorkTabBar + ContentStack + WorkStatusBar عمودياً.
 
-    ``show_home()`` / ``show_service_start(descriptor)`` يتحكّمان بمحتوى
-    ContentStack فقط — بقيّة الأشرطة لا يتغيّر مكانها (P0.2 §8: لا
-    layout jumping). WorkStatusBar أسفل Workspace فقط — لا يمتدّ تحت
-    Explorer (ليس ابناً لِـ splitter، بل لهذا الودجت وحده).
+    ‏**مصدر الحقيقة عن الأعمال المفتوحة هو** ``self.workspace_manager``
+    (‏:class:`~ui2.shell.workspace_manager.WorkspaceManager`) — هذا
+    الصنف يستمع لإشاراته ويعكسها على WorkTabBar/ContentStack فقط؛ لا
+    يُخزَّن أيّ حالة عملٍ هنا مباشرةً (P1 §4/§14).
 
-    ‏**Demo Work Tabs (P0.3 §6)**: معطَّلة افتراضياً (``work_tab_bar``
-    فارغ في الوضع العاديّ). :meth:`enable_demo_tabs` وحدها تملؤها —
-    تُستدعى فقط من نقطة الدخول التجريبية، لا تلقائياً أبداً."""
-
-    #  يُصدَر عند اختيار تبويب Demo — main_window يستمع له ليُنشِّط
-    #  حالة Home غير النشِطة في TopBar (نفس معاملة ServiceStartView).
-    demoWorkActivated = Signal(str)
+    ‏``show_home()``/``show_service_start(descriptor)`` يعرضان محتوى
+    ContentStack ويُخبران المدير أن لا عمل نشِطاً حالياً — الأعمال
+    المفتوحة **تبقى مفتوحة** (P1 §6/§7/§13). بقيّة الأشرطة لا يتغيّر
+    مكانها (P0.2 §8: لا layout jumping). WorkStatusBar أسفل Workspace
+    فقط — ليس ابناً لِـ splitter، بل لهذا الودجت وحده."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        #  ‏P0.1 §1: splitter الأب صار LTR هندسياً (Explorer|Workspace) —
+        #  P0.1 §1: splitter الأب صار LTR هندسياً (Explorer|Workspace) —
         #  ذلك الاتجاه يورَّث افتراضياً لهذا الودجت وكل أبنائه. محتوى
         #  Workspace نفسه (عناوين/بطاقات/أزرار عربيّة) يبقى RTL كما كان
         #  دائماً — إعادة ضبطٍ صريحة هنا تفصل اتجاه القراءة الداخليّ عن
         #  القرار الهندسيّ الخارجيّ (STRUCTURAL DIRECTION != TEXT DIRECTION).
         self.setLayoutDirection(Qt.RightToLeft)
-        self._demo_tabs_enabled = False
+
+        #  P1 §13/§14: "شاشة Shell" (Home/ServiceStartView) معروضة حالياً
+        #  أم لا — حالةٌ يملكها Host نفسه، منفصلة عن WorkspaceManager
+        #  (الذي لا يعرف سوى "عملٌ نشِط" أو "لا شيء"). تمنع أيضاً حلقة
+        #  استدعاءٍ ذاتية بين show_home() و_on_work_activated(None).
+        self._showing_shell = True
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -200,13 +212,8 @@ class WorkspaceHost(QWidget):
         lay.addWidget(self.command_bar)
 
         self.work_tab_bar = WorkTabBar(self)
-        self.work_tab_bar.currentChanged.connect(self._on_tab_changed)
-        #  ‏P0.3 §6/§9: Qt يختار تلقائياً الفهرس 0 عند أوّل ``addTab`` بلا
-        #  إصدار currentChanged (لا "تغيّر" فعليّ من منظوره) — فالنقر
-        #  الحقيقيّ الأوّل على ذلك التبويب بالذات لن يُفعِّله بصرياً لو
-        #  اعتمدنا على currentChanged وحدها. ``tabBarClicked`` يُصدَر عند
-        #  كل نقرةٍ فعليّة بصرف النظر عن تغيّر الفهرس من عدمه.
-        self.work_tab_bar.tabBarClicked.connect(self._on_tab_changed)
+        self.work_tab_bar.tabActivateRequested.connect(self._on_tab_activate_requested)
+        self.work_tab_bar.tabCloseKeyRequested.connect(self._on_tab_close_requested)
         lay.addWidget(self.work_tab_bar)
 
         self.content_stack = QStackedWidget(self)
@@ -218,53 +225,87 @@ class WorkspaceHost(QWidget):
         self.service_start_view = ServiceStartView(self)
         self.content_stack.addWidget(self.service_start_view)
 
-        self.demo_work_view = DemoWorkView(self)
-        self.content_stack.addWidget(self.demo_work_view)
-
         self.work_status_bar = WorkStatusBar(self)
         lay.addWidget(self.work_status_bar)
 
+        #  P1 §4: مصدر الحقيقة الوحيد لدورة حياة الأعمال المفتوحة.
+        self.workspace_manager = WorkspaceManager(self)
+        self.workspace_manager.opened.connect(self._on_work_opened)
+        self.workspace_manager.activated.connect(self._on_work_activated)
+        self.workspace_manager.closed.connect(self._on_work_closed)
+        self.workspace_manager.titleChanged.connect(self._on_work_title_or_state_changed)
+        self.workspace_manager.dirtyChanged.connect(self._on_work_title_or_state_changed)
+        self.workspace_manager.lockedChanged.connect(self._on_work_title_or_state_changed)
+
         self.show_home()
 
+    # -------------------------------------------------------- شاشات Shell
     def show_home(self) -> None:
+        self._showing_shell = True
         self.content_stack.setCurrentWidget(self.home_view)
-        self._deactivate_tabs()
+        self.workspace_manager.deactivate()
 
     def show_service_start(self, service: ServiceDescriptor) -> None:
+        self._showing_shell = True
         self.service_start_view.set_service(service)
         self.content_stack.setCurrentWidget(self.service_start_view)
-        self._deactivate_tabs()
+        self.workspace_manager.deactivate()
 
     def current_view(self) -> QWidget:
         return self.content_stack.currentWidget()
 
-    def _deactivate_tabs(self) -> None:
-        """لا تبويب Demo يبدو Active عند Home أو ServiceStartView (بند 6:
-        «لا يجب أن يبدو أي Work Tab active»). ``WorkTabBar.set_active(False)``
-        يُخفي نمط ACTIVE بصرياً فقط — ``currentIndex`` الداخليّ يبقى
-        كما هو (Qt لا يقبل -1 فعلياً بعد إضافة تبويبات)."""
-        if self._demo_tabs_enabled:
+    # -------------------------------------------- WorkTabBar → WorkspaceManager
+    def _on_tab_activate_requested(self, key: WorkKey) -> None:
+        self.workspace_manager.activate_work(key)
+
+    def _on_tab_close_requested(self, key: WorkKey) -> None:
+        self.workspace_manager.close_work(key)
+
+    # -------------------------------------------- WorkspaceManager → الواجهة
+    def _on_work_opened(self, session) -> None:
+        """عملٌ جديد انضمّ (بعد تأكّد المدير من عدم التكرار، P1 §5) —
+        Tab واحدة + إضافة widget السطر إلى ContentStack، بلا عرضه بعد
+        (التفعيل يصل عبر إشارة ``activated`` منفصلة)."""
+        idx = self.work_tab_bar.addTab(session.display_text())
+        self.work_tab_bar.setTabData(idx, session.key)
+        self.content_stack.addWidget(session.widget)
+
+    def _on_work_activated(self, key) -> None:
+        if key is None:
+            #  لا عمل نشِطاً — يحدث عند show_home()/show_service_start()
+            #  الصريحتين (ContentStack مضبوطةٌ مسبقاً هناك، فلا شيء إضافيّ
+            #  هنا) أو عند إغلاق آخر عملٍ نشِط (P1 §10: نعرض Home حينها،
+            #  لأن Host لم يكن أصلاً "يعرض شاشة Shell" في تلك اللحظة).
             self.work_tab_bar.set_active(False)
-
-    # --------------------------------------------------- Demo Tabs (P0.3 §6)
-    def enable_demo_tabs(self, items) -> None:
-        """يملأ WorkTabBar بتبويبات تجريبية للتقييم البصريّ فقط — انظر
-        تحذير ``ui2.shell.demo_tabs`` (لا تدخل مسار المنتج الحقيقي)."""
-        self._demo_tabs_enabled = True
-        self.work_tab_bar.blockSignals(True)
-        while self.work_tab_bar.count():                 # QTabBar لا تملك clear()
-            self.work_tab_bar.removeTab(0)
-        for item in items:
-            idx = self.work_tab_bar.addTab(item.display_text())
-            self.work_tab_bar.setTabData(idx, item.title)
-        self.work_tab_bar.blockSignals(False)
-        self._deactivate_tabs()
-
-    def _on_tab_changed(self, index: int) -> None:
-        if not self._demo_tabs_enabled or index < 0:
+            if not self._showing_shell:
+                self._showing_shell = True
+                self.content_stack.setCurrentWidget(self.home_view)
             return
-        title = self.work_tab_bar.tabData(index)
-        self.demo_work_view.set_title(title)
-        self.content_stack.setCurrentWidget(self.demo_work_view)
+
+        self._showing_shell = False
+        idx = self.work_tab_bar.index_for_key(key)
+        if idx >= 0:
+            self.work_tab_bar.blockSignals(True)
+            self.work_tab_bar.setCurrentIndex(idx)
+            self.work_tab_bar.blockSignals(False)
         self.work_tab_bar.set_active(True)
-        self.demoWorkActivated.emit(title)
+        session = self.workspace_manager.get(key)
+        if session is not None:
+            self.content_stack.setCurrentWidget(session.widget)
+
+    def _on_work_closed(self, session) -> None:
+        idx = self.work_tab_bar.index_for_key(session.key)
+        if idx >= 0:
+            self.work_tab_bar.blockSignals(True)
+            self.work_tab_bar.removeTab(idx)
+            self.work_tab_bar.blockSignals(False)
+        self.content_stack.removeWidget(session.widget)
+        session.widget.deleteLater()
+
+    def _on_work_title_or_state_changed(self, key, _value) -> None:
+        """title/dirty/locked أيّاً تغيّر — إعادة رسم نصّ التبويب فوراً
+        (P1 §9)؛ لا تغيير للون التبويب كاملاً بسبب dirty/locked."""
+        idx = self.work_tab_bar.index_for_key(key)
+        session = self.workspace_manager.get(key)
+        if idx >= 0 and session is not None:
+            self.work_tab_bar.setTabText(idx, session.display_text())

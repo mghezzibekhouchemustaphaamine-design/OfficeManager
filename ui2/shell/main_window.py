@@ -12,7 +12,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QMainWindow, QSplitter, QVBoxLayout, QWidget
 
 from ui2 import theme
-from ui2.shell.demo_tabs import DEMO_WORK_TABS
 from ui2.shell.services import ServiceDescriptor
 from ui2.shell.top_bar import TopBar
 from ui2.shell.workspace import WorkspaceHost
@@ -102,7 +101,7 @@ class OfficeMainWindow(QMainWindow):
         self.splitter.splitterMoved.connect(self._sync_brand_width)
 
         self.workspace.home_view.serviceRequested.connect(self._open_service_start)
-        self.workspace.demoWorkActivated.connect(self._on_demo_work_activated)
+        self.workspace.workspace_manager.activated.connect(self._on_work_activated)
 
         #  ‏P0.3 §4: لا شريط حالة ثانٍ — الرسائل تعيش في WorkStatusBar
         #  وحدها (لا نستدعي self.statusBar()/setStatusBar هنا؛ البنية
@@ -133,19 +132,35 @@ class OfficeMainWindow(QMainWindow):
         self.workspace.show_service_start(service)
         self.top_bar.set_home_active(False)
 
-    def _on_demo_work_activated(self, title: str) -> None:
+    def _on_work_activated(self, key) -> None:
+        """‏P1 §15: تحديث بسيطٌ لرسالة WorkStatusBar عند تفعيل عملٍ —
+        اختياريّ، بلا ربط Commands/Zoom/Pages حقيقية. ``key=None`` (لا
+        عمل نشِط) لا يفعل شيئاً هنا؛ go_home()/_open_service_start()
+        يضبطان رسالتيهما الخاصّتين صراحةً."""
+        if key is None:
+            return
+        session = self.workspace.workspace_manager.get(key)
+        if session is None:
+            return
         self.top_bar.set_home_active(False)
-        self.workspace.work_status_bar.set_message(f"عمل تجريبيّ: {title}")
+        self.workspace.work_status_bar.set_message(session.title)
 
     def _sync_brand_width(self, *_args) -> None:
         sizes = self.splitter.sizes()
         if sizes:
             self.top_bar.set_brand_width(sizes[0])
 
-    # --------------------------------------------------- Demo Tabs (P0.3 §6)
+    # --------------------------------------------------- Demo Works (P1 §11)
     def enable_demo_tabs(self) -> None:
-        """يفعّل تبويبات أعمالٍ تجريبية لتقييم WorkTabBar بصرياً فقط —
-        **لا تدخل مسار المنتج**: بلا Work lifecycle حقيقيّ، بلا كتابة
-        قاعدة بيانات. تُستدعى فقط من نقطة الدخول التجريبية
-        (``python -m ui2.shell --demo-tabs``) أو صراحةً من اختبار."""
-        self.workspace.enable_demo_tabs(DEMO_WORK_TABS)
+        """يفتح ثلاثة أعمالٍ تجريبية **عبر WorkspaceManager الحقيقيّ**
+        (نفس الأنبوب الذي ستستعمله Paie/CD لاحقاً) لتقييم WorkTabBar
+        بصرياً فقط — لا Work lifecycle حقيقيّ إضافي، لا كتابة قاعدة
+        بيانات. تُستدعى فقط من نقطة الدخول التجريبية
+        (``python -m ui2.shell --demo-tabs``) أو صراحةً من اختبار.
+
+        تنتهي على Home (لا على آخر عملٍ فُتح) — إثباتٌ حيّ أنّ العودة
+        لِـHome لا تُغلق الأعمال المفتوحة (P1 §6)."""
+        from ui2.shell.demo_tabs import DEMO_WORK_SPECS, build_demo_session
+        for spec in DEMO_WORK_SPECS:
+            self.workspace.workspace_manager.open_work(build_demo_session(spec))
+        self.go_home()

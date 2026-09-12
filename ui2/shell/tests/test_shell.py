@@ -16,11 +16,14 @@ except Exception:                                    # noqa: BLE001
     _HAS_QT = False
 
 if _HAS_QT:
+    from PySide6.QtWidgets import QLabel
     from ui2 import theme
     from ui2.shell.home import HomeView, ServiceCard
     from ui2.shell.main_window import OfficeMainWindow
     from ui2.shell.services import ServiceDescriptor, default_services
+    from ui2.shell.work import WorkKey, WorkSession
     from ui2.shell.workspace import ServiceStartView, WorkTabBar
+    from ui2.shell.workspace_manager import WorkspaceManager
 
 
 @unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
@@ -372,27 +375,38 @@ class ShellStructureTest(unittest.TestCase):
         self.assertGreater(
             long_card.sizeHint().height(), short_card.sizeHint().height())
 
-    # ==================== P0.3 §6: Demo Work Tabs (معزولة) ====================
+    # ==================== P1 §11: Demo Works عبر WorkspaceManager الحقيقيّ ====================
     def test_demo_tabs_not_created_in_normal_mode(self):
         self.assertEqual(self.win.workspace.work_tab_bar.count(), 0)
+        self.assertEqual(self.win.workspace.workspace_manager.open_works(), [])
 
-    def test_demo_tabs_appear_only_after_explicit_enable(self):
-        from ui2.shell.demo_tabs import DEMO_WORK_TABS
+    def test_demo_mode_uses_real_workspace_manager(self):
+        from ui2.shell.demo_tabs import DEMO_WORK_SPECS
         self.win.enable_demo_tabs()
-        self.assertEqual(self.win.workspace.work_tab_bar.count(), len(DEMO_WORK_TABS))
+        mgr = self.win.workspace.workspace_manager
+        self.assertEqual(len(mgr.open_works()), len(DEMO_WORK_SPECS))
+        self.assertEqual(self.win.workspace.work_tab_bar.count(), len(DEMO_WORK_SPECS))
+        for spec in DEMO_WORK_SPECS:
+            self.assertTrue(mgr.is_open(spec.key))
+
+    def test_demo_mode_ends_on_home_without_closing_works(self):
+        self.win.enable_demo_tabs()
+        self.assertIs(self.win.workspace.current_view(), self.win.workspace.home_view)
+        self.assertEqual(len(self.win.workspace.workspace_manager.open_works()), 3)
 
     def test_home_does_not_make_demo_work_look_active(self):
         self.win.enable_demo_tabs()
-        # التفعيل نفسه يبدأ على Home — لا نمط Active ظاهر.
+        # التفعيل نفسه ينتهي على Home — لا نمط Active ظاهر.
         self.assertEqual(self.win.workspace.work_tab_bar.property("workActive"), False)
         # اختيار تبويب فعلياً يفعّله... (Qt يضبط currentIndex=0 آلياً عند
         # أوّل addTab بلا إصدار currentChanged؛ tabBarClicked يحاكي نقرة
         # المستخدم الحقيقية فيُفعِّل حتى التبويب الأوّل هذا).
         self.win.workspace.work_tab_bar.tabBarClicked.emit(0)
         self.assertEqual(self.win.workspace.work_tab_bar.property("workActive"), True)
-        # ...والعودة لِـHome يُخفي النمط النشِط مجدَّداً.
+        # ...والعودة لِـHome يُخفي النمط النشِط مجدَّداً (بلا إغلاق العمل).
         self.win.go_home()
         self.assertEqual(self.win.workspace.work_tab_bar.property("workActive"), False)
+        self.assertEqual(len(self.win.workspace.workspace_manager.open_works()), 3)
 
     def test_demo_work_activation_does_not_change_shell_geometry(self):
         self.win.resize(1180, 720)
@@ -405,9 +419,9 @@ class ShellStructureTest(unittest.TestCase):
         wsb_pos = self.win.workspace.work_status_bar.pos()
         win_size = self.win.size()
 
+        mgr = self.win.workspace.workspace_manager
         self.win.workspace.work_tab_bar.setCurrentIndex(1)
-        self.assertIs(
-            self.win.workspace.current_view(), self.win.workspace.demo_work_view)
+        self.assertIs(self.win.workspace.current_view(), mgr.active_work().widget)
         self.assertEqual(self.win.top_bar.pos(), top_pos)
         self.assertEqual(self.win.explorer_placeholder.pos(), expl_pos)
         self.assertEqual(self.win.workspace.command_bar.pos(), cb_pos)
@@ -420,11 +434,12 @@ class ShellStructureTest(unittest.TestCase):
         self.win.workspace.work_tab_bar.tabBarClicked.emit(0)   # نقرة حقيقية محاكاة
         self.assertFalse(self.win.top_bar.btn_home.isChecked())
 
-    # ========= P0.3 §9: Home→Service→Home→DemoWork→Home→DemoWork آخر =========
+    # ========= P1 §9/§13: Home→Service→Home→DemoWork→Home→DemoWork آخر =========
     def test_full_navigation_sequence_with_demo_work_no_jumping(self):
         self.win.resize(1180, 720)
         self.win.show()
         self.win.enable_demo_tabs()
+        mgr = self.win.workspace.workspace_manager
         top_pos = self.win.top_bar.pos()
         expl_pos = self.win.explorer_placeholder.pos()
         cb_pos = self.win.workspace.command_bar.pos()
@@ -443,15 +458,253 @@ class ShellStructureTest(unittest.TestCase):
         self.win.go_home()
         _assert_fixed()
         self.win.workspace.work_tab_bar.tabBarClicked.emit(0)   # نقرة محاكاة
-        self.assertIs(
-            self.win.workspace.current_view(), self.win.workspace.demo_work_view)
+        self.assertIs(self.win.workspace.current_view(), mgr.active_work().widget)
         _assert_fixed()
         self.win.go_home()
         _assert_fixed()
         self.win.workspace.work_tab_bar.setCurrentIndex(1)
-        self.assertIs(
-            self.win.workspace.current_view(), self.win.workspace.demo_work_view)
+        self.assertIs(self.win.workspace.current_view(), mgr.active_work().widget)
         _assert_fixed()
+
+    # ==================== P1 §16: ServiceStartView لا تفتح Work ====================
+    def test_service_start_view_does_not_open_work(self):
+        self.win.open_service_start(default_services()[0])
+        self.assertEqual(self.win.workspace.workspace_manager.open_works(), [])
+        self.assertEqual(self.win.workspace.work_tab_bar.count(), 0)
+
+
+def _session(service_key, work_id, title=None, **kw):
+    key = WorkKey(service_key, work_id)
+    return WorkSession(key, title or f"{service_key}-{work_id}", QLabel(""), **kw)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class WorkspaceManagerLogicTest(unittest.TestCase):
+    """اختبارات منطقٍ خالصة (P1 §17) — لا تحتاج OfficeMainWindow الكاملة:
+    WorkspaceManager هو مصدر الحقيقة عن الأعمال المفتوحة (P1 §4)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self.mgr = WorkspaceManager()
+
+    # -------------------------------------------------------- فتح/تكرار
+    def test_open_work_adds_one_session(self):
+        s = _session("paie", "918")
+        self.mgr.open_work(s)
+        self.assertEqual(self.mgr.open_works(), [s])
+        self.assertTrue(self.mgr.is_open(s.key))
+
+    def test_open_same_key_twice_does_not_duplicate(self):
+        a1 = _session("paie", "918", title="A1")
+        a2 = _session("paie", "918", title="A2")     # نفس WorkKey، جلسة أخرى
+        self.mgr.open_work(a1)
+        self.mgr.open_work(a2)
+        self.assertEqual(len(self.mgr.open_works()), 1)
+        self.assertIs(self.mgr.get(a1.key), a1)       # a1 الأصلية بقيت، لا a2
+        self.assertIsNot(self.mgr.get(a1.key), a2)
+
+    def test_duplicate_open_activates_existing(self):
+        a1 = _session("paie", "918")
+        other = _session("cd", "1")
+        self.mgr.open_work(a1)
+        self.mgr.open_work(other)
+        self.assertEqual(self.mgr.active_key(), other.key)
+        self.mgr.open_work(_session("paie", "918", title="a-again"))
+        self.assertEqual(self.mgr.active_key(), a1.key)   # نُشِّطت a1 الأصلية
+
+    def test_identity_does_not_depend_on_title(self):
+        a = _session("paie", "918", title="عنوانٌ أوّل")
+        self.mgr.open_work(a)
+        a.set_title("عنوانٌ مختلفٌ كليّاً")
+        self.assertTrue(self.mgr.is_open(WorkKey("paie", "918")))
+        self.assertIs(self.mgr.get(WorkKey("paie", "918")), a)
+
+    # ------------------------------------------------------------ التفعيل
+    def test_activate_work_sets_active(self):
+        a, b = _session("paie", "1"), _session("cd", "2")
+        self.mgr.open_work(a)
+        self.mgr.open_work(b)
+        self.mgr.activate_work(a.key)
+        self.assertIs(self.mgr.active_work(), a)
+
+    def test_deactivate_clears_active_without_closing(self):
+        a = _session("paie", "1")
+        self.mgr.open_work(a)
+        self.mgr.deactivate()
+        self.assertIsNone(self.mgr.active_work())
+        self.assertTrue(self.mgr.is_open(a.key))
+
+    # ------------------------------------------------------------- الإغلاق
+    def test_close_work_removes_only_that_work(self):
+        a, b, c = _session("paie", "1"), _session("cd", "2"), _session("x", "3")
+        for s in (a, b, c):
+            self.mgr.open_work(s)
+        self.mgr.close_work(b.key)
+        self.assertFalse(self.mgr.is_open(b.key))
+        self.assertTrue(self.mgr.is_open(a.key))
+        self.assertTrue(self.mgr.is_open(c.key))
+        self.assertEqual([s.key for s in self.mgr.open_works()], [a.key, c.key])
+
+    def test_close_active_work_activates_neighbor(self):
+        a, b, c = _session("a", "1"), _session("b", "2"), _session("c", "3")
+        for s in (a, b, c):
+            self.mgr.open_work(s)
+        self.mgr.activate_work(b.key)
+        self.mgr.close_work(b.key)
+        self.assertIsNotNone(self.mgr.active_work())
+        self.assertIn(self.mgr.active_key(), (a.key, c.key))
+
+    def test_close_last_active_work_leaves_no_active_work(self):
+        a = _session("paie", "1")
+        self.mgr.open_work(a)
+        self.mgr.close_work(a.key)
+        self.assertIsNone(self.mgr.active_work())
+        self.assertEqual(self.mgr.open_works(), [])
+
+    def test_close_inactive_work_does_not_change_active(self):
+        a, b = _session("paie", "1"), _session("cd", "2")
+        self.mgr.open_work(a)
+        self.mgr.open_work(b)
+        self.mgr.activate_work(a.key)
+        self.mgr.close_work(b.key)
+        self.assertEqual(self.mgr.active_key(), a.key)
+
+    # ---------------------------------------------------------- الإشارات
+    def test_title_dirty_locked_changes_emit_manager_signals(self):
+        a = _session("paie", "1")
+        self.mgr.open_work(a)
+        seen = {}
+        self.mgr.titleChanged.connect(lambda k, t: seen.setdefault("title", (k, t)))
+        self.mgr.dirtyChanged.connect(lambda k, d: seen.setdefault("dirty", (k, d)))
+        self.mgr.lockedChanged.connect(lambda k, l: seen.setdefault("locked", (k, l)))
+        a.set_title("جديد")
+        a.set_dirty(True)
+        a.set_locked(True)
+        self.assertEqual(seen["title"], (a.key, "جديد"))
+        self.assertEqual(seen["dirty"], (a.key, True))
+        self.assertEqual(seen["locked"], (a.key, True))
+
+    def test_display_text_shows_dirty_and_locked_indicators(self):
+        a = _session("paie", "1", title="Bulletin Ahmed", dirty=True)
+        b = _session("cd", "2", title="CD 1584", locked=True)
+        c = _session("x", "3", title="Attestation Nadia")
+        self.assertEqual(a.display_text(), "Bulletin Ahmed ●")
+        self.assertEqual(b.display_text(), "CD 1584 🔒")
+        self.assertEqual(c.display_text(), "Attestation Nadia")
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class WorkTabBarIntegrationTest(unittest.TestCase):
+    """اختبارات WorkspaceHost + WorkTabBar + WorkspaceManager معاً — عرضٌ
+    فعليّ لا منطقٌ مجرَّد فقط (P1 §17)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self.win = OfficeMainWindow()
+        self.win.resize(1180, 720)
+        self.win.show()
+        self.mgr = self.win.workspace.workspace_manager
+        self.tabs = self.win.workspace.work_tab_bar
+
+    def tearDown(self):
+        self.win.deleteLater()
+
+    def _open(self, service_key, work_id, **kw):
+        s = _session(service_key, work_id, **kw)
+        self.mgr.open_work(s)
+        return s
+
+    # ------------------------------------------------ ترتيب Tabs LEFT→RIGHT
+    def test_three_works_appear_left_to_right_in_open_order(self):
+        a, b, c = self._open("a", "1"), self._open("b", "2"), self._open("c", "3")
+        xs = [self.tabs.tabRect(self.tabs.index_for_key(s.key)).x()
+              for s in (a, b, c)]
+        self.assertEqual(xs, sorted(xs))       # a قبل b قبل c هندسياً
+
+    def test_global_rtl_does_not_reverse_work_tabs_order(self):
+        a, b, c = self._open("a", "1"), self._open("b", "2"), self._open("c", "3")
+        original = self.app.layoutDirection()
+        try:
+            self.app.setLayoutDirection(Qt.RightToLeft)
+            xs = [self.tabs.tabRect(self.tabs.index_for_key(s.key)).x()
+                  for s in (a, b, c)]
+            self.assertEqual(xs, sorted(xs))
+        finally:
+            self.app.setLayoutDirection(original)
+
+    def test_work_tab_bar_direction_is_explicit_ltr(self):
+        self.assertEqual(self.tabs.layoutDirection(), Qt.LeftToRight)
+
+    # --------------------------------------------------------- التفعيل/العرض
+    def test_clicking_tab_activates_correct_work_and_shows_its_widget(self):
+        a, b = self._open("a", "1"), self._open("b", "2")
+        self.tabs.tabBarClicked.emit(self.tabs.index_for_key(a.key))
+        self.assertIs(self.mgr.active_work(), a)
+        self.assertIs(self.win.workspace.current_view(), a.widget)
+        self.tabs.tabBarClicked.emit(self.tabs.index_for_key(b.key))
+        self.assertIs(self.mgr.active_work(), b)
+        self.assertIs(self.win.workspace.current_view(), b.widget)
+
+    def test_home_does_not_close_open_works(self):
+        a = self._open("a", "1")
+        self.win.go_home()
+        self.assertTrue(self.mgr.is_open(a.key))
+        self.assertEqual(self.tabs.count(), 1)
+
+    def test_returning_from_home_to_work_reuses_same_widget(self):
+        a = self._open("a", "1")
+        widget_before = a.widget
+        self.win.go_home()
+        self.tabs.tabBarClicked.emit(self.tabs.index_for_key(a.key))
+        self.assertIs(self.win.workspace.current_view(), widget_before)
+        self.assertIs(self.mgr.get(a.key).widget, widget_before)
+
+    # ---------------------------------------------------------------- الإغلاق
+    def test_closing_work_removes_correct_tab_and_widget(self):
+        a, b = self._open("a", "1"), self._open("b", "2")
+        idx_a = self.tabs.index_for_key(a.key)
+        self.tabs.tabCloseRequested.emit(idx_a)
+        self.assertFalse(self.mgr.is_open(a.key))
+        self.assertTrue(self.mgr.is_open(b.key))
+        self.assertEqual(self.tabs.count(), 1)
+        self.assertEqual(self.tabs.index_for_key(b.key), 0)
+
+    def test_closing_work_does_not_affect_others(self):
+        a, b, c = self._open("a", "1"), self._open("b", "2"), self._open("c", "3")
+        self.tabs.tabCloseRequested.emit(self.tabs.index_for_key(b.key))
+        self.assertTrue(self.mgr.is_open(a.key))
+        self.assertTrue(self.mgr.is_open(c.key))
+        self.assertIs(self.win.workspace.content_stack.indexOf(a.widget) >= 0, True)
+        self.assertIs(self.win.workspace.content_stack.indexOf(c.widget) >= 0, True)
+
+    # ----------------------------------------------------- تحديث Tab الحيّ
+    def test_title_change_updates_tab_text_immediately(self):
+        a = self._open("a", "1", title="قبل")
+        idx = self.tabs.index_for_key(a.key)
+        a.set_title("بعد")
+        self.assertEqual(self.tabs.tabText(idx), "بعد")
+
+    def test_dirty_change_shows_dot_indicator_immediately(self):
+        a = self._open("a", "1", title="عمل")
+        idx = self.tabs.index_for_key(a.key)
+        a.set_dirty(True)
+        self.assertEqual(self.tabs.tabText(idx), "عمل ●")
+        a.set_dirty(False)
+        self.assertEqual(self.tabs.tabText(idx), "عمل")
+
+    def test_locked_change_shows_lock_indicator_immediately(self):
+        a = self._open("a", "1", title="عمل")
+        idx = self.tabs.index_for_key(a.key)
+        a.set_locked(True)
+        self.assertEqual(self.tabs.tabText(idx), "عمل 🔒")
 
 
 if __name__ == "__main__":

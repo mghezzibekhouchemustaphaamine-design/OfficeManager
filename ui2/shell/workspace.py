@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from ui2 import theme
 from ui2.shell.command_bar import CommandBar
+from ui2.shell.command_manager import CommandManager
 from ui2.shell.home import HomeView
 from ui2.shell.services import ServiceDescriptor
 from ui2.shell.work import WorkKey
@@ -59,11 +60,22 @@ class WorkTabBar(QTabBar):
         #  حين توجد تبويبات؛ بلا أثرٍ حين الشريط فارغ.
         self.setTabsClosable(True)
         self.tabCloseRequested.connect(self._emit_close_requested)
+        #  ‏P2 (Drag & Drop): إعادة ترتيب الأعمال المفتوحة بالسحب. Qt
+        #  ينقل التبويب بصرياً (مع tabData الخاصّ به) بنفسه؛ WorkspaceHost
+        #  يستمع لِـtabMoved ليزامن WorkspaceManager._order معه — هذا
+        #  الصنف لا يعرف شيئاً عن WorkspaceManager (presentation بحتة).
+        self.setMovable(True)
         #  نقرةٌ حقيقية على أيّ تبويب — بما فيها الفهرس 0 (Qt يختاره
         #  تلقائياً عند أوّل addTab بلا إصدار currentChanged، فلا يكفي
         #  الاعتماد عليها وحدها لالتقاط أوّل نقرة فعلية على ذلك التبويب).
         self.tabBarClicked.connect(self._emit_activate_requested)
-        self.currentChanged.connect(self._emit_activate_requested)
+        #  ‏P2 (Drag & Drop): currentChanged يُصدَره Qt أيضاً حين يتحرّك
+        #  التبويب "الحاليّ" فعلياً بلا أن يتغيّر (سحب/moveTab — نفس
+        #  الهويّة، فقط موضعٌ رقميّ مختلف) — لا حين يختار المستخدم تبويباً
+        #  آخر فعلياً. ``_last_current_key`` يميّز الحالتين (راجع
+        #  ``_on_current_changed``) بدل الاعتماد المباشر على الفهرس.
+        self._last_current_key = None
+        self.currentChanged.connect(self._on_current_changed)
         #  P0.1 §4: خلفية الشريط نفسه كانت مطابقةً تماماً لخلفية النافذة
         #  (BG) فيختفي بصرياً حين يكون فارغاً بلا تبويبات — الآن SURFACE
         #  + حدّ سفليّ خفيف يجعلان مكان «منطقة تبويبات الأعمال» مقروءاً
@@ -115,12 +127,36 @@ class WorkTabBar(QTabBar):
                 return i
         return -1
 
+    def mark_current_key(self, key: WorkKey) -> None:
+        """يُخبر الشريط أنّ ``key`` أصبح تبويب Qt "الحاليّ" فعلياً — يُستدعى
+        من ``WorkspaceHost`` كلّما ضبط ``currentIndex`` برمجياً (حتى مع
+        ``blockSignals``)، ليبقى ``_last_current_key`` مطابقاً للواقع
+        (P2 Drag & Drop: بدونه، أوّل سحبٍ للتبويب الحاليّ بعد أيّ تفعيلٍ
+        صامت كان سيُقرأ خطأً كاختيارٍ جديد)."""
+        self._last_current_key = key
+
     def _emit_activate_requested(self, index: int) -> None:
         if index < 0:
             return
         key = self.tabData(index)
         if key is not None:
+            self._last_current_key = key
             self.tabActivateRequested.emit(key)
+
+    def _on_current_changed(self, index: int) -> None:
+        """مثل ``_emit_activate_requested`` مع حارسٍ إضافي: تغيّر
+        ``currentIndex`` الرقميّ بلا تغيّر هويّة التبويب "الحاليّ" فعلياً
+        (يحدث عند سحب/``moveTab`` لنفس التبويب المُفعَّل مسبقاً) لا يجب
+        أن يُصدر طلب تفعيل — فقط اختيارٌ حقيقيّ لهويّةٍ مختلفة (نقرة على
+        تبويبٍ آخر، تنقّل لوحة مفاتيح، أو ``setCurrentIndex`` برمجيّ
+        مقصود) يفعل."""
+        if index < 0:
+            return
+        key = self.tabData(index)
+        if key is None or key == self._last_current_key:
+            return
+        self._last_current_key = key
+        self.tabActivateRequested.emit(key)
 
     def _emit_close_requested(self, index: int) -> None:
         key = self.tabData(index)
@@ -214,6 +250,9 @@ class WorkspaceHost(QWidget):
         self.work_tab_bar = WorkTabBar(self)
         self.work_tab_bar.tabActivateRequested.connect(self._on_tab_activate_requested)
         self.work_tab_bar.tabCloseKeyRequested.connect(self._on_tab_close_requested)
+        #  ‏P2 (Drag & Drop): Qt نقل التبويب بصرياً فعلاً قبل إصدار هذه
+        #  الإشارة — هنا فقط نزامن WorkspaceManager._order معه.
+        self.work_tab_bar.tabMoved.connect(self._on_tab_moved)
         lay.addWidget(self.work_tab_bar)
 
         self.content_stack = QStackedWidget(self)
@@ -236,6 +275,11 @@ class WorkspaceHost(QWidget):
         self.workspace_manager.titleChanged.connect(self._on_work_title_or_state_changed)
         self.workspace_manager.dirtyChanged.connect(self._on_work_title_or_state_changed)
         self.workspace_manager.lockedChanged.connect(self._on_work_title_or_state_changed)
+
+        #  ‏P2 §6: CommandManager يُبنى فوق WorkspaceManager — لا يستبدله،
+        #  لا يخزّن حالةً موازية. CommandBar عرضٌ بحت يستهلك أوامره فقط.
+        self.command_manager = CommandManager(self.workspace_manager, self)
+        self.command_bar.set_command_manager(self.command_manager)
 
         self.show_home()
 
@@ -260,6 +304,12 @@ class WorkspaceHost(QWidget):
 
     def _on_tab_close_requested(self, key: WorkKey) -> None:
         self.workspace_manager.close_work(key)
+
+    def _on_tab_moved(self, from_index: int, to_index: int) -> None:
+        """‏P2 (Drag & Drop): Qt نقل التبويب (وtabData معه) بصرياً بالفعل
+        — لا نلمس QTabBar هنا، فقط نُبقي WorkspaceManager._order مطابقاً
+        (لا يفعِّل شيئاً، لا يغيّر الهويّة/الـwidget، P2 §Drag&Drop)."""
+        self.workspace_manager.move_work(from_index, to_index)
 
     # -------------------------------------------- WorkspaceManager → الواجهة
     def _on_work_opened(self, session) -> None:
@@ -288,6 +338,9 @@ class WorkspaceHost(QWidget):
             self.work_tab_bar.blockSignals(True)
             self.work_tab_bar.setCurrentIndex(idx)
             self.work_tab_bar.blockSignals(False)
+            #  ‏P2 Drag & Drop: يُبقي WorkTabBar._last_current_key مطابقاً
+            #  للواقع رغم blockSignals — راجع WorkTabBar.mark_current_key.
+            self.work_tab_bar.mark_current_key(key)
         self.work_tab_bar.set_active(True)
         session = self.workspace_manager.get(key)
         if session is not None:

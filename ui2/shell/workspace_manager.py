@@ -33,6 +33,12 @@ class WorkspaceManager(QObject):
     titleChanged = Signal(object, str)         # WorkKey, str
     dirtyChanged = Signal(object, bool)        # WorkKey, bool
     lockedChanged = Signal(object, bool)       # WorkKey, bool
+    #  ‏P2 §5: WorkSession.commandsChanged مُعاد إصدارها مع مفتاح
+    #  صاحبها — CommandManager يستمع لها ليعيد تقييم visible/enabled.
+    commandsChanged = Signal(object)           # WorkKey
+    #  ‏P2 (Drag & Drop): ترتيب الأعمال المفتوحة تغيّر (سحب Tab) — لا
+    #  يغيّر العمل النشِط ولا الهويّة/الـwidget، فقط الموضع في open_works().
+    reordered = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -74,6 +80,7 @@ class WorkspaceManager(QObject):
         session.titleChanged.connect(lambda t, k=key: self.titleChanged.emit(k, t))
         session.dirtyChanged.connect(lambda d, k=key: self.dirtyChanged.emit(k, d))
         session.lockedChanged.connect(lambda l, k=key: self.lockedChanged.emit(k, l))
+        session.commandsChanged.connect(lambda k=key: self.commandsChanged.emit(k))
         self.opened.emit(session)
         self.activate_work(key)
         return session
@@ -114,3 +121,18 @@ class WorkspaceManager(QObject):
             else:
                 self.deactivate()
         return True
+
+    def move_work(self, from_index: int, to_index: int) -> None:
+        """يزامن ترتيب ``_order`` مع سحبٍ بصريّ لِـTab في ``WorkTabBar``
+        (‏``QTabBar.setMovable``). لا يغيّر ``WorkKey``، لا يعيد إنشاء أيّ
+        widget، لا يمسّ dirty/locked، ولا يُفعِّل أيّ عمل — فقط موضعه في
+        ``open_works()``. ``WorkTabBar`` تكون قد نقلت التبويب بصرياً
+        فعلياً؛ هذا فقط يُبقي مصدر الحقيقة مطابقاً لها حرفياً."""
+        n = len(self._order)
+        if not (0 <= from_index < n) or not (0 <= to_index < n):
+            return
+        if from_index == to_index:
+            return
+        key = self._order.pop(from_index)
+        self._order.insert(to_index, key)
+        self.reordered.emit()

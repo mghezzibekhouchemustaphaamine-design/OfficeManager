@@ -5,10 +5,31 @@
 هو من يملك دورة الحياة؛ هذا الملف يعرّف فقط "ما هو العمل المفتوح".
 """
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Dict, Optional, Union
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QWidget
+
+from ui2.shell.commands import CommandId
+
+
+@dataclass
+class WorkCommandBinding:
+    """ربط أمرٍ واحد (P2 §4) بعملٍ مفتوح — ``handler`` ينفَّذ عند
+    التفعيل، ``enabled`` إمّا قيمة ثابتة أو دالّة تُقيَّم في كلّ refresh
+    (لتعكس dirty/locked/أيّ حالة مستقبلية بلا إعادة تسجيل الربط).
+
+    وجود ربطٍ لأمرٍ = **SUPPORTED** (يظهر دائماً في CommandBar، مفعَّلاً
+    أو معطَّلاً حسب ``is_enabled()``). غياب الربط = **UNSUPPORTED** (لا
+    يظهر إطلاقاً) — قرار UX ثابت (P2 §4)."""
+
+    handler: Callable[[], None]
+    enabled: Union[bool, Callable[[], bool]] = True
+
+    def is_enabled(self) -> bool:
+        if callable(self.enabled):
+            return bool(self.enabled())
+        return bool(self.enabled)
 
 
 @dataclass(frozen=True)
@@ -34,6 +55,10 @@ class WorkSession(QObject):
     titleChanged = Signal(str)
     dirtyChanged = Signal(bool)
     lockedChanged = Signal(bool)
+    #  ‏P2 §5: Hook عامّ — "حالة أوامري تغيّرت" — لا يقتصر على dirty/
+    #  locked (يُصدَر تلقائياً معهما، ويمكن إصداره يدوياً لاحقاً لأيّ
+    #  سببٍ آخر كـselection عبر notify_commands_changed()).
+    commandsChanged = Signal()
 
     def __init__(self, key: WorkKey, title: str, widget: QWidget, *,
                  dirty: bool = False, locked: bool = False,
@@ -49,6 +74,12 @@ class WorkSession(QObject):
         self._title = title
         self._dirty = bool(dirty)
         self._locked = bool(locked)
+        self._commands: Dict[CommandId, WorkCommandBinding] = {}
+        #  ‏dirty/locked يؤثّران غالباً على enabled() لأوامر مثل SAVE/
+        #  UNDO/REDO — إعادة تقييمٍ تلقائية بلا أن يعرف WorkSession شيئاً
+        #  عن أيّ Command بعينه (P2 §5).
+        self.dirtyChanged.connect(lambda _v: self.commandsChanged.emit())
+        self.lockedChanged.connect(lambda _v: self.commandsChanged.emit())
 
     @property
     def title(self) -> str:
@@ -88,3 +119,23 @@ class WorkSession(QObject):
         if self._dirty:
             return f"{self._title} ●"
         return self._title
+
+    # ------------------------------------------------------------ Commands
+    def set_command(self, command_id: CommandId, handler: Callable[[], None],
+                     enabled: Union[bool, Callable[[], bool]] = True) -> None:
+        """يُعلن أنّ هذا العمل يدعم ``command_id`` (P2 §4) — يظهر دائماً
+        في CommandBar، مفعَّلاً أو معطَّلاً حسب ``enabled``. عدم استدعاء
+        هذا لأمرٍ ما يعني عدم دعمه إطلاقاً (لا يظهر)."""
+        self._commands[command_id] = WorkCommandBinding(handler, enabled)
+        self.commandsChanged.emit()
+
+    def supports(self, command_id: CommandId) -> bool:
+        return command_id in self._commands
+
+    def command_binding(self, command_id: CommandId) -> Optional[WorkCommandBinding]:
+        return self._commands.get(command_id)
+
+    def notify_commands_changed(self) -> None:
+        """Hook عامّ صريح (P2 §5) لأيّ خدمةٍ مستقبلية تريد طلب إعادة
+        تقييم enabled/visible لأسبابٍ غير dirty/locked (مثل تغيّر تحديد)."""
+        self.commandsChanged.emit()

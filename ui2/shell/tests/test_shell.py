@@ -18,6 +18,8 @@ except Exception:                                    # noqa: BLE001
 if _HAS_QT:
     from PySide6.QtWidgets import QLabel
     from ui2 import theme
+    from ui2.shell.command_manager import CommandManager
+    from ui2.shell.commands import CommandId
     from ui2.shell.home import HomeView, ServiceCard
     from ui2.shell.main_window import OfficeMainWindow
     from ui2.shell.services import ServiceDescriptor, default_services
@@ -705,6 +707,276 @@ class WorkTabBarIntegrationTest(unittest.TestCase):
         idx = self.tabs.index_for_key(a.key)
         a.set_locked(True)
         self.assertEqual(self.tabs.tabText(idx), "عمل 🔒")
+
+    # ================================ P2: Drag & Drop Reordering ================================
+    def test_work_tab_bar_is_movable(self):
+        self.assertTrue(self.tabs.isMovable())
+
+    def test_moving_tab_updates_workspace_manager_order(self):
+        a, b, c = self._open("a", "1"), self._open("b", "2"), self._open("c", "3")
+        self.tabs.moveTab(self.tabs.index_for_key(c.key), 0)
+        self.assertEqual([s.key for s in self.mgr.open_works()], [c.key, a.key, b.key])
+
+    def test_active_work_unchanged_after_reorder(self):
+        a, b, c = self._open("a", "1"), self._open("b", "2"), self._open("c", "3")
+        self.mgr.activate_work(b.key)
+        self.tabs.moveTab(self.tabs.index_for_key(c.key), 0)
+        self.assertEqual(self.mgr.active_key(), b.key)
+
+    def test_widget_and_key_unchanged_after_reorder(self):
+        a = self._open("a", "1")
+        widget_before, key_before = a.widget, a.key
+        b = self._open("b", "2")
+        self.tabs.moveTab(self.tabs.index_for_key(a.key), 1)
+        self.assertIs(self.mgr.get(key_before).widget, widget_before)
+        self.assertEqual(self.mgr.get(key_before).key, key_before)
+
+    def test_dirty_locked_indicators_stay_with_correct_work_after_reorder(self):
+        a = self._open("a", "1", title="A", dirty=True)
+        b = self._open("b", "2", title="B", locked=True)
+        self.tabs.moveTab(self.tabs.index_for_key(b.key), 0)
+        self.assertEqual(self.tabs.tabText(self.tabs.index_for_key(a.key)), "A ●")
+        self.assertEqual(self.tabs.tabText(self.tabs.index_for_key(b.key)), "B 🔒")
+
+    def test_reorder_while_home_does_not_activate_work(self):
+        a, b = self._open("a", "1"), self._open("b", "2")
+        self.win.go_home()
+        self.tabs.moveTab(self.tabs.index_for_key(b.key), 0)
+        self.assertIsNone(self.mgr.active_key())
+        self.assertIs(self.win.workspace.current_view(), self.win.workspace.home_view)
+
+    def test_clicking_tab_after_reorder_opens_correct_work(self):
+        a, b, c = self._open("a", "1"), self._open("b", "2"), self._open("c", "3")
+        self.tabs.moveTab(self.tabs.index_for_key(c.key), 0)
+        self.tabs.tabBarClicked.emit(self.tabs.index_for_key(a.key))
+        self.assertIs(self.mgr.active_work(), a)
+        self.assertIs(self.win.workspace.current_view(), a.widget)
+
+    def test_closing_after_reorder_closes_correct_work(self):
+        a, b, c = self._open("a", "1"), self._open("b", "2"), self._open("c", "3")
+        self.tabs.moveTab(self.tabs.index_for_key(c.key), 0)   # [c, a, b]
+        #  ‏فهرس 0 كان c قبل الإغلاق — الآن يمثّل c فعلياً بعد النقل، لا
+        #  a التي كانت هناك قبل إعادة الترتيب.
+        self.tabs.tabCloseRequested.emit(0)
+        self.assertFalse(self.mgr.is_open(c.key))
+        self.assertTrue(self.mgr.is_open(a.key))
+        self.assertTrue(self.mgr.is_open(b.key))
+
+
+def _bind(session, command_id, handler=None, enabled=True):
+    session.set_command(command_id, handler or (lambda: None), enabled=enabled)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class CommandManagerLogicTest(unittest.TestCase):
+    """اختبارات CommandManager بمعزلٍ عن CommandBar/OfficeMainWindow
+    الكاملة (P2 §17) — QAction واحدة لكلّ Command، حالتها تعكس العمل
+    النشِط فقط في WorkspaceManager."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self.mgr = WorkspaceManager()
+        self.owner = QLabel()          # ودجت مضيفة للـQActions (بديل خفيف لِـHost)
+        self.cm = CommandManager(self.mgr, self.owner)
+
+    def tearDown(self):
+        self.owner.deleteLater()
+
+    def test_one_action_per_command(self):
+        from ui2.shell.commands import COMMAND_REGISTRY
+        for spec in COMMAND_REGISTRY:
+            self.assertIsNotNone(self.cm.action(spec.id))
+        # نفس الكائن عبر استدعاءات متكرّرة — لا إنشاء مكرّر.
+        self.assertIs(self.cm.action(CommandId.SAVE), self.cm.action(CommandId.SAVE))
+
+    def test_no_active_work_hides_all_commands(self):
+        for _spec, action in self.cm.actions_in_order():
+            self.assertFalse(action.isVisible())
+            self.assertFalse(action.isEnabled())
+
+    def test_unsupported_command_is_hidden(self):
+        a = _session("paie", "1")
+        _bind(a, CommandId.SAVE, enabled=True)
+        self.mgr.open_work(a)
+        self.assertTrue(self.cm.action(CommandId.SAVE).isVisible())
+        self.assertFalse(self.cm.action(CommandId.PRINT).isVisible())
+
+    def test_supported_but_disabled_command_stays_visible(self):
+        a = _session("cd", "1", locked=True)
+        _bind(a, CommandId.SAVE, enabled=False)
+        self.mgr.open_work(a)
+        action = self.cm.action(CommandId.SAVE)
+        self.assertTrue(action.isVisible())
+        self.assertFalse(action.isEnabled())
+
+    def test_switching_active_work_updates_actions(self):
+        a, b = _session("paie", "1"), _session("cd", "2")
+        _bind(a, CommandId.SAVE, enabled=True)
+        _bind(b, CommandId.UNDO, enabled=False)
+        self.mgr.open_work(a)
+        self.mgr.open_work(b)          # b نشِط الآن
+        self.assertFalse(self.cm.action(CommandId.SAVE).isVisible())
+        self.assertTrue(self.cm.action(CommandId.UNDO).isVisible())
+        self.mgr.activate_work(a.key)
+        self.assertTrue(self.cm.action(CommandId.SAVE).isVisible())
+        self.assertFalse(self.cm.action(CommandId.UNDO).isVisible())
+
+    def test_home_disables_and_hides_work_commands(self):
+        a = _session("paie", "1")
+        _bind(a, CommandId.SAVE, enabled=True)
+        self.mgr.open_work(a)
+        self.mgr.deactivate()          # يعادل الذهاب لِـHome
+        self.assertFalse(self.cm.action(CommandId.SAVE).isVisible())
+        self.assertFalse(self.cm.action(CommandId.SAVE).isEnabled())
+
+    def test_triggering_save_calls_handler_of_active_work_only(self):
+        calls = []
+        a = _session("paie", "1")
+        b = _session("cd", "2")
+        _bind(a, CommandId.SAVE, handler=lambda: calls.append("a"), enabled=True)
+        _bind(b, CommandId.SAVE, handler=lambda: calls.append("b"), enabled=True)
+        self.mgr.open_work(a)
+        self.mgr.open_work(b)          # b نشِط
+        self.cm.action(CommandId.SAVE).trigger()
+        self.assertEqual(calls, ["b"])
+        self.mgr.activate_work(a.key)
+        self.cm.action(CommandId.SAVE).trigger()
+        self.assertEqual(calls, ["b", "a"])
+
+    def test_ctrl_s_does_not_fire_on_disabled_action(self):
+        calls = []
+        a = _session("cd", "1", locked=True)
+        _bind(a, CommandId.SAVE, handler=lambda: calls.append("a"), enabled=False)
+        self.mgr.open_work(a)
+        #  حتى لو استُدعي trigger() برمجياً (يتجاوز رمادية الزرّ الفعلية)،
+        #  CommandManager._trigger يعيد التحقّق من binding.is_enabled()
+        #  بنفسه قبل استدعاء handler — دفاعٌ مستقلّ عن حالة QAction.
+        self.cm.action(CommandId.SAVE).trigger()
+        self.assertEqual(calls, [])
+
+    def test_duplicate_open_does_not_create_new_bindings_or_actions(self):
+        from ui2.shell.commands import COMMAND_REGISTRY
+        a1 = _session("paie", "1")
+        _bind(a1, CommandId.SAVE, enabled=True)
+        self.mgr.open_work(a1)
+        actions_before = {spec.id: self.cm.action(spec.id) for spec in COMMAND_REGISTRY}
+        a2 = _session("paie", "1")
+        _bind(a2, CommandId.SAVE, enabled=False)
+        self.mgr.open_work(a2)             # نفس المفتاح — a1 تبقى النشِطة
+        for spec in COMMAND_REGISTRY:
+            self.assertIs(self.cm.action(spec.id), actions_before[spec.id])
+        self.assertTrue(self.cm.action(CommandId.SAVE).isEnabled())   # a1، لا a2
+
+    def test_demo_bulletin_save_clears_dirty_state(self):
+        from ui2.shell.demo_tabs import DEMO_WORK_SPECS, build_demo_session
+        spec = next(s for s in DEMO_WORK_SPECS if s.key.service_key == "paie")
+        session = build_demo_session(spec)
+        self.mgr.open_work(session)
+        self.assertTrue(session.dirty)
+        self.assertTrue(self.cm.action(CommandId.SAVE).isEnabled())
+        self.cm.action(CommandId.SAVE).trigger()
+        self.assertFalse(session.dirty)
+        self.assertFalse(self.cm.action(CommandId.SAVE).isEnabled())
+
+    def test_dirty_change_updates_save_enabled_state(self):
+        a = _session("paie", "1", dirty=False)
+        _bind(a, CommandId.SAVE, enabled=lambda: a.dirty)
+        self.mgr.open_work(a)
+        self.assertFalse(self.cm.action(CommandId.SAVE).isEnabled())
+        a.set_dirty(True)
+        self.assertTrue(self.cm.action(CommandId.SAVE).isEnabled())
+
+    def test_commands_changed_hook_refreshes_actions(self):
+        a = _session("paie", "1")
+        flag = {"on": False}
+        _bind(a, CommandId.SAVE, enabled=lambda: flag["on"])
+        self.mgr.open_work(a)
+        self.assertFalse(self.cm.action(CommandId.SAVE).isEnabled())
+        flag["on"] = True
+        a.notify_commands_changed()
+        self.assertTrue(self.cm.action(CommandId.SAVE).isEnabled())
+
+    def test_actions_in_order_matches_registry_order(self):
+        from ui2.shell.commands import COMMAND_REGISTRY
+        ids = [spec.id for spec, _action in self.cm.actions_in_order()]
+        self.assertEqual(ids, [spec.id for spec in COMMAND_REGISTRY])
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class CommandBarIntegrationTest(unittest.TestCase):
+    """CommandBar الحقيقيّ داخل Shell كاملة — ترتيب/فواصل/تبديل عمل
+    نشِط وHome (P2 §17)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self.win = OfficeMainWindow()
+        self.mgr = self.win.workspace.workspace_manager
+        self.cm = self.win.workspace.command_manager
+        self.bar = self.win.workspace.command_bar
+
+    def tearDown(self):
+        self.win.deleteLater()
+
+    def _visible_buttons(self):
+        from PySide6.QtWidgets import QToolButton
+        return [w for w in self.bar.findChildren(QToolButton)]
+
+    def test_home_shows_no_command_buttons(self):
+        self.assertEqual(self._visible_buttons(), [])
+
+    def test_switching_works_updates_command_bar_buttons(self):
+        a = _session("paie", "1")
+        _bind(a, CommandId.SAVE, enabled=True)
+        _bind(a, CommandId.PRINT, enabled=True)
+        b = _session("cd", "2", locked=True)
+        _bind(b, CommandId.PRINT, enabled=True)
+
+        self.mgr.open_work(a)
+        labels_a = sorted(btn.text() for btn in self._visible_buttons())
+        self.assertEqual(labels_a, sorted(["حفظ", "طباعة"]))
+
+        self.mgr.open_work(b)
+        labels_b = sorted(btn.text() for btn in self._visible_buttons())
+        self.assertEqual(labels_b, ["طباعة"])
+
+        self.win.go_home()
+        self.assertEqual(self._visible_buttons(), [])
+
+    def test_command_bar_ordering_is_fixed_by_registry(self):
+        a = _session("paie", "1")
+        _bind(a, CommandId.PRINT, enabled=True)   # يُسجَّل PRINT قبل SAVE عمداً
+        _bind(a, CommandId.SAVE, enabled=True)
+        _bind(a, CommandId.FINALIZE, enabled=True)
+        self.mgr.open_work(a)
+        labels = [btn.text() for btn in self._visible_buttons()]
+        self.assertEqual(labels, ["حفظ", "طباعة", "إنهاء"])   # ترتيب Registry، لا dict
+
+    def test_no_empty_separators(self):
+        from PySide6.QtWidgets import QFrame
+        a = _session("paie", "1")
+        _bind(a, CommandId.SAVE, enabled=True)     # FILE فقط — لا EDIT ولا WORKFLOW
+        self.mgr.open_work(a)
+        separators = [w for w in self.bar.findChildren(QFrame)
+                      if w.frameShape() == QFrame.VLine]
+        self.assertEqual(len(separators), 0)
+
+    def test_separator_appears_between_two_non_empty_groups(self):
+        from PySide6.QtWidgets import QFrame
+        a = _session("paie", "1")
+        _bind(a, CommandId.SAVE, enabled=True)     # FILE
+        _bind(a, CommandId.UNDO, enabled=True)     # EDIT
+        self.mgr.open_work(a)
+        separators = [w for w in self.bar.findChildren(QFrame)
+                      if w.frameShape() == QFrame.VLine]
+        self.assertEqual(len(separators), 1)
 
 
 if __name__ == "__main__":

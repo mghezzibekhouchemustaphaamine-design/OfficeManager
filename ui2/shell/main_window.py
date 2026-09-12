@@ -102,6 +102,9 @@ class OfficeMainWindow(QMainWindow):
 
         self.workspace.home_view.serviceRequested.connect(self._open_service_start)
         self.workspace.workspace_manager.activated.connect(self._on_work_activated)
+        #  ‏P2 §10: رسالة WorkStatusBar عامّة عند تنفيذ أيّ أمر — لا فرع
+        #  حسب service_key هنا (Shell لا تعرف معنى الخدمة، P2 §14).
+        self.workspace.command_manager.commandExecuted.connect(self._on_command_executed)
 
         #  ‏P0.3 §4: لا شريط حالة ثانٍ — الرسائل تعيش في WorkStatusBar
         #  وحدها (لا نستدعي self.statusBar()/setStatusBar هنا؛ البنية
@@ -144,6 +147,18 @@ class OfficeMainWindow(QMainWindow):
             return
         self.top_bar.set_home_active(False)
         self.workspace.work_status_bar.set_message(session.title)
+
+    def _on_command_executed(self, key, command_id) -> None:
+        """‏P2 §10: تحديثٌ عامّ لرسالة WorkStatusBar بعد تنفيذ أمرٍ —
+        النصّ مبنيّ من ``CommandSpec.label`` العامّ + عنوان العمل، بلا
+        أيّ معرفة بمعنى الخدمة (لا ``if service_key == ...`` هنا)."""
+        session = self.workspace.workspace_manager.get(key)
+        if session is None:
+            return
+        from ui2.shell.commands import COMMAND_REGISTRY
+        spec = next((s for s in COMMAND_REGISTRY if s.id == command_id), None)
+        label = spec.label if spec is not None else str(command_id)
+        self.workspace.work_status_bar.set_message(f"تم تنفيذ {label} — {session.title}")
 
     def _sync_brand_width(self, *_args) -> None:
         sizes = self.splitter.sizes()

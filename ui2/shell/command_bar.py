@@ -16,8 +16,14 @@ class CommandBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(HEIGHT)
+        #  ‏P0.1 §3: خلفية BG (لا SURFACE — تتماهى مع TopBar/WorkTabBar
+        #  الأبيضين المجاورين) + حدّان علويّ وسفليّ خفيفان — يجعلان مكان
+        #  «شريط أدوات الخدمة» مقروءاً بصرياً حتى فارغاً، بلا أيّ نصٍّ أو
+        #  تسمية تصحيحية (لا "CommandBar" ولا Debug label للمستخدم).
         self.setStyleSheet(
-            f"background: {theme.SURFACE}; border-bottom: 1px solid {theme.BORDER};"
+            f"background: {theme.BG};"
+            f" border-top: 1px solid {theme.BORDER};"
+            f" border-bottom: 1px solid {theme.BORDER};"
         )
         self._lay = QHBoxLayout(self)
         self._lay.setContentsMargins(

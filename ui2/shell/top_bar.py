@@ -4,7 +4,7 @@ Prototype: اسم البرنامج + زرّ Home فعليّ + Settings/Lock كـ
 بصريّة معطّلة. **لا** Save/Print/Undo/Zoom هنا — هذه أدوات خدمة تعيش في
 ``CommandBar`` مستقبلاً.
 """
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
 from ui2 import theme
@@ -16,6 +16,12 @@ class TopBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        #  اتجاهٌ بنيويّ صريح ومقصود (P0.1 §5) — لا اعتماداً عرضياً على
+        #  RTL العامّ الذي يضبطه ui2.theme.apply_theme: ترتيب العلامة/
+        #  الأزرار هنا مبنيٌّ فعلاً على قراءة RTL (العلامة تبدأ من حافة
+        #  البداية، الأزرار تتجمّع عند حافة النهاية)، فيُثبَّت صراحةً هنا
+        #  حتى لا ينقلب لو تغيّر اتجاه التطبيق العامّ لاحقاً لسببٍ آخر.
+        self.setLayoutDirection(Qt.RightToLeft)
         self.setFixedHeight(44)
         self.setStyleSheet(
             f"background: {theme.SURFACE}; border-bottom: 1px solid {theme.BORDER};"

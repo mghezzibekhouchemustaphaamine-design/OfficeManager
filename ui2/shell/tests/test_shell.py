@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import unittest
 
 try:
+    from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
     _HAS_QT = True
 except Exception:                                    # noqa: BLE001
@@ -109,6 +110,72 @@ class ShellStructureTest(unittest.TestCase):
         svc = default_services()[1]
         self.win.open_service_start(svc)
         self.assertEqual(self.win.workspace.service_start_view._title.text(), svc.title)
+
+    # ============== P0.1 §1/§2: اتجاه هندسيّ ثابت لِـExplorer|Workspace ==============
+    def test_explorer_is_before_workspace_in_splitter(self):
+        """موضعٌ منطقيّ: Explorer أوّل عنصرٍ في splitter، Workspace ثانياً —
+        هذا الترتيب + LayoutDirection.LeftToRight الصريح يضمنان Explorer
+        يساراً هندسياً دائماً (لا اختبار بكسل، فقط ترتيب/فهرس)."""
+        self.assertEqual(
+            self.win.splitter.indexOf(self.win.explorer_placeholder), 0)
+        self.assertEqual(self.win.splitter.indexOf(self.win.workspace), 1)
+
+    def test_explorer_x_is_left_of_workspace_x_after_layout(self):
+        self.win.resize(1180, 720)
+        self.win.show()
+        self.assertLess(
+            self.win.explorer_placeholder.x(), self.win.workspace.x())
+
+    def test_splitter_structural_direction_is_explicit_ltr(self):
+        """STRUCTURAL DIRECTION != TEXT DIRECTION: الحاوي المسؤول عن موضع
+        Explorer/Workspace يحمل LTR صريحاً — لا اعتماداً على apply_theme
+        العامّ (الذي يبقى RTL لبقيّة التطبيق)."""
+        self.assertEqual(self.win.splitter.layoutDirection(), Qt.LeftToRight)
+
+    def test_global_rtl_change_does_not_flip_explorer_workspace_order(self):
+        """تغيير اتجاه التطبيق العامّ لاحقاً (لأيّ سببٍ آخر) لا يقلب مكان
+        Explorer — الاتجاه البنيويّ مضبوطٌ صراحةً على splitter نفسه، لا
+        موروثاً من QApplication."""
+        original = self.app.layoutDirection()
+        try:
+            for direction in (Qt.LeftToRight, Qt.RightToLeft):
+                self.app.setLayoutDirection(direction)
+                self.assertEqual(
+                    self.win.splitter.layoutDirection(), Qt.LeftToRight)
+                self.assertEqual(
+                    self.win.splitter.indexOf(self.win.explorer_placeholder), 0)
+        finally:
+            self.app.setLayoutDirection(original)
+
+    def test_workspace_and_explorer_keep_rtl_text_direction(self):
+        """الاتجاه الهندسيّ (splitter=LTR) لا يُسرَّب إلى محتوى Explorer/
+        Workspace النصّيّ — كلٌّ منهما يعيد ضبط اتجاهه الخاصّ RTL صراحةً
+        (فصل STRUCTURAL عن TEXT direction، بند 1 في المهمّة)."""
+        self.assertEqual(self.win.workspace.layoutDirection(), Qt.RightToLeft)
+        self.assertEqual(
+            self.win.explorer_placeholder.layoutDirection(), Qt.RightToLeft)
+
+    def test_top_bar_direction_is_explicit_not_accidental(self):
+        self.assertEqual(self.win.top_bar.layoutDirection(), Qt.RightToLeft)
+
+    # ============== P0.1 §3/§4: CommandBar/WorkTabBar يبقيان مكانهما ==============
+    def test_command_bar_and_tab_bar_same_widgets_and_position_across_views(self):
+        self.win.resize(1180, 720)
+        self.win.show()
+        cb, tb = self.win.workspace.command_bar, self.win.workspace.work_tab_bar
+        cb_pos, tb_pos = cb.pos(), tb.pos()
+
+        self.win.open_service_start(default_services()[0])
+        self.assertIs(self.win.workspace.command_bar, cb)
+        self.assertIs(self.win.workspace.work_tab_bar, tb)
+        self.assertEqual(cb.pos(), cb_pos)
+        self.assertEqual(tb.pos(), tb_pos)
+
+        self.win.go_home()
+        self.assertIs(self.win.workspace.command_bar, cb)
+        self.assertIs(self.win.workspace.work_tab_bar, tb)
+        self.assertEqual(cb.pos(), cb_pos)
+        self.assertEqual(tb.pos(), tb_pos)
 
 
 if __name__ == "__main__":

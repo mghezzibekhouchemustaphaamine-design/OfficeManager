@@ -18,11 +18,17 @@ class ExplorerPlaceholder(QLabel):
 
     def __init__(self, parent=None):
         super().__init__("Explorer", parent)
+        #  اتجاهٌ نصّيّ RTL صريح خاصّ بمحتوى هذه اللوحة — مستقلّ عن
+        #  الاتجاه البنيويّ الذي يفرضه splitter الأب (P0.1 §1/§2: هندسة
+        #  الموضع Left/Right شيء، واتجاه القراءة داخل اللوحة شيءٌ آخر).
+        self.setLayoutDirection(Qt.RightToLeft)
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumWidth(140)
+        #  الحدّ على الحافة اليمنى (لا اليسرى) — Explorer صار يسار
+        #  الشاشة هندسياً (P0.1 §1)، فحدّه الفاصل عن Workspace يقع يميناً.
         self.setStyleSheet(
             f"background: {theme.BG}; color: {theme.TEXT_DIM};"
-            f" border-left: 1px solid {theme.BORDER};"
+            f" border-right: 1px solid {theme.BORDER};"
         )
 
 
@@ -45,6 +51,19 @@ class OfficeMainWindow(QMainWindow):
         outer.addWidget(self.top_bar)
 
         self.splitter = QSplitter(Qt.Horizontal, self)
+        #  STRUCTURAL DIRECTION != TEXT DIRECTION (P0.1 §1): هذا الحاوي
+        #  وحده مسؤولٌ عن موضع Explorer/Workspace هندسياً — Explorer
+        #  يسار الشاشة دائماً، Workspace يمينها دائماً، بغضّ النظر عن
+        #  اتجاه القراءة العامّ للتطبيق (RTL العربيّة). لهذا يُثبَّت هنا
+        #  LTR صراحةً بدل الاعتماد على apply_theme العامّ — فتغيّر ذلك
+        #  الإعداد لاحقاً (أو انعكاسه) لا يقلب مكان Explorer.
+        #
+        #  هذا الاتجاه البنيويّ ينتشر افتراضياً لأبنائه المباشرين
+        #  (Qt يورّث LayoutDirection للفروع بلا إعدادٍ صريح خاصّ بها) —
+        #  لذا كلٌّ من ExplorerPlaceholder وWorkspaceHost يُعيد ضبط
+        #  اتجاهه **النصّيّ** الخاصّ (RTL) صراحةً في بانيه هو، فلا يتأثّر
+        #  محتواهما الداخليّ (عربيّ) بهذا القرار الهندسيّ البحت.
+        self.splitter.setLayoutDirection(Qt.LeftToRight)
         self.splitter.setChildrenCollapsible(False)
         outer.addWidget(self.splitter, 1)
 

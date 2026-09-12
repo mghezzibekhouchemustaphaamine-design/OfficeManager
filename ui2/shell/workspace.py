@@ -9,6 +9,7 @@ Home وService Start View تُعرَضان في ``ContentStack`` بلا أن ت�
 موجودة فقط لإثبات أن الشريط يبقى مستقلاً عن ContentStack، وليست جزءاً من
 سلوك المنتج (لا يستدعيها أي شيء تلقائياً).
 """
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QLabel, QPushButton, QStackedWidget, QTabBar, QVBoxLayout, QWidget,
 )
@@ -32,8 +33,13 @@ class WorkTabBar(QTabBar):
         self.setFixedHeight(WORK_TAB_BAR_HEIGHT)
         self.setExpanding(False)
         self.setDrawBase(False)
+        #  ‏P0.1 §4: خلفية الشريط نفسه كانت مطابقةً تماماً لخلفية النافذة
+        #  (BG) فيختفي بصرياً حين يكون فارغاً بلا تبويبات — الآن SURFACE
+        #  + حدّ سفليّ خفيف يجعلان مكان «منطقة تبويبات الأعمال» مقروءاً
+        #  دائماً، فارغاً كان أم لا، بلا أيّ تبويب وهميّ.
         self.setStyleSheet(
-            f"QTabBar {{ background: {theme.BG}; }}"
+            f"QTabBar {{ background: {theme.SURFACE};"
+            f" border-bottom: 1px solid {theme.BORDER}; }}"
             f"QTabBar::tab {{ background: {theme.BG}; border: 1px solid {theme.BORDER};"
             f" border-bottom: none; padding: 4px 12px; }}"
             f"QTabBar::tab:selected {{ background: {theme.SURFACE}; }}"
@@ -87,6 +93,12 @@ class WorkspaceHost(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        #  ‏P0.1 §1: splitter الأب صار LTR هندسياً (Explorer|Workspace) —
+        #  ذلك الاتجاه يورَّث افتراضياً لهذا الودجت وكل أبنائه. محتوى
+        #  Workspace نفسه (عناوين/بطاقات/أزرار عربيّة) يبقى RTL كما كان
+        #  دائماً — إعادة ضبطٍ صريحة هنا تفصل اتجاه القراءة الداخليّ عن
+        #  القرار الهندسيّ الخارجيّ (STRUCTURAL DIRECTION != TEXT DIRECTION).
+        self.setLayoutDirection(Qt.RightToLeft)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)

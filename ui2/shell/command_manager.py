@@ -49,11 +49,12 @@ class CommandManager(QObject):
         for spec in COMMAND_REGISTRY:
             action = QAction(spec.label, action_owner)
             action.setIcon(command_icon(spec.id))
-            #  ‏P2.1 §10: "حفظ (Ctrl+S)" — الاختصار من Registry نفسها، لا
-            #  تكراراً hard-coded في CommandBar. بلا اختصار → التسمية فقط.
-            action.setToolTip(
-                f"{spec.label} ({spec.shortcut})" if spec.shortcut else spec.label
-            )
+            #  ‏P2.1 §10 → P3.2 §17: "معاينة / طباعة العمل الحالي (Ctrl+P)"
+            #  — نصّ Registry الوصفيّ (``spec.tooltip``، أصدق من التسمية
+            #  المجرَّدة حين تختلف الدلالة الفعلية كـPRINT) + الاختصار من
+            #  Registry نفسها، لا تكراراً hard-coded في CommandBar.
+            base = spec.tooltip or spec.label
+            action.setToolTip(f"{base} ({spec.shortcut})" if spec.shortcut else base)
             if spec.shortcut:
                 action.setShortcut(QKeySequence(spec.shortcut))
             #  لا عمل نشِط بعد — كل الأوامر تبدأ غير ظاهرة/معطَّلة (P2 §7).

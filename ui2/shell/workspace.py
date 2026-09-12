@@ -337,6 +337,11 @@ class WorkspaceHost(QWidget):
         #  ‏P3 §6: الخدمة المعروضة حالياً في ServiceStartView — يقرأها
         #  _on_nouveau_clicked فقط، لا تُخزَّن في WorkspaceManager.
         self._current_service = None
+        #  ‏P3.2 §2: العمل الذي استُدعيت عليه activate() فعلياً آخر مرّة
+        #  (أو None) — يضمن استدعاء activate()/deactivate() مرّةً واحدة
+        #  بالضبط لكلّ انتقال هويّة نشِطة حقيقيّ (لا reorder، لا إعادة
+        #  تفعيل نفس المفتاح). راجع ``_set_lifecycle_active``.
+        self._lifecycle_active_session = None
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -474,6 +479,7 @@ class WorkspaceHost(QWidget):
             #  هنا) أو عند إغلاق آخر عملٍ نشِط (P1 §10: نعرض Home حينها،
             #  لأن Host لم يكن أصلاً "يعرض شاشة Shell" في تلك اللحظة).
             self.work_tab_bar.set_active(False)
+            self._set_lifecycle_active(None)
             if not self._showing_shell:
                 self._showing_shell = True
                 self.content_stack.setCurrentWidget(self.home_view)
@@ -492,8 +498,30 @@ class WorkspaceHost(QWidget):
         session = self.workspace_manager.get(key)
         if session is not None:
             self.content_stack.setCurrentWidget(session.widget)
+        self._set_lifecycle_active(session)
+
+    def _set_lifecycle_active(self, session) -> None:
+        """‏P3.2 §2/§19: يضمن ``activate()``/``deactivate()`` مرّةً واحدة
+        بالضبط لكلّ انتقال هويّة نشِطة حقيقيّ — لا شيء إن كانت ``session``
+        نفسها المُفعَّلة أصلاً (reorder، أو activated بنفس المفتاح، لا
+        يستدعي شيئاً)."""
+        if self._lifecycle_active_session is session:
+            return
+        if self._lifecycle_active_session is not None:
+            self._lifecycle_active_session.deactivate()
+        self._lifecycle_active_session = session
+        if session is not None:
+            session.activate()
 
     def _on_work_closed(self, session) -> None:
+        #  ‏P3.2 §2: إن كانت هذه الجلسة "النشِطة" حالياً من منظور دورة
+        #  الحياة، نُصفّر الدفتر بلا استدعاء deactivate() إضافيّ هنا —
+        #  ``close_screen()`` أدناه (لِـ Screen حقيقية) يتكفّل بـ
+        #  on_deactivate الفعليّ فلا يُستدعى مرّتين؛ لعملٍ بلا close_screen
+        #  (ليس Screen) نستدعي deactivate() صراحةً بديلاً وحيداً.
+        was_lifecycle_active = self._lifecycle_active_session is session
+        if was_lifecycle_active:
+            self._lifecycle_active_session = None
         idx = self.work_tab_bar.index_for_key(session.key)
         if idx >= 0:
             self.work_tab_bar.blockSignals(True)
@@ -507,6 +535,8 @@ class WorkspaceHost(QWidget):
         close_hook = getattr(session.widget, "close_screen", None)
         if callable(close_hook):
             close_hook()
+        elif was_lifecycle_active:
+            session.deactivate()
         session.widget.deleteLater()
 
     def _on_work_title_or_state_changed(self, key, _value) -> None:

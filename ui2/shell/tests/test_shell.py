@@ -1974,5 +1974,115 @@ class SaveCommandUnificationTest(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+def _lifecycle_session(service_key, work_id, **kw):
+    """‏P3.2 §3/§21: جلسةٌ عامّة (لا Paie) مزوَّدةٌ بـhandlers تعقب
+    الاستدعاءات — تختبر بروتوكول activate()/deactivate() في
+    WorkspaceHost بمعزلٍ كامل عن أيّ خدمة حقيقية."""
+    session = _session(service_key, work_id, **kw)
+    calls = {"activate": 0, "deactivate": 0}
+    session.set_lifecycle_handlers(
+        on_activate=lambda: calls.__setitem__("activate", calls["activate"] + 1),
+        on_deactivate=lambda: calls.__setitem__("deactivate", calls["deactivate"] + 1),
+    )
+    session.lifecycle_calls = calls
+    return session
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class WorkLifecycleTest(unittest.TestCase):
+    """‏P3.2 §2/§3/§19/§21: activate()/deactivate() عامّتان — لا معرفة
+    بأيّ خدمة بعينها؛ WorkspaceHost هو من يستدعيهما، لا WorkspaceManager."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self.win = OfficeMainWindow()
+        self.mgr = self.win.workspace.workspace_manager
+
+    def tearDown(self):
+        self.win.deleteLater()
+
+    def test_no_handlers_is_safe_noop(self):
+        """‏Work بلا set_lifecycle_handlers (كلّ Demo Work الحالية) —
+        activate()/deactivate() لا تفعل شيئاً ولا تُسقط استثناءً."""
+        a = _session("x", "1")
+        self.mgr.open_work(a)   # يُفعِّلها ضمنياً عبر WorkspaceHost
+        self.win.go_home()
+
+    def test_activate_called_once_on_first_open(self):
+        a = _lifecycle_session("x", "1")
+        self.mgr.open_work(a)
+        self.assertEqual(a.lifecycle_calls, {"activate": 1, "deactivate": 0})
+
+    def test_home_deactivates_current_work(self):
+        a = _lifecycle_session("x", "1")
+        self.mgr.open_work(a)
+        self.win.go_home()
+        self.assertEqual(a.lifecycle_calls, {"activate": 1, "deactivate": 1})
+
+    def test_switching_work_deactivates_a_then_activates_b(self):
+        a = _lifecycle_session("x", "1")
+        b = _lifecycle_session("y", "2")
+        self.mgr.open_work(a)
+        self.mgr.open_work(b)   # b تُفتَح وتُنشَّط تلقائياً
+        self.assertEqual(a.lifecycle_calls, {"activate": 1, "deactivate": 1})
+        self.assertEqual(b.lifecycle_calls, {"activate": 1, "deactivate": 0})
+        self.mgr.activate_work(a.key)
+        self.assertEqual(a.lifecycle_calls, {"activate": 2, "deactivate": 1})
+        self.assertEqual(b.lifecycle_calls, {"activate": 1, "deactivate": 1})
+
+    def test_returning_to_work_reactivates_same_instance(self):
+        a = _lifecycle_session("x", "1")
+        self.mgr.open_work(a)
+        self.win.go_home()
+        self.mgr.activate_work(a.key)
+        self.assertEqual(a.lifecycle_calls, {"activate": 2, "deactivate": 1})
+
+    def test_service_start_view_deactivates_active_work(self):
+        a = _lifecycle_session("x", "1")
+        self.mgr.open_work(a)
+        self.win.workspace.show_service_start(default_services()[0])
+        self.assertEqual(a.lifecycle_calls, {"activate": 1, "deactivate": 1})
+
+    def test_reorder_does_not_trigger_lifecycle_callbacks(self):
+        a = _lifecycle_session("x", "1")
+        b = _lifecycle_session("y", "2")
+        c = _lifecycle_session("z", "3")
+        for s in (a, b, c):
+            self.mgr.open_work(s)
+        self.mgr.activate_work(a.key)
+        before = {k: dict(s.lifecycle_calls) for k, s in (("a", a), ("b", b), ("c", c))}
+        self.mgr.move_work(2, 0)   # [c, a, b] — الهويّة النشِطة (a) لم تتغيّر
+        after = {k: dict(s.lifecycle_calls) for k, s in (("a", a), ("b", b), ("c", c))}
+        self.assertEqual(before, after)
+
+    def test_closing_active_work_calls_deactivate_exactly_once(self):
+        a = _lifecycle_session("x", "1")
+        self.mgr.open_work(a)
+        self.mgr.close_work(a.key)
+        self.assertEqual(a.lifecycle_calls, {"activate": 1, "deactivate": 1})
+
+    def test_closing_active_work_then_activating_neighbor_is_correct(self):
+        a = _lifecycle_session("x", "1")
+        b = _lifecycle_session("y", "2")
+        self.mgr.open_work(a)          # a: activate=1
+        self.mgr.open_work(b)          # a: deactivate=1 · b: activate=1 (نشِطة)
+        self.mgr.close_work(b.key)     # b تُغلَق (نشِطة) → a تُعاد تنشيطها
+        self.assertEqual(a.lifecycle_calls, {"activate": 2, "deactivate": 1})
+        self.assertEqual(b.lifecycle_calls, {"activate": 1, "deactivate": 1})
+
+    def test_closing_inactive_work_does_not_affect_active_lifecycle(self):
+        a = _lifecycle_session("x", "1")
+        b = _lifecycle_session("y", "2")
+        self.mgr.open_work(a)
+        self.mgr.open_work(b)
+        self.mgr.activate_work(a.key)
+        self.mgr.close_work(b.key)
+        self.assertEqual(a.lifecycle_calls, {"activate": 2, "deactivate": 1})
+
+
 if __name__ == "__main__":
     unittest.main()

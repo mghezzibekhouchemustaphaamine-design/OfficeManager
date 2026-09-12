@@ -142,9 +142,17 @@ class PaieWorkAdapterTest(unittest.TestCase):
         self.assertIsNotNone(binding)
         self.assertTrue(binding.is_enabled())
 
-    def test_finalize_not_bound_in_phase1(self):
+    def test_finalize_now_bound_in_p3_2(self):
+        """‏P3.2 §13: FINALIZE أصبحت مربوطة (كانت مؤجَّلة عمداً في P3.1)."""
         session = PaieWorkAdapter.create_new()
-        self.assertIsNone(session.command_binding(CommandId.FINALIZE))
+        binding = session.command_binding(CommandId.FINALIZE)
+        self.assertIsNotNone(binding)
+        self.assertTrue(binding.is_enabled())   # غير مقفلة → مفعَّلة
+
+    def test_finalize_disabled_when_locked(self):
+        session = PaieWorkAdapter.create_new()
+        session.widget._set_locked(True)
+        self.assertFalse(session.command_binding(CommandId.FINALIZE).is_enabled())
 
     def test_no_shell_imports_inside_paie_module(self):
         """‏P3 §2/§28: bulletin_template.py يبقى مستقلاًّ عن Shell."""
@@ -320,6 +328,266 @@ class PaieShellIntegrationTest(unittest.TestCase):
         session.widget._on_save = lambda: (calls.append(1), real_save())[1]
         self.win.workspace.command_manager.action(CommandId.SAVE).trigger()
         self.assertEqual(calls, [1])   # مرّةً واحدة فقط
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class PaieDynamicTitleTest(unittest.TestCase):
+    """‏P3.2 §4/§5/§6/§22: العنوان الديناميكيّ — Paie/Adapter فقط
+    يقرّرانه، لا Shell."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_p32_title_")
+        _isolate_db(self._tmp)
+        import ui2.alerts as _al
+        self._al, self._al_warn = _al, _al.warn
+        _al.warn = lambda *a, **k: None
+
+    def tearDown(self):
+        self._al.warn = self._al_warn
+        os.environ.pop(paths._DATA_DIR_ENV_OVERRIDE, None)
+        os.environ.pop(paths._LOCAL_STATE_ENV_OVERRIDE, None)
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_new_paie_title_fallback(self):
+        session = PaieWorkAdapter.create_new()
+        self.assertEqual(session.title, "Bulletin de paie — Nouveau")
+
+    def test_entering_name_updates_session_title(self):
+        session = PaieWorkAdapter.create_new()
+        screen = session.widget
+        screen._widgets["id_nom"].setText("BENALI")
+        screen._on_slot_write("id_nom")
+        self.assertIn("BENALI", session.title)
+        self.assertNotEqual(session.title, "Bulletin de paie — Nouveau")
+
+    def test_month_year_updates_title_further(self):
+        session = PaieWorkAdapter.create_new()
+        screen = session.widget
+        screen._widgets["id_nom"].setText("BENALI")
+        screen._on_slot_write("id_nom")
+        after_name = session.title
+        screen._widgets["mois"].setText("OCTOBRE")
+        screen._on_slot_write("mois")
+        screen._widgets["annee"].setText("2026")
+        screen._on_slot_write("annee")
+        self.assertNotEqual(session.title, after_name)
+        self.assertIn("OCTOBRE", session.title)
+        self.assertIn("2026", session.title)
+
+    def test_title_changes_do_not_change_workkey(self):
+        session = PaieWorkAdapter.create_new()
+        key_before = session.key
+        session.widget._widgets["id_nom"].setText("BENALI")
+        session.widget._on_slot_write("id_nom")
+        self.assertEqual(session.key, key_before)
+
+    def test_unrelated_field_does_not_emit_title_change(self):
+        session = PaieWorkAdapter.create_new()
+        seen = []
+        session.widget.titleChanged.connect(seen.append)
+        session.widget._widgets["emp_raison_sociale"].setText("SARL X")
+        session.widget._on_slot_write("emp_raison_sociale")
+        self.assertEqual(seen, [])
+
+    def test_loading_saved_work_sets_title_immediately(self):
+        session = PaieWorkAdapter.create_new()
+        screen = session.widget
+        screen._widgets["id_nom"].setText("BENALI")
+        screen._widgets["id_prenom"].setText("Karim")
+        screen._widgets["mois"].setText("OCTOBRE")
+        screen._widgets["annee"].setText("2026")
+        screen._on_slot_write("id_nom")
+        screen._on_save()
+        row = database.get_hr_document(screen._work_id)
+
+        session2 = PaieWorkAdapter.create_new()
+        session2.widget.load_work(row)
+        self.assertIn("BENALI", session2.title)
+        self.assertIn("OCTOBRE", session2.title)
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class PaieDocumentIdentityTest(unittest.TestCase):
+    """‏P3.2 §7/§8/§9/§23: WorkKey ثابتة + هويّة وثيقة اختيارية منفصلة."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_p32_id_")
+        _isolate_db(self._tmp)
+        import ui2.alerts as _al
+        self._al, self._al_warn = _al, _al.warn
+        _al.warn = lambda *a, **k: None
+        import ui2.hr.paie.bulletin_template as _mod
+        self._mod, self._mod_confirm = _mod, _mod.confirm
+        _mod.confirm = lambda *a, **k: False   # لا "فتحه الآن؟" حقيقية بعد finalize
+
+    def tearDown(self):
+        self._al.warn = self._al_warn
+        self._mod.confirm = self._mod_confirm
+        os.environ.pop(paths._DATA_DIR_ENV_OVERRIDE, None)
+        os.environ.pop(paths._LOCAL_STATE_ENV_OVERRIDE, None)
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_document_identity_starts_none(self):
+        session = PaieWorkAdapter.create_new()
+        self.assertIsNone(session.document_id)
+        self.assertIsNone(session.document_path)
+
+    def test_successful_save_syncs_document_id(self):
+        session = PaieWorkAdapter.create_new()
+        session.widget._widgets["mois"].setText("OCTOBRE")
+        session.widget.mark_dirty()
+        key_before = session.key
+        session.save()
+        self.assertIsNotNone(session.document_id)
+        self.assertEqual(session.key, key_before)   # WorkKey لم تتغيّر
+
+    def test_failed_save_does_not_write_identity(self):
+        session = PaieWorkAdapter.create_new()
+        session.widget.mark_dirty()
+        session.widget._set_locked(True)   # يفشل _on_save عمداً
+        session.save()
+        self.assertIsNone(session.document_id)
+        self.assertIsNone(session.document_path)
+
+    def test_finalize_success_syncs_document_path(self):
+        session = PaieWorkAdapter.create_new()
+        self._fill_minimum_valid(session.widget)
+        key_before = session.key
+        result = session.command_binding(CommandId.FINALIZE).handler()
+        self.assertEqual(result, SaveResult.SUCCESS)
+        self.assertIsNotNone(session.document_path)
+        self.assertEqual(session.key, key_before)
+
+    def test_workkey_identical_before_and_after_save(self):
+        session = PaieWorkAdapter.create_new()
+        before = session.key
+        session.widget.mark_dirty()
+        session.save()
+        self.assertEqual(session.key, before)
+        self.assertIs(session.key, before)
+
+    @staticmethod
+    def _fill_minimum_valid(screen):
+        w = screen._widgets
+        w["emp_raison_sociale"].setText("SARL X")
+        w["emp_adresse"].setText("12 RUE")
+        w["emp_cnas"].setText("16 412 078 56")
+        w["mois"].setText("OCTOBRE")
+        w["annee"].setText("2026")
+        w["id_nom"].setText("BENALI")
+        w["id_prenom"].setText("Karim")
+        w["id_lieu_naissance"].setText("ALGER")
+        w["id_fonction"].setText("COMPTABLE")
+        w["id_date_naissance"].set_iso("1990-05-10")
+        w["id_date_embauche"].set_iso("2016-06-14")
+        row = [r for r in screen._rows if r.kind == "salaire"][0]
+        row.set_val("gain", "45000")
+        row.set_val("nbase", "26")
+        screen._recompute()
+
+
+@unittest.skipUnless(_HAS_QT, "PySide6 غير متوفّر")
+class PaieFinalizeTest(unittest.TestCase):
+    """‏P3.2 §11/§12/§13/§14/§16/§24: FINALIZE integration."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply_theme(cls.app)
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="om_p32_fin_")
+        _isolate_db(self._tmp)
+        import ui2.alerts as _al
+        self._al, self._al_warn = _al, _al.warn
+        _al.warn = lambda *a, **k: None
+        import ui2.hr.paie.bulletin_template as _mod
+        self._mod, self._mod_confirm = _mod, _mod.confirm
+        _mod.confirm = lambda *a, **k: False   # لا "فتحه الآن؟" حقيقية
+
+    def tearDown(self):
+        self._al.warn = self._al_warn
+        self._mod.confirm = self._mod_confirm
+        os.environ.pop(paths._DATA_DIR_ENV_OVERRIDE, None)
+        os.environ.pop(paths._LOCAL_STATE_ENV_OVERRIDE, None)
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _fill_minimum_valid(self, screen):
+        PaieDocumentIdentityTest._fill_minimum_valid(screen)
+
+    def test_finalize_supported_when_not_locked(self):
+        session = PaieWorkAdapter.create_new()
+        self.assertTrue(session.command_binding(CommandId.FINALIZE).is_enabled())
+
+    def test_finalize_disabled_when_already_locked(self):
+        session = PaieWorkAdapter.create_new()
+        session.widget._set_locked(True)
+        self.assertFalse(session.command_binding(CommandId.FINALIZE).is_enabled())
+
+    def test_finalize_success_locks_session(self):
+        session = PaieWorkAdapter.create_new()
+        self._fill_minimum_valid(session.widget)
+        session.command_binding(CommandId.FINALIZE).handler()
+        self.assertTrue(session.locked)
+
+    def test_finalize_success_syncs_dirty(self):
+        session = PaieWorkAdapter.create_new()
+        self._fill_minimum_valid(session.widget)
+        session.widget.mark_dirty()
+        session.command_binding(CommandId.FINALIZE).handler()
+        self.assertFalse(session.dirty)
+
+    def test_finalize_blocked_by_incomplete_data_leaves_work_open_unlocked(self):
+        session = PaieWorkAdapter.create_new()   # بلا تعبئة — بيانات ناقصة
+        result = session.command_binding(CommandId.FINALIZE).handler()
+        self.assertEqual(result, SaveResult.FAILED)
+        self.assertFalse(session.locked)
+
+    def test_finalize_failure_via_action_trigger_does_not_crash(self):
+        from ui2.shell.command_manager import CommandManager
+        from ui2.shell.workspace_manager import WorkspaceManager
+        mgr = WorkspaceManager()
+        session = PaieWorkAdapter.create_new()
+        mgr.open_work(session)
+        cm = CommandManager(mgr, session.widget)   # يستعمل نفس الشاشة كمالك QAction
+        cm.action(CommandId.FINALIZE).trigger()
+        self.assertFalse(session.locked)   # بيانات ناقصة — رُفض بأمان
+
+    def test_finalize_does_not_call_separate_shell_save(self):
+        """‏P3.2 §14/§15: لا Save مستقلّة من Shell قبل Finalize — العدّاد
+        يتتبّع استدعاءات ``_on_save`` الحقيقية فقط (يجب أن يبقى صفراً،
+        فـ_on_finalize لا تستدعيها إطلاقاً بمنطقها الحالي)."""
+        session = PaieWorkAdapter.create_new()
+        self._fill_minimum_valid(session.widget)
+        calls = []
+        real_save = session.widget._on_save
+        session.widget._on_save = lambda: (calls.append(1), real_save())[1]
+        session.command_binding(CommandId.FINALIZE).handler()
+        self.assertEqual(calls, [])
+
+    def test_safe_close_after_successful_finalize_closes_directly(self):
+        from ui2.shell.workspace_manager import WorkspaceManager
+        mgr = WorkspaceManager()
+        session = PaieWorkAdapter.create_new()
+        mgr.open_work(session)
+        self._fill_minimum_valid(session.widget)
+        session.command_binding(CommandId.FINALIZE).handler()
+        self.assertFalse(session.dirty)
+        called = {"n": 0}
+        coord = CloseCoordinator(
+            mgr, decision_provider=lambda s: called.__setitem__("n", called["n"] + 1))
+        self.assertTrue(coord.request_close_work(session.key))
+        self.assertEqual(called["n"], 0)   # نظيفة — إغلاقٌ مباشر بلا حوار
 
 
 if __name__ == "__main__":

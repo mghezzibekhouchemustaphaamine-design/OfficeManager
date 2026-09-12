@@ -1106,6 +1106,11 @@ class BulletinTemplateScreen(Screen):
     #  WorkSession لاحقاً عبر Adapter) يربط بها بلا معرفة تفاصيل العمل
     #  الداخلية. تُصدَر فقط عند تغيّرٍ فعليّ (راجع ``_set_locked``).
     lockedChanged = Signal(bool)
+    #  ‏P3.2 §5: إشارةٌ عامّة صغيرة — القيمة المعروضة الحالية (راجع
+    #  ``display_title``) تغيّرت. **ليست هويّة** — WorkKey/identity لا
+    #  علاقة لهما بهذه الإشارة إطلاقاً؛ اسمٌ عامّ عمداً (لا Shell/
+    #  WorkSession في التسمية) كي تصلح لأيّ مضيفٍ مستقبليّ.
+    titleChanged = Signal(str)
 
     def __init__(self, conn=None, parent=None):
         super().__init__(parent)
@@ -1817,6 +1822,10 @@ class BulletinTemplateScreen(Screen):
             self._style_field(k)
         self._recompute()
         self._relayout()
+        #  ‏P3.2 §5: استعادة مسوّدة/عمل تُغيّر id_nom/mois/annee بلا
+        #  المرور بـ_on_slot_write (معلَّقة عبر self._suspend أثناء
+        #  الاستعادة) — نعيد توليد العنوان صراحةً هنا مرّةً واحدة.
+        self.titleChanged.emit(self.display_title())
 
     def is_empty(self):
         hdr = any(str(self._hdr_val(self._widgets[s.key])).strip()
@@ -2454,6 +2463,21 @@ class BulletinTemplateScreen(Screen):
             return "⚠️"
         return self.incomplete_badge()
 
+    def display_title(self) -> str:
+        """‏P3.2 §4/§6: عنوانٌ مهنيّ قصير للاستهلاك الخارجيّ (Shell
+        WorkSession.title لاحقاً عبر Adapter، أو أيّ مضيفٍ آخر) — **لا
+        علاقة له بأيّ هويّة** (WorkKey/``_work_id`` لا يتأثّران). Fallback
+        واضح بلا اسم؛ اسمٌ وحده؛ اسمٌ+فترة كاملة. الشهر يُعرَض كما
+        يُدخِله المستخدم حرفياً (مُقونَنٌ أصلاً UPPERCASE عبر ``_on_slot_
+        write``) — لا خريطة اختصارات إضافية (تفادياً لمصدرٍ ثانٍ للحقيقة)."""
+        name = self._employee_fullname()
+        if not name:
+            return "Bulletin de paie — Nouveau"
+        mois, annee = self._w("mois"), self._w("annee")
+        if not (mois and annee):
+            return f"Bulletin — {name}"
+        return f"Bulletin — {name} — {mois} {annee}"
+
     def _on_save(self) -> bool:
         """يحفظ التقدّم — **لا يُمنَع أبداً** بنقص المعلومات (§4). ينتج/يحدّث
         عملاً بحالة ⚠️ (لا DOCX/PDF نهائيَّين، لا قفل). عمل كان 🔒 ثمّ
@@ -2801,6 +2825,11 @@ class BulletinTemplateScreen(Screen):
         self._style_field(key)
         self.mark_dirty()
         self._recompute()
+        #  ‏P3.2 §5: نقطة الاختناق الوحيدة لكتابة حقول الترويسة — أرخص
+        #  مكانٍ لإعادة توليد العنوان دون إشارةٍ منفصلة لكلّ حقل. مقصورٌ
+        #  على الحقول التي يعتمد عليها display_title() فعلياً.
+        if key in ("id_nom", "id_prenom", "mois", "annee"):
+            self.titleChanged.emit(self.display_title())
 
     def _advance_after(self, key):
         """انتقال مؤجَّل للحقل التالي — بعد أن ينتهي حدث الكتابة الحالي
@@ -2929,16 +2958,21 @@ class BulletinTemplateScreen(Screen):
         return (os.path.join(base, stem + ".docx"),
                 os.path.join(base, stem + ".pdf"))
 
-    def _on_finalize(self):
+    def _on_finalize(self) -> bool:
         """إصدار نهائيّ **شبه معامليّ** (§8): تحقّق → بناء docx+pdf في ملفّات
         مؤقّتة → استبدال ذرّيّ → حفظ الحالة → قفل. فشل أيّ خطوة ⇒ لا قفل،
-        لا ادّعاء نجاح، لا فقدان Work Data، وتُنظَّف الملفّات الجزئية."""
+        لا ادّعاء نجاح، لا فقدان Work Data، وتُنظَّف الملفّات الجزئية.
+
+        ‏P3.2 §12: تُرجع ``bool`` (نجح/فشل أو مرفوض بنقصٍ في البيانات)
+        — لازمٌ لِـPaieWorkAdapter.finalize() ليبني نتيجةً واضحة بدل
+        تخمين من ``None`` ضمنيّ (لا مفهوم CANCELLED هنا فعلياً — لا
+        مسار "تراجع المستخدم" قبل البناء، فقط SUCCESS/FAILED حقيقيّان)."""
         from ui2.alerts import warn
         self._recompute()
         if not self.show_required_warnings():
             warn(self, self.TITLE,
                  ["توجد معلومات ناقصة قبل إصدار الكشف النهائيّ."])
-            return
+            return False
         docx_path, pdf_path = self._finalize_paths()
         tmp_docx, tmp_pdf = docx_path + ".part", pdf_path + ".part"
         tpl = T.get_renderer(self._template_key)
@@ -2960,14 +2994,14 @@ class BulletinTemplateScreen(Screen):
         except TemplateNotReady as exc:
             _silent_unlink(tmp_docx, tmp_pdf)
             warn(self, self.TITLE, [str(exc)])
-            return
+            return False
         except Exception as exc:                              # noqa: BLE001
             _silent_unlink(tmp_docx, tmp_pdf)
             logger.warning("بناء ملفّات الإصدار فشل", exc_info=True)
             warn(self, self.TITLE,
                  ["لم يكتمل الإصدار النهائيّ — لم يُقفَل العمل ولم تُفقَد "
                   f"البيانات.\n{exc}"])
-            return
+            return False
         try:
             os.replace(tmp_docx, docx_path)
             os.replace(tmp_pdf, pdf_path)
@@ -2975,7 +3009,7 @@ class BulletinTemplateScreen(Screen):
             _silent_unlink(tmp_docx, tmp_pdf)
             logger.warning("استبدال ملفّات الإصدار فشل", exc_info=True)
             warn(self, self.TITLE, [f"تعذّرت كتابة الملفّات النهائية: {exc}"])
-            return
+            return False
         prev = self._work_state
         self._final_docx, self._final_pdf = docx_path, pdf_path
         self._has_final_artifacts = True
@@ -2992,18 +3026,24 @@ class BulletinTemplateScreen(Screen):
             logger.warning("حفظ حالة الإصدار فشل", exc_info=True)
             warn(self, self.TITLE,
                  [f"وُلِّدت الملفّات لكن تعذّر حفظ حالة العمل — لم يُقفَل.\n{exc}"])
-            return
+            return False
         self.mark_clean()
         self._set_locked(True)
         self._update_incomplete_indicator()
         self._update_state_indicator()
         self.status.setText("🔒 صدر الكشف النهائيّ — Word + PDF.")
+        #  ‏P3.2 §15: سؤالٌ اختياريّ لاحق للنجاح ("فتحه الآن؟") — ليس
+        #  تأكيداً لعملية Finalize نفسها (تلك تُنفَّذ مباشرةً بلا سؤال
+        #  مسبق، كما كانت). لا يتعارض مع أيّ حوار Shell (Shell لا تسأل
+        #  تأكيداً قبل استدعاء finalize إطلاقاً — القرار موثَّقٌ في
+        #  PaieWorkAdapter). يبقى هنا كما هو دون تعديل.
         if confirm(self, self.TITLE,
                    f"🔒 صدر الكشف النهائيّ:\n{pdf_path}\n\nفتحه الآن؟"):
             try:
                 os.startfile(pdf_path)                        # noqa: SIM115
             except OSError:
                 pass
+        return True
 
     def _on_unlock(self):
         if not self._locked:

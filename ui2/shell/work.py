@@ -84,6 +84,18 @@ class WorkSession(QObject):
         #  بمعرّف أمرٍ بعينه (P2.5 §15).
         self._save_handler: Optional[Callable[[], SaveResult]] = None
         self._can_save_flag: Union[bool, Callable[[], bool]] = False
+        #  ‏P3.2 §2/§19: دورة حياة عامّة اختيارية — handlers لا تُستدعى
+        #  إلا عبر activate()/deactivate() (يستدعيهما WorkspaceHost فقط،
+        #  P3.2 §2)؛ Work بلا handlers (الحالة الافتراضية لكلّ Demo
+        #  Work) تبقى no-op تماماً، بلا تغيير سلوك.
+        self._on_activate_handler: Optional[Callable[[], None]] = None
+        self._on_deactivate_handler: Optional[Callable[[], None]] = None
+        #  ‏P3.2 §8: هويّة وثيقة اختيارية بعد أوّل حفظ ناجح — منفصلة تماماً
+        #  عن ``key`` (الذي يبقى ثابتاً طوال عمر الجلسة، P3.2 §7). لا
+        #  معنى مركزيّاً لهذه القيم هنا (لا DB framework عامّ) — Adapter
+        #  الذي يملأها ويعرف كيف يفسّرها.
+        self.document_id = None
+        self.document_path = None
         #  ‏dirty/locked يؤثّران غالباً على enabled() لأوامر مثل SAVE/
         #  UNDO/REDO — إعادة تقييمٍ تلقائية بلا أن يعرف WorkSession شيئاً
         #  عن أيّ Command بعينه (P2 §5).
@@ -182,3 +194,27 @@ class WorkSession(QObject):
         except Exception:
             return SaveResult.FAILED
         return result if result is not None else SaveResult.SUCCESS
+
+    # -------------------------------------------------------- Lifecycle
+    def set_lifecycle_handlers(self, *, on_activate: Optional[Callable[[], None]] = None,
+                                on_deactivate: Optional[Callable[[], None]] = None) -> None:
+        """‏P3.2 §2/§19: يُعلن أنّ هذا العمل يريد إشعاراً عامّاً عند
+        activation/deactivation (لا معنى Paie/CD هنا — أيّ Work مستقبلية
+        قد تحتاجه لتسجيل اختصارات/موارد مؤقّتة). عدم الاستدعاء = no-op
+        كامل في activate()/deactivate()."""
+        self._on_activate_handler = on_activate
+        self._on_deactivate_handler = on_deactivate
+
+    def activate(self) -> None:
+        """يستدعيها ``WorkspaceHost`` فقط، عند عرض هذا العمل فعلياً
+        (P3.2 §2) — لا تستدعِها أيّ طبقةٍ أخرى."""
+        if self._on_activate_handler is not None:
+            self._on_activate_handler()
+
+    def deactivate(self) -> None:
+        """يستدعيها ``WorkspaceHost`` فقط، عند مغادرة هذا العمل (تبديلٌ
+        لعملٍ آخر، Home، ServiceStartView، أو إغلاقه) — مرّةً واحدة لكلّ
+        مغادرة، بلا ازدواج (P3.2 §2/§14، راجع ``WorkspaceHost._lifecycle_
+        active_session``)."""
+        if self._on_deactivate_handler is not None:
+            self._on_deactivate_handler()

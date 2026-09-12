@@ -46,8 +46,12 @@ class CommandSpec:
 COMMAND_REGISTRY = (
     CommandSpec(CommandId.SAVE, CommandGroup.FILE,
                 "حفظ", "Ctrl+S", "حفظ العمل الحالي"),
+    #  ‏P3.2 §17: التلميح "معاينة / طباعة" — بعض الأعمال (Paie حالياً)
+    #  تربط PRINT بمعاينةٍ فعلية (فتح PDF/DOCX الموجود) لا طباعةً
+    #  مباشرة؛ لا CommandId جديد (خيار A) — التسمية العامّة صادقة لكلا
+    #  الحالتين بدل الادّعاء بطباعة حقيقية دائماً.
     CommandSpec(CommandId.PRINT, CommandGroup.FILE,
-                "طباعة", "Ctrl+P", "طباعة العمل الحالي"),
+                "طباعة", "Ctrl+P", "معاينة / طباعة العمل الحالي"),
     CommandSpec(CommandId.UNDO, CommandGroup.EDIT,
                 "تراجع", "Ctrl+Z", "تراجع عن آخر تعديل"),
     CommandSpec(CommandId.REDO, CommandGroup.EDIT,
